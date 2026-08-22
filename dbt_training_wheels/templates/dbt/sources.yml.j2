@@ -1,0 +1,23 @@
+{#- Sources YAML Template -#}
+{#- Variables: sources_with_projects (dict), include_dynamic_database (bool) -#}
+version: 2
+
+sources:
+{% for dataset, info in sources_with_projects.items() %}
+  - name: {{ dataset }}
+{% if info.project and include_dynamic_database %}
+    database: |
+{% raw %}
+      {%- if target.name == "local" -%} {% endraw %}{{ info.project }}{% raw %}
+      {%- elif target.name.startswith("dev") -%} {% endraw %}{{ info.project }}{% raw %}
+      {%- elif target.name.startswith("prd") -%} {% endraw %}{{ info.project }}{% raw %}
+      {%- else -%} invalid_environment_profile_target
+      {%- endif -%}
+{% endraw %}
+{% endif %}
+    description: "Raw data from {{ dataset }}"
+    tables:
+{% for table_name in info.tables %}
+      - name: {{ table_name }}
+{% endfor %}
+{% endfor %}

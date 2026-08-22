@@ -1,0 +1,39 @@
+services:
+  dbt_training_wheels:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    # NO .env file needed! SSH keys provide authentication
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+      - DBT_TRAINING_WHEELS_CONFIG_PATH=/app/dbt_training_wheels_config.yaml
+      # Tell git to use SSH and accept new host keys automatically
+      - GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new
+      # Pushing branches uses your SSH keys, but *opening* pull requests goes through
+      # the GitHub API, which SSH keys can't do. Without a token DBT Training Wheels still pushes
+      # the stack and hands you pre-filled compare links instead.
+      #
+      # To get real, linked stacked PRs, launch with a token read from your existing
+      # gh login - nothing is stored on disk:
+      #     GH_TOKEN=$(gh auth token) docker-compose up --build
+      - GH_TOKEN=${GH_TOKEN:-}
+    volumes:
+      # Mount user's SSH keys (read-only) - authenticates as the user!
+      # This replaces GITHUB_TOKEN entirely
+      - ${HOME}/.ssh:/home/dbt_training_wheels/.ssh:ro
+
+      # Mount config file
+      - ./dbt_training_wheels_config.yaml:/app/dbt_training_wheels_config.yaml:ro
+
+      # Optional: Mount SQL files for local testing
+      # - ./sql_queries:/app/sql_queries:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

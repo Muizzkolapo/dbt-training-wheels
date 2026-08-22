@@ -1,0 +1,72 @@
+# DBT Training Wheels Configuration
+#
+# Minimal starting config. Every field below has a schema default, so you can
+# delete anything you don't need. Add projects under `projects:` when you're
+# ready to point this at a real warehouse.
+
+config_version: "1.0"
+
+# ============================================
+# DEFAULTS - Global settings for all projects
+# ============================================
+defaults:
+  dbt_config:
+    database:
+      dialect: bigquery
+      table_quote_style: backtick
+      fully_qualified_format: "project.dataset.table"
+      # Supported table reference formats:
+      # - Fully qualified: `my-project.my_dataset.my_table`
+      # - Dataset qualified: `my_dataset.my_table`
+      # - Short name: `my_table`
+      # Quote styles: backticks (`), double quotes ("), or unquoted
+
+    # Default naming conventions (can be overridden per-project)
+    naming:
+      staging_model_prefix: "stg__"
+      intermediate_model_prefix: "int__"
+      mart_model_prefix: ""
+      case_style: snake_case
+      separator: "_"
+      use_layer_folders: true
+      layer_folder_names:
+        staging: staging
+        intermediate: intermediate
+        marts: marts
+
+    github:
+      enabled: false
+      repository: ""
+      default_branch: "main"
+      branch_prefix: "dbt_training_wheels/"
+      auto_create_pr: false
+
+# ============================================
+# PROJECTS - Per-project configuration
+# ============================================
+# Domains come from your folder structure: the folder you upload is one domain,
+# and subfolders inside it are their own domains. Nothing to configure.
+#
+# Example shape (uncomment and fill in your own values):
+#
+# projects:
+#   my_project:
+#     dbt_config:
+#       database:
+#         default_project: my-gcp-project
+#         default_dataset: my_dataset
+#       naming:
+#         mart_model_prefix: "mart__"
+#       github:
+#         base_path: "dbt_projects/my_project"
+#       # GCP projects holding scheduled queries not yet migrated to dbt
+#       scheduled_query_projects: []
+projects: {}
+
+# ============================================
+# CROSS-PROJECT REFERENCES
+# ============================================
+cross_project_refs:
+  enabled: false
+  resolver: dataset
+  projects: []
