@@ -52,7 +52,7 @@ dbt_training_wheels/
 └── templates/          # Jinja2 templates
 ```
 
-For detailed architecture, see [README.md](README.md#architecture).
+For detailed architecture, see [DOCS.md](DOCS.md#architecture).
 
 ## PR Process
 

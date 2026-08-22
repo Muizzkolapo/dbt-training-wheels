@@ -82,3 +82,4 @@ dbt_training_wheels_config.yaml
 Dockerfile*
 docker-compose*.yml
 .docker/
+DOCS.md
