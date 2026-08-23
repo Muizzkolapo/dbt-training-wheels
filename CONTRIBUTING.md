@@ -38,6 +38,33 @@ uv run pre-commit run --all-files
 uv run pytest tests/ -v
 ```
 
+## Regenerating the Tailwind stylesheet
+
+`static/css/tailwind.css` is generated and committed. It replaced the
+`cdn.tailwindcss.com` script, which shipped the JIT compiler to the browser and made a
+network request on every page load of a tool that otherwise only talks to localhost.
+
+Because it is pre-built, it contains only the utility classes present in the source at
+generation time. **If you add a Tailwind class the file doesn't already carry, it will
+have no effect until you regenerate:**
+
+```bash
+cd "$(mktemp -d)"
+cat > tailwind.config.js <<'EOF'
+module.exports = {
+  content: [
+    "<repo>/dbt_training_wheels/templates/**/*.html",
+    "<repo>/dbt_training_wheels/static/js/**/*.js",
+  ],
+}
+EOF
+printf '@tailwind base;\n@tailwind components;\n@tailwind utilities;\n' > input.css
+npx -y tailwindcss@3.4.17 -c tailwind.config.js -i input.css -o out.css --minify
+```
+
+Then copy `out.css` into `dbt_training_wheels/static/css/tailwind.css`, keeping the
+header comment at the top of the existing file.
+
 ## Project Structure
 
 ```
