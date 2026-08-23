@@ -1,7 +1,17 @@
 // ============================================
 // COMPLETION VALIDATION FUNCTIONS
 // ============================================
-// Validators use string step IDs matching config.py
+// Validators use string step IDs matching config.py.
+//
+// Each validator returns a list of criteria: { id, text, completed, optional? }.
+//
+// `optional: true` means "a real default already applies here". An unmet optional
+// criterion does NOT block -- it is the difference between the rail saying "this
+// needs an answer from you" and "defaults stand, safe to skip". Materialization and
+// tags are the two genuine cases: initializeModelConfigurations() gives every model
+// a materialization, and a model with no tags is valid dbt.
+//
+// Everything else is required. A required criterion that is unmet blocks the step.
 
 // Step: Analyze SQL
 function validateAnalyzeCompletion() {
@@ -24,19 +34,121 @@ function validateAnalyzeCompletion() {
     ];
 }
 
-// Step: Final Models
-function validateFinalModelsCompletion() {
-    const finalModelCount = currentQuery?.tables?.length || 0;
+// Step: Staging Layer
+//
+// Mirrors renderLayerStaging()'s own source of truth -- layerClassification.staging,
+// with the prefix applied -- rather than inventing a second one. A validator that
+// disagrees with the renderer is worse than no validator.
+//
+// Zero staging models is a legitimate outcome, not an incomplete step: a script that
+// reads raw tables and goes straight to joining them has nothing to stage.
+function validateLayerStagingCompletion() {
+    const components = analysisResults?.layerClassification?.staging || [];
+    const prefix = analysisResults?.naming?.stagingModelPrefix || 'stg__';
+    const described = components.filter(c => getSavedDescription(`${prefix}${c.name}`).length > 0).length;
+
     return [
         {
-            id: 'final-models-identified',
-            text: `Final models identified (${finalModelCount})`,
-            completed: finalModelCount > 0
+            id: 'staging-analysis-run',
+            text: 'Analysis has run',
+            completed: analysisResults !== null
         },
         {
-            id: 'pattern-reviewed',
-            text: 'Pattern reviewed',
-            completed: stepCompletionState['final-models']?.guidanceViewed === true
+            id: 'staging-described',
+            text: components.length === 0
+                ? 'No staging models — nothing to describe'
+                : `Descriptions written (${described} of ${components.length})`,
+            completed: described === components.length
+        }
+    ];
+}
+
+// Step: Intermediate Layer
+// renderLayerIntermediate() reads getAllModels() rather than layerClassification,
+// so this does too.
+function validateLayerIntermediateCompletion() {
+    const components = (typeof getAllModels === 'function' ? getAllModels() : [])
+        .filter(m => m.layer === 'intermediate');
+    const described = components.filter(m => getSavedDescription(m.name).length > 0).length;
+
+    return [
+        {
+            id: 'intermediate-analysis-run',
+            text: 'Analysis has run',
+            completed: analysisResults !== null
+        },
+        {
+            id: 'intermediate-described',
+            text: components.length === 0
+                ? 'No intermediate models — nothing to describe'
+                : `Descriptions written (${described} of ${components.length})`,
+            completed: described === components.length
+        }
+    ];
+}
+
+// Step: Mart Layer
+// renderLayerMart() renders description inputs for martComponents only -- the
+// finalSelect fallback governs the empty state, not the input list -- so only
+// martComponents are validated here.
+function validateLayerMartCompletion() {
+    const components = (typeof getAllModels === 'function' ? getAllModels() : [])
+        .filter(m => m.layer === 'mart');
+    const described = components.filter(m => getSavedDescription(m.name).length > 0).length;
+
+    return [
+        {
+            id: 'mart-models-exist',
+            text: `Mart models identified (${components.length})`,
+            completed: components.length > 0
+        },
+        {
+            id: 'mart-described',
+            text: components.length === 0
+                ? 'No mart models identified yet'
+                : `Descriptions written (${described} of ${components.length})`,
+            completed: components.length > 0 && described === components.length
+        }
+    ];
+}
+
+// Step: Cross-Project References
+//
+// crossProjectRefsState is a top-level binding in steps/cross-project-refs.js, which
+// is only loaded when the step is enabled -- hence the typeof guard.
+//
+// Note that decisions are pre-populated when refs are detected (each ref defaults to
+// using the cross-project ref), so "decided" means a decision exists and will be
+// applied, not that the user personally chose it.
+function validateCrossProjectRefsCompletion() {
+    const state = typeof crossProjectRefsState !== 'undefined' ? crossProjectRefsState : null;
+
+    if (!state || !state.enabled) {
+        return [
+            {
+                id: 'cross-project-not-enabled',
+                text: 'Cross-project references are not enabled',
+                completed: true
+            }
+        ];
+    }
+
+    const refs = state.crossProjectRefs || [];
+    const decisions = state.decisions || {};
+    const decided = refs.filter(r => decisions[r.original_reference]).length;
+
+    return [
+        {
+            id: 'cross-project-scanned',
+            text: 'Other projects scanned',
+            completed: state.loaded === true
+        },
+        {
+            id: 'cross-project-decided',
+            text: refs.length === 0
+                ? 'No cross-project references found'
+                : `Decisions recorded (${decided} of ${refs.length})`,
+            completed: decided === refs.length
         }
     ];
 }
@@ -55,14 +167,18 @@ function validateMaterializationCompletion() {
             completed: modelCount > 0
         },
         {
+            // Optional: initializeModelConfigurations() already gives every model a
+            // materialization, so leaving this untouched is a real answer, not a gap.
             id: 'materialization-selected',
-            text: 'Materialization strategy selected for all models',
-            completed: allConfigured
+            text: 'Materialization chosen for all models',
+            completed: allConfigured,
+            optional: true
         },
         {
             id: 'configs-saved',
             text: 'Configurations saved',
-            completed: configuredCount > 0
+            completed: configuredCount > 0,
+            optional: true
         }
     ];
 }
@@ -77,14 +193,18 @@ function validateTagsCompletion() {
 
     return [
         {
+            // Optional throughout: a model with no tags is valid dbt. Tags exist for
+            // selective runs, so an untagged conversion is a choice, not an omission.
             id: 'tags-assigned',
             text: 'At least one tag assigned to each model',
-            completed: allHaveTags && Object.keys(modelConfigurations).length === modelCount
+            completed: allHaveTags && Object.keys(modelConfigurations).length === modelCount,
+            optional: true
         },
         {
             id: 'tags-saved',
             text: 'Tag configurations saved',
-            completed: Object.keys(modelConfigurations).length > 0
+            completed: Object.keys(modelConfigurations).length > 0,
+            optional: true
         }
     ];
 }
@@ -156,7 +276,10 @@ function validateDeployCompletion() {
 // Validator mapping using string step IDs
 const stepValidators = {
     'analyze': validateAnalyzeCompletion,
-    'final-models': validateFinalModelsCompletion,
+    'layer-staging': validateLayerStagingCompletion,
+    'layer-intermediate': validateLayerIntermediateCompletion,
+    'layer-mart': validateLayerMartCompletion,
+    'cross-project-refs': validateCrossProjectRefsCompletion,
     'materialization': validateMaterializationCompletion,
     'tags': validateTagsCompletion,
     'sources': validateSourcesCompletion,
@@ -176,16 +299,51 @@ function isStepComplete(stepId) {
     return criteria.length > 0 && criteria.every(c => c.completed);
 }
 
+// The three states the step rail reports. Position in the flow is NOT one of them --
+// walking past a step tells you nothing about whether it has been answered.
+//
+//   blocked   -- a required criterion is unmet; this needs an answer from you
+//   settled   -- every criterion is met
+//   defaulted -- all required criteria are met, but some optional ones are not.
+//                Defaults stand, so the step is safe to skip.
+function getStepState(stepId) {
+    const criteria = validateStepCompletion(stepId);
+
+    // No validator means nothing to answer here.
+    if (criteria.length === 0) return 'defaulted';
+
+    if (criteria.some(c => !c.optional && !c.completed)) return 'blocked';
+
+    return criteria.every(c => c.completed) ? 'settled' : 'defaulted';
+}
+
+// Count of steps still needing an answer, for the rail's blocker jump.
+function getBlockedStepIds() {
+    return StepRegistry.getEnabledSteps()
+        .map(s => s.id)
+        .filter(id => getStepState(id) === 'blocked');
+}
+
+// Steps that are done as far as the user is concerned -- answered, or safely
+// running on defaults. This is what "N of 10 settled" counts.
+function getSettledStepCount() {
+    return StepRegistry.getEnabledSteps()
+        .filter(s => getStepState(s.id) !== 'blocked')
+        .length;
+}
+
 // Check if all previous steps are complete (before current step)
+//
+// Uses required criteria only. Deploy should not be held up because nobody added
+// tags -- an unmet optional criterion means a default applies, not that work is
+// outstanding. (This also removes an inconsistency: steps with no validator used to
+// pass here via [].every() while isStepComplete() reported them incomplete.)
 function checkAllPreviousStepsComplete() {
     const enabledSteps = StepRegistry.getEnabledSteps();
-    const deployStep = enabledSteps.find(s => s.id === 'deploy');
 
-    // Check all enabled steps except deploy
     for (const step of enabledSteps) {
         if (step.id === 'deploy') continue;
-        const criteria = validateStepCompletion(step.id);
-        if (!criteria.every(c => c.completed)) {
+        if (getStepState(step.id) === 'blocked') {
             return false;
         }
     }

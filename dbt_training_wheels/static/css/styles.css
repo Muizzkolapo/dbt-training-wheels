@@ -27,6 +27,16 @@
     /* Functional Colors */
     --brand-error: #e03e3e;               /* Error states only */
 
+    /* === STEP STATE === */
+    /* The three states the step rail reports. Deliberately not red: a blocked step
+       is not an error, it is a question nobody has answered yet. */
+    --state-blocked: #b45309;             /* Needs an answer from you */
+    --state-blocked-tint: rgba(180, 83, 9, 0.10);
+    --state-settled: var(--brand-primary);/* You've answered it */
+    --state-settled-tint: var(--brand-primary-light);
+    --state-defaulted: #94a3b8;           /* Defaults stand — safe to skip */
+    --state-defaulted-tint: rgba(148, 163, 184, 0.12);
+
     /* === MAPPED VARIABLES (for backward compatibility) === */
     --notion-bg: var(--brand-white);
     --notion-bg-secondary: var(--brand-gray-bg);
@@ -119,43 +129,67 @@ body {
     border-left: 3px solid var(--notion-accent);
 }
 
-/* Step status colors - Notion minimalist */
-.step-active {
-    background-color: var(--notion-accent-light);
-    border-color: var(--notion-accent);
-}
+/* ============================================
+   STEP STATE
+   ============================================
+   Two independent axes, and they must stay independent:
 
-.step-active .step-icon-container {
-    background-color: var(--notion-accent-light);
-}
+     .step-blocked / .step-settled / .step-defaulted   what the step knows
+     .step-active                                       where you are standing
 
-.step-active .step-icon {
-    color: var(--notion-accent);
-}
+   A step is never marked done for having been walked past. */
 
-.step-completed {
+.step-blocked {
     background-color: var(--notion-bg);
     border-color: var(--notion-border);
 }
 
-.step-completed .step-icon-container {
-    background-color: var(--brand-primary-light);
+.step-blocked .step-icon-container {
+    background-color: var(--state-blocked-tint);
     position: relative;
 }
 
-.step-completed .step-icon {
-    color: var(--brand-primary);
+.step-blocked .step-icon {
+    color: var(--state-blocked);
 }
 
-/* A11Y: Color-independent status indicator for completed steps */
-.step-completed .step-icon-container::after {
+/* A11Y: every state carries a shape as well as a colour, so the rail is readable
+   without colour vision. Blocked gets a filled dot. */
+.step-blocked .step-icon-container::after {
     content: '';
     position: absolute;
     bottom: -2px;
     right: -2px;
     width: 12px;
     height: 12px;
-    background-color: var(--brand-primary);
+    background-color: var(--state-blocked);
+    border-radius: 50%;
+    border: 2px solid white;
+}
+
+.step-settled {
+    background-color: var(--notion-bg);
+    border-color: var(--notion-border);
+}
+
+.step-settled .step-icon-container {
+    background-color: var(--state-settled-tint);
+    position: relative;
+}
+
+.step-settled .step-icon {
+    color: var(--state-settled);
+}
+
+/* Settled gets a checkmark. */
+.step-settled .step-icon-container::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 12px;
+    height: 12px;
+    background-color: var(--state-settled);
     border-radius: 50%;
     border: 2px solid white;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3'%3E%3Cpath d='M5 13l4 4L19 7'/%3E%3C/svg%3E");
@@ -164,17 +198,129 @@ body {
     background-repeat: no-repeat;
 }
 
-.step-pending {
+.step-defaulted {
     background-color: var(--notion-bg);
     border-color: var(--notion-border);
 }
 
-.step-pending .step-icon-container {
-    background-color: var(--notion-bg-secondary);
+.step-defaulted .step-icon-container {
+    background-color: var(--state-defaulted-tint);
+    position: relative;
 }
 
-.step-pending .step-icon {
+.step-defaulted .step-icon {
+    color: var(--state-defaulted);
+}
+
+/* Defaulted gets a hollow dot -- present, but nothing is waiting on you. */
+.step-defaulted .step-icon-container::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 12px;
+    height: 12px;
+    background-color: white;
+    border-radius: 50%;
+    border: 2px solid var(--state-defaulted);
+}
+
+/* Where you are. Composes on top of any state above, so it only ever changes the
+   card's own framing -- never the icon marker that reports the state. */
+.step-active {
+    background-color: var(--notion-accent-light);
+    border-color: var(--notion-accent);
+}
+
+/* ============================================
+   STEP RAIL SUMMARY
+   ============================================ */
+
+.step-rail-summary {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--notion-border);
+    border-radius: 0.5rem;
+    background-color: var(--notion-bg-secondary);
+    font-size: 0.8125rem;
+    color: var(--notion-text-secondary);
+}
+
+.step-rail-count {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.step-rail-count strong {
+    color: var(--notion-text);
+}
+
+.step-rail-jump {
+    border: 1px solid var(--state-blocked);
+    background: transparent;
+    color: var(--state-blocked);
+    border-radius: 0.375rem;
+    padding: 0.1875rem 0.5rem;
+    font-size: 0.75rem;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.step-rail-jump:hover {
+    background-color: var(--state-blocked-tint);
+}
+
+.step-rail-legend {
+    margin-top: 0.5rem;
+}
+
+.step-rail-legend > summary {
+    cursor: pointer;
     color: var(--notion-text-muted);
+    font-size: 0.75rem;
+}
+
+.step-rail-legend ul {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+}
+
+.step-rail-legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.125rem 0;
+    font-size: 0.75rem;
+}
+
+.step-rail-legend p {
+    margin: 0.5rem 0 0;
+    font-size: 0.75rem;
+    color: var(--notion-text-muted);
+}
+
+.step-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.step-dot-blocked {
+    background-color: var(--state-blocked);
+}
+
+.step-dot-settled {
+    background-color: var(--state-settled);
+}
+
+.step-dot-defaulted {
+    background-color: white;
+    border: 2px solid var(--state-defaulted);
 }
 
 /* Code blocks */

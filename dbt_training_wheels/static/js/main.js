@@ -949,10 +949,17 @@ function renderConversionSteps() {
 
     enabledSteps.forEach((step, idx) => {
         const displayNum = idx + 1;
-        const status = getStepStatus(step.id);
+        const state = getStepState(step.id);
+        const isActive = step.id === currentStep;
+
         const stepElement = document.createElement('button');
-        stepElement.className = `w-full flex items-center gap-4 p-4 rounded-lg border transition-all step-${status}`;
+        // Two independent classes: what the step's state is, and whether you are on it.
+        stepElement.className =
+            `w-full flex items-center gap-4 p-4 rounded-lg border transition-all step-${state}`
+            + (isActive ? ' step-active' : '');
         stepElement.onclick = () => setActiveStep(step.id);
+        if (isActive) stepElement.setAttribute('aria-current', 'step');
+        stepElement.setAttribute('aria-label', `${displayNum}. ${step.title} — ${STEP_STATE_LABEL[state]}`);
 
         stepElement.innerHTML = `
             <div class="p-2 rounded-lg step-icon-container">
@@ -969,18 +976,73 @@ function renderConversionSteps() {
 
         container.appendChild(stepElement);
     });
+
+    renderStepRailSummary(enabledSteps);
 }
 
-// Get step status using display numbers for comparison
+// What each state means, in the words the rail uses.
+const STEP_STATE_LABEL = {
+    blocked: 'needs an answer from you',
+    settled: "you've answered it",
+    defaulted: 'defaults stand — safe to skip'
+};
+
+// The summary under the step list: how many are settled, what the dots mean, and a
+// way to jump straight to the next thing that actually needs you.
+function renderStepRailSummary(enabledSteps) {
+    const container = document.getElementById('conversion-steps');
+    if (!container) return;
+
+    const total = enabledSteps.length;
+    const settled = getSettledStepCount();
+    const blocked = getBlockedStepIds();
+
+    const summary = document.createElement('div');
+    summary.className = 'step-rail-summary';
+    summary.innerHTML = `
+        <div class="step-rail-count">
+            <strong>${settled} of ${total}</strong> settled
+            ${blocked.length > 0
+                ? `<button type="button" class="step-rail-jump" onclick="jumpToNextBlockedStep()">
+                       Next that needs you →
+                   </button>`
+                : ''}
+        </div>
+        <details class="step-rail-legend">
+            <summary>What the dots mean</summary>
+            <ul>
+                <li><span class="step-dot step-dot-blocked" aria-hidden="true"></span>${STEP_STATE_LABEL.blocked}</li>
+                <li><span class="step-dot step-dot-settled" aria-hidden="true"></span>${STEP_STATE_LABEL.settled}</li>
+                <li><span class="step-dot step-dot-defaulted" aria-hidden="true"></span>${STEP_STATE_LABEL.defaulted}</li>
+            </ul>
+            <p>Position in the flow never marks a step done. Jump anywhere, in any order.</p>
+        </details>
+    `;
+    container.appendChild(summary);
+}
+
+// Jump to the next blocked step after the current one, wrapping around.
+function jumpToNextBlockedStep() {
+    const blocked = getBlockedStepIds();
+    if (blocked.length === 0) return;
+
+    const order = StepRegistry.getEnabledSteps().map(s => s.id);
+    const currentIdx = order.indexOf(currentStep);
+
+    const next = blocked.find(id => order.indexOf(id) > currentIdx) || blocked[0];
+    setActiveStep(next);
+}
+
+// Get step status.
+//
+// This used to compare display numbers -- a step counted as "completed" because you
+// had navigated past it, which is not a fact about the step at all. It now reports
+// what validation.js actually knows: blocked / settled / defaulted.
+//
+// Being the current step is a separate, orthogonal thing (see renderConversionSteps),
+// because where you are standing and what you have answered are different questions.
 function getStepStatus(stepId) {
-    const stepDisplayNum = StepRegistry.idToDisplayNum(stepId);
-    const currentDisplayNum = StepRegistry.idToDisplayNum(currentStep);
-
-    if (!stepDisplayNum || !currentDisplayNum) return 'pending';
-
-    if (stepDisplayNum < currentDisplayNum) return 'completed';
-    if (stepDisplayNum === currentDisplayNum) return 'active';
-    return 'pending';
+    return getStepState(stepId);
 }
 
 // Get step icon

@@ -38,6 +38,18 @@ uv run pre-commit run --all-files
 uv run pytest tests/ -v
 ```
 
+### Frontend checks
+
+The step-state logic in `static/js/validation.js` decides what the step rail reports,
+and the Python suite cannot reach it. There is a dependency-free check for it:
+
+```bash
+node tests/js/check-step-state.mjs
+```
+
+It uses only node builtins — no `package.json`, no `npm install`. Node is not a
+project dependency; if you don't have it, skip this and say so in your PR.
+
 ## Regenerating the Tailwind stylesheet
 
 `static/css/tailwind.css` is generated and committed. It replaced the

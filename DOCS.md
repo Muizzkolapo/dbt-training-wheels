@@ -284,13 +284,15 @@ flowchart TB
 
     subgraph Steps["Step Modules"]
         S1[analyze.js]
-        S2[sources.js]
-        S3[tags.js]
-        S4[materialization.js]
-        S5[final-models.js]
-        S6[review.js]
-        S7[deploy.js]
-        S8[cross-project-refs.js]
+        S2[layer-staging.js]
+        S3[layer-intermediate.js]
+        S4[layer-mart.js]
+        S5[cross-project-refs.js]
+        S6[materialization.js]
+        S7[tags.js]
+        S8[sources.js]
+        S9[review.js]
+        S10[deploy.js]
     end
 
     subgraph Utils["Utilities"]
