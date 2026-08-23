@@ -79,60 +79,129 @@
 
         <!-- Main Content Area -->
         <div class="flex-1 flex flex-col overflow-hidden">
-            <div id="empty-state" class="flex-1 flex items-center justify-center text-[#999999]">
-                <div class="text-center max-w-lg">
-                    <svg class="w-20 h-20 mx-auto mb-4 text-[#e5e5e5]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"></path>
-                    </svg>
-                    <h2 class="text-2xl font-semibold text-[#000000] mb-2">
-                        dbt Conversion Assistant
-                    </h2>
-                    <p class="text-[#666666] mb-6">
-                        Transform your scheduled queries into well-structured dbt models following best practices
+            <!-- Home. Replaces the old centred "no query selected" card: the first thing
+                 anyone sees should explain what this does before it asks for a file. -->
+            <div id="empty-state" class="dbt-home-scroll">
+                <div class="dbt-home">
+
+                    <header class="dbt-home-mark">
+                        <span class="dbt-home-mark-dot" aria-hidden="true"></span>
+                        <span class="dbt-home-mark-name">training wheels</span>
+                        <span class="dbt-home-mark-tag">sql &rarr; dbt</span>
+                    </header>
+
+                    <h1 class="dbt-home-headline">Turn the SQL you already run into dbt.</h1>
+                    <p class="dbt-home-promise">
+                        Bring in a query. It works out the layers, you supply the judgement,
+                        and it opens the pull request under your name.
                     </p>
 
-                    <!-- File Upload Section -->
-                    <div class="bg-white border-2 border-dashed border-[#e5e5e5] rounded-lg p-6 mb-6 hover:border-[#999999] transition-colors">
-                        <div id="upload-area" class="cursor-pointer" onclick="document.getElementById('file-input').click()">
-                            <svg class="w-12 h-12 mx-auto mb-3 text-[#999999]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
-                            </svg>
-                            <h3 class="font-medium text-[#000000] mb-1">Upload your SQL file or folder</h3>
-                            <p class="text-sm text-[#999999] mb-3">Click to browse or drag and drop</p>
-                            <div class="flex items-center justify-center gap-3">
-                                <span class="inline-block px-4 py-2 bg-[#4f46e5] text-white rounded-lg text-sm font-medium hover:bg-[#4338ca] transition-colors">
-                                    Choose File
-                                </span>
-                                <button
-                                    type="button"
-                                    class="inline-block px-4 py-2 bg-[#f8fafc] text-[#000000] rounded-lg text-sm font-medium border border-[#e5e5e5] hover:border-[#4f46e5] transition-colors"
-                                    onclick="event.stopPropagation(); document.getElementById('folder-input').click()"
-                                >
-                                    Choose Folder
+                    <div id="upload-area" class="dbt-home-intake">
+                        <div class="dbt-home-tabs" role="tablist" aria-label="How to bring in your SQL">
+                            <button type="button" role="tab" id="home-tab-folder" aria-controls="home-panel-folder"
+                                    aria-selected="true" class="dbt-home-tab is-active"
+                                    onclick="selectHomeIntake('folder')">Drop a folder</button>
+                            <button type="button" role="tab" id="home-tab-file" aria-controls="home-panel-file"
+                                    aria-selected="false" class="dbt-home-tab"
+                                    onclick="selectHomeIntake('file')">Just one file</button>
+                            <button type="button" role="tab" id="home-tab-paste" aria-controls="home-panel-paste"
+                                    aria-selected="false" class="dbt-home-tab"
+                                    onclick="selectHomeIntake('paste')">Paste a query</button>
+                        </div>
+
+                        <div id="home-panel-folder" role="tabpanel" aria-labelledby="home-tab-folder"
+                             class="dbt-home-panel">
+                            <p class="dbt-home-panel-lead">
+                                Each folder becomes its own domain, with its own pull request a
+                                reviewer can merge on its own.
+                            </p>
+                            <button type="button" class="dbt-home-cta"
+                                    onclick="document.getElementById('folder-input').click()">
+                                Browse folder
+                            </button>
+                            <p class="dbt-home-panel-note">Only <code>.sql</code> files are read. Everything else is ignored.</p>
+                        </div>
+
+                        <div id="home-panel-file" role="tabpanel" aria-labelledby="home-tab-file"
+                             class="dbt-home-panel" hidden>
+                            <p class="dbt-home-panel-lead">
+                                One script, one conversion. Good for trying this out on something
+                                you already understand.
+                            </p>
+                            <button type="button" class="dbt-home-cta"
+                                    onclick="document.getElementById('file-input').click()">
+                                Choose file
+                            </button>
+                            <p class="dbt-home-panel-note">A single <code>.sql</code> file.</p>
+                        </div>
+
+                        <div id="home-panel-paste" role="tabpanel" aria-labelledby="home-tab-paste"
+                             class="dbt-home-panel" hidden>
+                            <label for="home-paste-sql" class="dbt-home-panel-lead">
+                                Paste the query. It is saved as a <code>.sql</code> file exactly like an upload.
+                            </label>
+                            <textarea id="home-paste-sql" class="dbt-home-paste" rows="8" spellcheck="false"
+                                      placeholder="SELECT ..."></textarea>
+                            <div class="dbt-home-paste-row">
+                                <input type="text" id="home-paste-name" class="dbt-home-paste-name"
+                                       placeholder="name it, e.g. daily_orders" aria-label="File name for the pasted query">
+                                <button type="button" class="dbt-home-cta" onclick="submitPastedQuery()">
+                                    Convert this query
                                 </button>
                             </div>
-                            <p class="text-xs text-[#999999] mt-2">Only .sql files accepted</p>
+                            <p class="dbt-home-panel-note" id="home-paste-note">
+                                <code>.sql</code> is added for you.
+                            </p>
                         </div>
+
                         <input type="file" id="file-input" accept=".sql" class="hidden" onchange="handleFileUpload(this.files[0])">
                         <input type="file" id="folder-input" class="hidden" webkitdirectory directory multiple onchange="handleFolderUpload(this.files)">
 
-                        <!-- Upload Progress -->
-                        <div id="upload-progress" class="hidden mt-4">
-                            <div class="flex items-center gap-3">
-                                <svg class="animate-spin h-5 w-5 text-[#4f46e5]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                <span class="text-sm text-[#666666]">Uploading...</span>
-                            </div>
+                        <div id="upload-progress" class="dbt-home-progress hidden">
+                            <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Reading your SQL&hellip;</span>
                         </div>
                     </div>
 
-                    <div class="text-[#999999] text-sm mb-6">- or -</div>
-
-                    <p class="text-sm text-[#999999]">
-                        Select an existing query from the left sidebar
+                    <p class="dbt-home-sidebar-hint">
+                        Already uploaded something? Pick it from the list on the left.
                     </p>
+
+                    <details class="dbt-home-anatomy">
+                        <summary>What it does with them</summary>
+                        <ol class="dbt-home-anatomy-list">
+                            <li class="dbt-home-card dbt-home-card-1">
+                                <span class="dbt-home-card-no">01</span>
+                                <h3>Reads the SQL</h3>
+                                <p>Separates the tables your script reads from the tables it builds. Nothing is written anywhere.</p>
+                            </li>
+                            <li class="dbt-home-card dbt-home-card-2">
+                                <span class="dbt-home-card-no">02</span>
+                                <h3>Proposes the layers</h3>
+                                <p>Each part of the script is placed in staging, intermediate or mart, and given a model name.</p>
+                            </li>
+                            <li class="dbt-home-card dbt-home-card-3">
+                                <span class="dbt-home-card-no">03</span>
+                                <h3>Asks you the things it cannot know</h3>
+                                <p>What each model is for, how dbt should build it, how you want to select it later.</p>
+                            </li>
+                            <li class="dbt-home-card dbt-home-card-4">
+                                <span class="dbt-home-card-no">04</span>
+                                <h3>Opens the pull request</h3>
+                                <p>Pushed with your own SSH key, on a branch, authored by you. Someone still has to review it.</p>
+                            </li>
+                        </ol>
+                    </details>
+
+                    <p class="dbt-home-privacy">
+                        This runs on your machine. Your SQL is not sent anywhere &mdash; the only
+                        thing that leaves is the branch you push on the last step, and nothing is
+                        written to git before then.
+                    </p>
+
                 </div>
             </div>
 
@@ -306,6 +375,7 @@
     <script src="{{ url_for('static', filename='js/lineage.js') }}"></script>
 
     <!-- Main orchestration -->
+    <script src="{{ url_for('static', filename='js/home.js') }}"></script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 
     <!-- Interactive tour -->

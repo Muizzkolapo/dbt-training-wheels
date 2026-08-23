@@ -430,15 +430,19 @@ function setupDropZone(elementId) {
         e.stopPropagation();
     }
 
+    // A semantic state class, not the Tailwind utilities this used to add. Those
+    // only ever worked on elements with no competing rule of their own -- any drop
+    // zone styled by our own CSS out-specified them, so the highlight silently did
+    // nothing. Each zone styles .is-dragover for itself.
     ['dragenter', 'dragover'].forEach(eventName => {
         container.addEventListener(eventName, () => {
-            container.classList.add('border-[#4f46e5]', 'bg-[#eef2ff]');
+            container.classList.add('is-dragover');
         }, false);
     });
 
     ['dragleave', 'drop'].forEach(eventName => {
         container.addEventListener(eventName, () => {
-            container.classList.remove('border-[#4f46e5]', 'bg-[#eef2ff]');
+            container.classList.remove('is-dragover');
         }, false);
     });
 

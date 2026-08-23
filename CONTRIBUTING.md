@@ -40,15 +40,16 @@ uv run pytest tests/ -v
 
 ### Frontend checks
 
-The step-state logic in `static/js/validation.js` decides what the step rail reports,
-and the Python suite cannot reach it. There is a dependency-free check for it:
+Some frontend logic decides real outcomes and the Python suite cannot reach it.
+Those parts have dependency-free checks under `tests/js/`:
 
 ```bash
-node tests/js/check-step-state.mjs
+node tests/js/check-step-state.mjs     # what the step rail reports
+node tests/js/check-home-intake.mjs    # naming a pasted query
 ```
 
-It uses only node builtins — no `package.json`, no `npm install`. Node is not a
-project dependency; if you don't have it, skip this and say so in your PR.
+They use only node builtins — no `package.json`, no `npm install`. Node is not a
+project dependency; if you don't have it, skip these and say so in your PR.
 
 ## Regenerating the Tailwind stylesheet
 

@@ -30,8 +30,8 @@ const TOUR_STEPS = [
     {
         id: 'file-upload',
         title: 'File Upload',
-        description: 'Upload a file now to continue the tour. Click "Choose File" or drag and drop a SQL file onto the highlighted area.',
-        tip: 'You can also upload the file by dragging and dropping a file into the sidbar',
+        description: 'Bring in some SQL to continue the tour. Pick a folder, choose a single file, or paste a query — or drag and drop a .sql file onto the highlighted area.',
+        tip: 'You can also drag and drop a file onto the upload box in the sidebar.',
         target: '#upload-area',
         position: 'top',
         highlight: true

@@ -3132,3 +3132,298 @@ pre code span:hover {
         max-width: none;
     }
 }
+
+/* ============================================
+   HOME
+   ============================================
+   The landing view. Replaces a centred "no query selected" card that explained
+   nothing -- the first thing anyone sees should say what this does before it asks
+   for a file.
+
+   Deliberately custom classes rather than Tailwind utilities: tailwind.css is
+   pre-built and committed, so a new utility class here would be inert until someone
+   regenerated it. Custom CSS has no such trap. */
+
+.dbt-home-scroll {
+    flex: 1;
+    overflow-y: auto;
+    background-color: var(--brand-white);
+}
+
+.dbt-home {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: 1.75rem 2rem 4rem;
+}
+
+/* --- mark --- */
+
+.dbt-home-mark {
+    display: flex;
+    align-items: center;
+    gap: 0.6875rem;
+    padding: 0.5rem 0 2.75rem;
+}
+
+.dbt-home-mark-dot {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    border: 2.5px solid var(--brand-primary);
+}
+
+.dbt-home-mark-name {
+    font-size: 1rem;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--notion-text);
+}
+
+.dbt-home-mark-tag {
+    font-family: ui-monospace, 'Monaco', monospace;
+    font-size: 0.75rem;
+    color: var(--notion-text-muted);
+}
+
+/* --- headline --- */
+
+.dbt-home-headline {
+    font-size: 2.5rem;
+    font-weight: 500;
+    letter-spacing: -0.035em;
+    line-height: 1.06;
+    color: var(--notion-text);
+    max-width: 16ch;
+    margin: 0;
+}
+
+.dbt-home-promise {
+    font-size: 0.96875rem;
+    line-height: 1.55;
+    color: var(--notion-text-secondary);
+    margin: 0.875rem 0 0;
+    max-width: 54ch;
+}
+
+/* --- intake --- */
+
+.dbt-home-intake {
+    margin-top: 2.25rem;
+    border: 1px solid var(--notion-border);
+    border-radius: 0.75rem;
+    overflow: hidden;
+    background-color: var(--brand-white);
+}
+
+.dbt-home-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--notion-border);
+    background-color: var(--notion-bg-secondary);
+}
+
+.dbt-home-tab {
+    appearance: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    padding: 0.75rem 1.125rem;
+    font-family: inherit;
+    font-size: 0.8125rem;
+    color: var(--notion-text-secondary);
+    cursor: pointer;
+}
+
+.dbt-home-tab:hover {
+    color: var(--notion-text);
+}
+
+.dbt-home-tab.is-active {
+    color: var(--notion-text);
+    font-weight: 500;
+    border-bottom-color: var(--brand-primary);
+    background-color: var(--brand-white);
+}
+
+.dbt-home-panel {
+    padding: 1.5rem;
+}
+
+.dbt-home-panel-lead {
+    display: block;
+    font-size: 0.875rem;
+    line-height: 1.55;
+    color: var(--notion-text-secondary);
+    margin: 0 0 1rem;
+    max-width: 58ch;
+}
+
+.dbt-home-panel-note {
+    font-size: 0.75rem;
+    color: var(--notion-text-muted);
+    margin: 0.75rem 0 0;
+}
+
+.dbt-home-panel-note code,
+.dbt-home-panel-lead code {
+    font-family: ui-monospace, 'Monaco', monospace;
+    font-size: 0.95em;
+    background-color: var(--notion-bg-secondary);
+    padding: 0.0625rem 0.25rem;
+    border-radius: 0.1875rem;
+}
+
+.dbt-home-cta {
+    appearance: none;
+    border: 1px solid var(--brand-primary);
+    background-color: var(--brand-primary);
+    color: var(--brand-white);
+    border-radius: 0.5rem;
+    padding: 0.5rem 1rem;
+    font-family: inherit;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.dbt-home-cta:hover {
+    background-color: var(--brand-primary-hover);
+}
+
+.dbt-home-cta:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.dbt-home-paste {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--notion-border);
+    border-radius: 0.5rem;
+    font-family: ui-monospace, 'Monaco', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.dbt-home-paste:focus {
+    outline: 2px solid var(--brand-primary);
+    outline-offset: -1px;
+}
+
+.dbt-home-paste-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.dbt-home-paste-name {
+    flex: 1;
+    min-width: 0;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--notion-border);
+    border-radius: 0.5rem;
+    font-family: inherit;
+    font-size: 0.8125rem;
+}
+
+.dbt-home-progress {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 1.5rem 1.5rem;
+    font-size: 0.8125rem;
+    color: var(--notion-text-secondary);
+}
+
+.dbt-home-sidebar-hint {
+    font-size: 0.8125rem;
+    color: var(--notion-text-muted);
+    margin: 1rem 0 0;
+}
+
+/* --- anatomy --- */
+
+.dbt-home-anatomy {
+    margin-top: 2.75rem;
+}
+
+.dbt-home-anatomy > summary {
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--notion-text);
+    padding: 0.5rem 0;
+}
+
+.dbt-home-anatomy-list {
+    list-style: none;
+    margin: 1rem 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem;
+}
+
+.dbt-home-card {
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+}
+
+.dbt-home-card-no {
+    font-family: ui-monospace, 'Monaco', monospace;
+    font-size: 0.6875rem;
+    color: var(--notion-text-muted);
+}
+
+.dbt-home-card h3 {
+    font-size: 0.9375rem;
+    font-weight: 500;
+    color: var(--notion-text);
+    margin: 0.5rem 0 0.375rem;
+}
+
+.dbt-home-card p {
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--notion-text-secondary);
+    margin: 0;
+}
+
+/* Tinted cards, borrowed from the reference layout in new_design/uploads. */
+.dbt-home-card-1 { background-color: #fdeee5; }
+.dbt-home-card-2 { background-color: #f4f7e3; }
+.dbt-home-card-3 { background-color: #e8f0fb; }
+.dbt-home-card-4 { background-color: #f3ecfa; }
+
+/* --- privacy --- */
+
+.dbt-home-privacy {
+    margin-top: 2.5rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--notion-border);
+    font-size: 0.8125rem;
+    line-height: 1.6;
+    color: var(--notion-text-muted);
+    max-width: 62ch;
+}
+
+@media (max-width: 40rem) {
+    .dbt-home { padding: 1.25rem 1.25rem 3rem; }
+    .dbt-home-headline { font-size: 1.875rem; max-width: none; }
+    .dbt-home-tabs { flex-wrap: wrap; }
+    .dbt-home-paste-row { flex-direction: column; }
+}
+
+/* Drag-and-drop highlight. setupDropZone() toggles .is-dragover; each zone decides
+   what that looks like, because the two zones are styled by different systems. */
+
+#sidebar-upload-area.is-dragover {
+    border-color: var(--brand-primary);
+    background-color: #eef2ff;
+}
+
+.dbt-home-intake.is-dragover {
+    border-color: var(--brand-primary);
+    background-color: #eef2ff;
+}
