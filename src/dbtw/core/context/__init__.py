@@ -1,3 +1,4 @@
+from dbtw.core.context.reader import read_project
 from dbtw.core.context.types import (
     Detection,
     DetectionStatus,
@@ -16,4 +17,5 @@ __all__ = [
     "NotADbtProjectError",
     "ProjectContext",
     "SourceInfo",
+    "read_project",
 ]
