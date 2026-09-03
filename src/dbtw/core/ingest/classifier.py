@@ -36,10 +36,12 @@ def _classify_node(node: exp.Expr) -> tuple[StatementKind, str]:
         if node.args.get("into") is not None:
             return "create_table_as", "SELECT INTO creates a table from a query"
         return "select", "parsed as a query"
+    if isinstance(node, exp.Query):
+        return "select", "parsed as a query"
     if isinstance(node, exp.Create):
         return _classify_create(node)
     if isinstance(node, exp.Insert):
-        if isinstance(node.expression, exp.Select):
+        if isinstance(node.expression, exp.Query):
             return "insert_select", "INSERT from a SELECT"
         if isinstance(node.expression, exp.Values):
             return "unsupported", "INSERT ... VALUES has no catalog entry yet"
@@ -72,13 +74,17 @@ def _classify_node(node: exp.Expr) -> tuple[StatementKind, str]:
         return "unsupported", f"sqlglot could not parse this syntax: {node.sql()!r}"
     if isinstance(node, exp.Copy):
         return "unsupported", "COPY loads files; no dbt model equivalent"
+    if isinstance(node, (exp.Transaction, exp.Commit, exp.Rollback)):
+        return "unsupported", "transaction control; dbt owns transaction boundaries"
+    if isinstance(node, exp.IfBlock):
+        return "procedural", "IF/ELSE control flow is procedural code"
     return "unsupported", f"no classification rule for {type(node).__name__}"
 
 
 def _classify_create(node: exp.Create) -> tuple[StatementKind, str]:
     kind = (node.kind or "").upper()
     if kind == "TABLE":
-        if isinstance(node.expression, exp.Select):
+        if isinstance(node.expression, exp.Query):
             return "create_table_as", "CREATE TABLE ... AS SELECT"
         return "ddl_other", "CREATE TABLE without a SELECT (schema-only DDL)"
     if kind == "VIEW":
@@ -93,5 +99,7 @@ def _classify_set(node: exp.Set) -> tuple[StatementKind, str]:
         eq = item.this
         target = eq.this if isinstance(eq, exp.EQ) else None
         if isinstance(target, exp.Parameter):
+            return "variable", "SET assigns a script variable"
+        if item.args.get("kind") == "VARIABLE":
             return "variable", "SET assigns a script variable"
     return "session", "SET changes a session setting"

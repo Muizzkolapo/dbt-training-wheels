@@ -54,3 +54,21 @@ def test_untokenizable_input_falls_back_to_one_span():
     spans = split_sql("SELECT 'unterminated")
     assert len(spans) == 1
     assert spans[0].text == "SELECT 'unterminated"
+
+
+def test_begin_without_transaction_keyword_does_not_glue_the_file():
+    sql = "BEGIN;\nUPDATE x SET a = 1;\nCOMMIT;\nSELECT 1;\nSELECT 2;"
+    spans = split_sql(sql, dialect="postgres")
+    assert len(spans) == 5
+
+
+def test_begin_transaction_keyword_does_not_glue_the_file():
+    sql = "BEGIN TRANSACTION;\nSELECT 1;\nSELECT 2"
+    spans = split_sql(sql, dialect="tsql")
+    assert len(spans) == 3
+
+
+def test_nested_begin_case_end_proc_still_keeps_body_whole():
+    sql = "CREATE PROCEDURE p AS BEGIN SELECT CASE WHEN 1=1 THEN 'a' END; END; SELECT 9"
+    spans = split_sql(sql, dialect="tsql")
+    assert len(spans) == 2

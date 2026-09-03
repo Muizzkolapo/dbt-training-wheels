@@ -110,6 +110,40 @@ def test_copy_is_unsupported():
     assert "COPY loads files" in stmt.reason
 
 
+def test_union_is_select():
+    assert _kind("SELECT 1 UNION SELECT 2") == "select"
+
+
+def test_ctas_with_union_body():
+    assert _kind("CREATE TABLE x AS SELECT 1 AS a UNION ALL SELECT 2 AS a") == "create_table_as"
+
+
+def test_ctas_with_parenthesized_query_body():
+    assert _kind("CREATE TABLE x AS (SELECT 1 AS a)", "snowflake") == "create_table_as"
+
+
+def test_insert_select_with_union_body():
+    assert _kind("INSERT INTO x SELECT a FROM t UNION SELECT a FROM u") == "insert_select"
+
+
+def test_transaction_control_is_unsupported():
+    begin_stmt = classify(_raw("BEGIN"), "postgres")
+    assert begin_stmt.kind == "unsupported"
+    assert "transaction control" in begin_stmt.reason
+    commit_stmt = classify(_raw("COMMIT"), "postgres")
+    assert commit_stmt.kind == "unsupported"
+    assert "transaction control" in commit_stmt.reason
+
+
+def test_snowflake_set_variable_is_variable_not_session():
+    assert _kind("SET x = 5", "snowflake") == "variable"
+
+
+def test_top_level_if_is_procedural():
+    assert _kind("IF @x = 1 SELECT 1", "tsql") == "procedural"
+    assert _kind("IF OBJECT_ID('x') IS NOT NULL DROP TABLE x", "tsql") == "procedural"
+
+
 _TOTALITY_CASES: list[tuple[str, str | None, str]] = [
     ("SELECT a FROM t", None, "select"),
     ("CREATE TABLE x AS SELECT a FROM t", None, "create_table_as"),

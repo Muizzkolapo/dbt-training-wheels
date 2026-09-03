@@ -24,8 +24,8 @@ def ingest(source: Path | str | Sequence[Path | str], dialect: str | None = None
     for file in files:
         try:
             text = file.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            warnings.append(f"skipped {file}: not valid UTF-8 ({exc})")
+        except (OSError, UnicodeDecodeError) as exc:
+            warnings.append(f"skipped {file}: {exc}")
             continue
         for index, span in enumerate(split_sql(text, dialect)):
             statements.append(
@@ -49,7 +49,7 @@ def _resolve_files(source: Path | str | Sequence[Path | str]) -> list[Path]:
     for item in sources:
         path = Path(item)
         if path.is_dir():
-            files.extend(sorted(path.rglob("*.sql")))
+            files.extend(sorted(p for p in path.rglob("*.sql") if p.is_file()))
         elif path.is_file():
             files.append(path)
         else:

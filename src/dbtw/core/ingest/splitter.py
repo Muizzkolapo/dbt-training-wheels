@@ -14,7 +14,7 @@ import sqlglot
 from sqlglot import TokenType
 from sqlglot.errors import SqlglotError
 
-_OPENERS = frozenset({TokenType.BEGIN, TokenType.CASE})
+_BEGIN_TRANSACTION_WORDS = frozenset({"TRANSACTION", "TRAN", "WORK"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,8 +35,17 @@ def split_sql(text: str, dialect: str | None = None) -> list[Span]:
     spans: list[Span] = []
     depth = 0
     start = 0
-    for tok in tokens:
-        if tok.token_type in _OPENERS:
+    for i, tok in enumerate(tokens):
+        if tok.token_type == TokenType.BEGIN:
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+            is_transaction_begin = (
+                nxt is None
+                or nxt.token_type == TokenType.SEMICOLON
+                or nxt.text.upper() in _BEGIN_TRANSACTION_WORDS
+            )
+            if not is_transaction_begin:
+                depth += 1
+        elif tok.token_type == TokenType.CASE:
             depth += 1
         elif tok.token_type == TokenType.END:
             depth = max(0, depth - 1)

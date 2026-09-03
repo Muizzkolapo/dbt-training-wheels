@@ -31,7 +31,7 @@ class UnknownDialectError(Exception):
 class RawStatement:
     """One statement as found in the input, verbatim (leading comments included)."""
 
-    source_file: str  # path as given to ingest(), posix
+    source_file: str  # path as passed to ingest(), normalized by Path(); OS-native separators
     index: int  # 0-based position within its file
     text: str  # original text, stripped of surrounding whitespace, no trailing ;
     line_start: int  # 1-based, inclusive

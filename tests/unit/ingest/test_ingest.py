@@ -52,3 +52,25 @@ def test_non_utf8_file_skipped_with_warning(tmp_path):
     result = ingest(tmp_path, dialect="duckdb")
     assert len(result.statements) == 1
     assert any("bad.sql" in w for w in result.warnings)
+
+
+def test_directory_named_like_a_sql_file_does_not_crash_the_walk(tmp_path):
+    weird_dir = tmp_path / "sub.sql"
+    weird_dir.mkdir()
+    inner = weird_dir / "q.sql"
+    inner.write_text("SELECT 1")
+    result = ingest(tmp_path, dialect="duckdb")
+    assert len(result.statements) == 1
+    assert result.statements[0].source_file == str(inner)
+
+
+def test_unreadable_file_is_skipped_with_a_warning_naming_it(tmp_path):
+    unreadable = tmp_path / "secret.sql"
+    unreadable.write_text("SELECT 1")
+    unreadable.chmod(0o000)
+    try:
+        result = ingest(tmp_path, dialect="duckdb")
+    finally:
+        unreadable.chmod(0o644)
+    assert result.statements == ()
+    assert any(str(unreadable) in w for w in result.warnings)
