@@ -10,7 +10,12 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from dbtw.core.ingest.types import ClassifiedStatement, RawStatement, StatementKind
+from dbtw.core.ingest.types import (
+    ClassifiedStatement,
+    IngestResult,
+    RawStatement,
+    StatementKind,
+)
 
 
 def classify(raw: RawStatement, dialect: str | None = None) -> ClassifiedStatement:
@@ -20,6 +25,10 @@ def classify(raw: RawStatement, dialect: str | None = None) -> ClassifiedStateme
         return ClassifiedStatement(raw=raw, kind="unsupported", reason=f"could not parse: {exc}")
     kind, reason = _classify_node(node)
     return ClassifiedStatement(raw=raw, kind=kind, reason=reason)
+
+
+def classify_statements(result: IngestResult) -> tuple[ClassifiedStatement, ...]:
+    return tuple(classify(raw, result.dialect) for raw in result.statements)
 
 
 def _classify_node(node: exp.Expr) -> tuple[StatementKind, str]:
