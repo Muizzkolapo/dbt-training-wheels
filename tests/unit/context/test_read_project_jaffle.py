@@ -54,3 +54,24 @@ def test_materializations_resolved_from_config():
     assert det.status == "detected"
     assert det.value == "view"
     assert "dbt_project.yml" in det.evidence
+
+
+def test_rfc_acceptance_jaffle_shop():
+    """RFC §7: pointed at jaffle_shop, the reader reports stg_ prefix, no
+    intermediate layer, marts at the model-path root, table project-wide with
+    view for staging, and existing sources — with provenance for each."""
+    ctx = read_project(FIXTURES / "jaffle_shop")
+
+    layer_names = {layer.name for layer in ctx.layers}
+    assert layer_names == {"root", "staging"}  # no intermediate layer
+    assert _layer(ctx, "staging").prefix == "stg_"
+    assert _layer(ctx, "staging").materialization == "view"
+    assert _layer(ctx, "root").materialization == "table"
+    assert ctx.existing_sources == ()
+
+    # every layer convention has a provenance record
+    keys = {d.key for d in ctx.detections}
+    for name in layer_names:
+        assert f"layer.{name}.prefix" in keys
+        assert f"layer.{name}.materialization" in keys
+    assert all(d.evidence for d in ctx.detections)
