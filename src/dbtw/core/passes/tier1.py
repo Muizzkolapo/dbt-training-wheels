@@ -189,3 +189,79 @@ def truncate_insert_pass(state: PassState) -> PassState:
         decisions=tuple(decisions),
         dialect=state.dialect,
     )
+
+
+def grants_pass(state: PassState) -> PassState:
+    pending: list[tuple[int, ClassifiedStatement]] = []
+    drafts = list(state.drafts)
+    decisions = list(state.decisions)
+    for index, stmt in state.pending:
+        if stmt.kind != "grant":
+            pending.append((index, stmt))
+            continue
+        node = _parse(stmt, state.dialect)
+        if isinstance(node, exp.Revoke):
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "grants",
+                    action="dropped: REVOKE has no dbt equivalent",
+                    reason=(
+                        "dbt's grants config is declarative — each run applies exactly "
+                        "the listed grants, so revocation is expressed by omission"
+                    ),
+                )
+            )
+            continue
+        table = _target_of(node)
+        privileges = tuple(p.sql(dialect=state.dialect) for p in node.args.get("privileges") or ())
+        principals = tuple(p.sql(dialect=state.dialect) for p in node.args.get("principals") or ())
+        match = next(
+            (i for i, d in enumerate(drafts) if table is not None and d.name == table.name), None
+        )
+        if match is None:
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "grants",
+                    action=(
+                        "dropped with note: GRANT references an object "
+                        "this conversion doesn't create"
+                    ),
+                    reason=(
+                        "dbt grants attach to a model's config; there is "
+                        "no model here to attach them to"
+                    ),
+                )
+            )
+            continue
+        d = drafts[match]
+        new_grants = d.grants + tuple((priv, principals) for priv in privileges)
+        drafts[match] = ModelDraft(
+            name=d.name,
+            body=d.body,
+            materialization=d.materialization,
+            grants=new_grants,
+            source_indices=d.source_indices,
+            leading_comments=d.leading_comments,
+        )
+        decisions.append(
+            _decision(
+                stmt,
+                index,
+                "grants",
+                action=f"attached grants to model {d.name}",
+                reason=(
+                    "GRANT statements become the model's grants config, "
+                    "applied by dbt after each build"
+                ),
+            )
+        )
+    return PassState(
+        pending=tuple(pending),
+        drafts=tuple(drafts),
+        decisions=tuple(decisions),
+        dialect=state.dialect,
+    )
