@@ -1,0 +1,9 @@
+name: warehouse_proj
+config-version: 2
+model-paths: ["models", "extra_models"]
+vars:
+  start_date: "2020-01-01"
+  region: eu
+models:
+  warehouse_proj:
+    +materialized: view
