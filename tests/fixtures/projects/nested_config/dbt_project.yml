@@ -1,0 +1,9 @@
+name: nested
+config-version: 2
+model-paths: ["models"]
+models:
+  nested:
+    materialized: view
+    marts:
+      finance:
+        +materialized: table

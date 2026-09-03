@@ -1,0 +1,9 @@
+name: jaffle_shop
+config-version: 2
+profile: jaffle_shop
+model-paths: ["models"]
+models:
+  jaffle_shop:
+    +materialized: table
+    staging:
+      +materialized: view
