@@ -46,3 +46,21 @@ def test_malformed_dbt_project_yml_raises_with_reason(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: [unclosed\n  bad: :\n")
     with pytest.raises(NotADbtProjectError, match="could not be parsed"):
         read_project(tmp_path)
+
+
+def test_mixed_prefixes_are_undetermined():
+    ctx = read_project(FIXTURES / "no_conventions")
+    det = {d.key: d for d in ctx.detections}["layer.root.prefix"]
+    assert det.status == "undetermined"
+    assert "customers" in det.evidence and "stg_orders" in det.evidence
+
+
+def test_single_model_layer_is_undetermined(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: solo\nconfig-version: 2\n")
+    staging = tmp_path / "models" / "staging"
+    staging.mkdir(parents=True)
+    (staging / "stg_only.sql").write_text("select 1 as id")
+    ctx = read_project(tmp_path)
+    det = {d.key: d for d in ctx.detections}["layer.staging.prefix"]
+    assert det.status == "undetermined"
+    assert "only one model" in det.evidence
