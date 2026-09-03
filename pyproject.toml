@@ -9,7 +9,7 @@ description = "Training wheels for dbt: convert raw SQL into dbt models that mat
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6"]
+dependencies = ["pyyaml>=6", "sqlglot>=30,<31"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380"]
@@ -19,6 +19,7 @@ packages = ["src/dbtw"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
 
 [tool.ruff]
 line-length = 100
