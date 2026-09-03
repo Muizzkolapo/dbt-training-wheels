@@ -120,3 +120,72 @@ def build_models_pass(state: PassState) -> PassState:
     return PassState(
         pending=tuple(pending), drafts=drafts, decisions=tuple(decisions), dialect=state.dialect
     )
+
+
+def truncate_insert_pass(state: PassState) -> PassState:
+    pending = list(state.pending)
+    drafts = state.drafts
+    decisions = list(state.decisions)
+    consumed: set[int] = set()
+    truncates: dict[tuple[str, str], tuple[int, ClassifiedStatement]] = {}
+    for index, stmt in pending:
+        if stmt.kind == "truncate":
+            node = _parse(stmt, state.dialect)
+            table = _target_of(node)
+            if table is not None:
+                truncates[(stmt.raw.source_file, table.name)] = (index, stmt)
+            continue
+        if stmt.kind != "insert_select":
+            continue
+        node = _parse(stmt, state.dialect)
+        table = _target_of(node)
+        if table is None:
+            continue
+        pair = truncates.get((stmt.raw.source_file, table.name))
+        if pair is None or pair[0] > index:
+            continue
+        if isinstance(node.this, exp.Schema):
+            decisions.append(
+                Decision(
+                    key=f"tier1.truncate_insert.{stmt.raw.source_file}:{index}",
+                    tier=2,
+                    action=(
+                        f"deferred: TRUNCATE+INSERT into {table.name} has an explicit column list"
+                    ),
+                    reason=("column-to-column mapping is a Tier 2 decision; left for that pass"),
+                    source_file=stmt.raw.source_file,
+                    line_start=stmt.raw.line_start,
+                    line_end=stmt.raw.line_end,
+                )
+            )
+            del truncates[(stmt.raw.source_file, table.name)]
+            continue
+        body = node.expression.sql(dialect=state.dialect, pretty=True)
+        draft = ModelDraft(
+            name=table.name,
+            body=body,
+            materialization="table",
+            grants=(),
+            source_indices=(pair[0], index),
+            leading_comments=tuple(c.strip() for c in (node.comments or ())),
+        )
+        drafts, _ = _upsert_draft(drafts, draft)
+        consumed.update({pair[0], index})
+        del truncates[(stmt.raw.source_file, table.name)]
+        decisions.append(
+            _decision(
+                stmt,
+                index,
+                "truncate_insert",
+                action=(
+                    f"TRUNCATE + INSERT INTO {table.name} became one model (materialized='table')"
+                ),
+                reason="truncate-then-insert is a full rebuild, like dbt's table materialization",
+            )
+        )
+    return PassState(
+        pending=tuple((i, s) for i, s in pending if i not in consumed),
+        drafts=drafts,
+        decisions=tuple(decisions),
+        dialect=state.dialect,
+    )
