@@ -1,5 +1,8 @@
+import pytest
+
 from dbtw.core.ingest import RawStatement
 from dbtw.core.ingest.classifier import classify
+from dbtw.core.ingest.types import StatementKind
 
 
 def _raw(text: str) -> RawStatement:
@@ -60,3 +63,78 @@ def test_parse_error_is_unsupported_with_reason():
 def test_reason_is_always_populated():
     for text in ["SELECT 1", "CREATE TABLE x AS SELECT 1 AS a", "SELEC nope"]:
         assert classify(_raw(text)).reason
+
+
+def test_dml_kinds():
+    assert _kind("DELETE FROM x WHERE a > 1") == "delete"
+    assert _kind("UPDATE x SET a = 1 WHERE b = 2") == "update"
+    assert _kind("TRUNCATE TABLE x") == "truncate"
+
+
+def test_grant():
+    assert _kind("GRANT SELECT ON x TO reporting_role") == "grant"
+
+
+def test_variables():
+    assert _kind("DECLARE @d DATE = '2024-01-01'", "tsql") == "variable"
+    assert _kind("SET @x = 5", "tsql") == "variable"
+
+
+def test_session_settings():
+    assert _kind("SET search_path = analytics", "postgres") == "session"
+    assert _kind("USE analytics", "tsql") == "session"
+    assert _kind("ALTER SESSION SET QUERY_TAG = 'x'", "snowflake") == "session"
+
+
+def test_ddl_other():
+    assert _kind("CREATE INDEX ix ON x (a)") == "ddl_other"
+    assert _kind("ALTER TABLE x ADD COLUMN b INT") == "ddl_other"
+    assert _kind("DROP TABLE IF EXISTS x") == "ddl_other"
+
+
+def test_procedural():
+    assert _kind("CREATE PROCEDURE p AS BEGIN SELECT 1; END", "tsql") == "procedural"
+    assert _kind("EXEC p", "tsql") == "procedural"
+
+
+def test_command_fallback_is_unsupported():
+    stmt = classify(_raw("PRINT 'hi'"), "tsql")
+    assert stmt.kind == "unsupported"
+    assert "could not parse this syntax" in stmt.reason
+    assert "PRINT" in stmt.reason  # the raw text is carried in the reason
+
+
+def test_copy_is_unsupported():
+    stmt = classify(_raw("COPY INTO t FROM @stage"), "snowflake")
+    assert stmt.kind == "unsupported"
+    assert "COPY loads files" in stmt.reason
+
+
+_TOTALITY_CASES: list[tuple[str, str | None, str]] = [
+    ("SELECT a FROM t", None, "select"),
+    ("CREATE TABLE x AS SELECT a FROM t", None, "create_table_as"),
+    ("CREATE VIEW v AS SELECT a FROM t", None, "create_view"),
+    ("INSERT INTO x SELECT a FROM t", None, "insert_select"),
+    ("MERGE INTO x USING y ON x.id = y.id WHEN MATCHED THEN UPDATE SET a = y.a", None, "merge"),
+    ("DELETE FROM x", None, "delete"),
+    ("UPDATE x SET a = 1", None, "update"),
+    ("TRUNCATE TABLE x", None, "truncate"),
+    ("DECLARE @d INT = 1", "tsql", "variable"),
+    ("USE analytics", "tsql", "session"),
+    ("GRANT SELECT ON x TO r", None, "grant"),
+    ("DROP TABLE x", None, "ddl_other"),
+    ("EXEC p", "tsql", "procedural"),
+    ("SELEC nope", None, "unsupported"),
+]
+
+
+@pytest.mark.parametrize(("sql", "dialect", "expected"), _TOTALITY_CASES)
+def test_every_kind_is_reachable(sql, dialect, expected):
+    assert _kind(sql, dialect) == expected
+
+
+def test_totality_cases_cover_every_kind():
+    import typing
+
+    covered = {expected for _, _, expected in _TOTALITY_CASES}
+    assert covered == set(typing.get_args(StatementKind))
