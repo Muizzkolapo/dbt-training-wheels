@@ -31,11 +31,26 @@ def read_project(root: Path | str) -> ProjectContext:
     raw = _load_project_yaml(root)
     detections: list[Detection] = []
 
-    project_name = str(raw.get("name", ""))
-    models_config = (raw.get("models") or {}).get(project_name)
+    name = raw.get("name")
+    if not isinstance(name, str) or not name:
+        raise NotADbtProjectError(f"dbt_project.yml at {root} has no usable name")
+    project_name = name
+
+    models_raw = raw.get("models")
+    if models_raw is not None and not isinstance(models_raw, dict):
+        raise NotADbtProjectError(f"dbt_project.yml at {root} has a non-mapping 'models' key")
+    models_config = (models_raw or {}).get(project_name)
 
     if "model-paths" in raw:
-        model_paths = tuple(str(p) for p in raw["model-paths"])
+        raw_model_paths = raw["model-paths"]
+        if not isinstance(raw_model_paths, list) or not all(
+            isinstance(p, str) for p in raw_model_paths
+        ):
+            raise NotADbtProjectError(
+                f"dbt_project.yml at {root} has a malformed 'model-paths'"
+                " (expected a list of strings)"
+            )
+        model_paths = tuple(raw_model_paths)
         detections.append(
             Detection(
                 key="project.model_paths",
@@ -55,11 +70,14 @@ def read_project(root: Path | str) -> ProjectContext:
             )
         )
 
-    vars_block = raw.get("vars") or {}
+    vars_raw = raw.get("vars")
+    if vars_raw is not None and not isinstance(vars_raw, dict):
+        raise NotADbtProjectError(f"dbt_project.yml at {root} has a non-mapping 'vars' key")
+    vars_block = vars_raw or {}
     vars_declared = tuple(sorted((str(k), v) for k, v in vars_block.items()))
 
-    models = _collect_models(root, model_paths)
-    layers, layer_detections = _build_layers(models, model_paths, models_config)
+    models, layer_bases = _collect_models(root, model_paths)
+    layers, layer_detections = _build_layers(models, layer_bases, models_config)
     detections.extend(layer_detections)
 
     found_sources, source_warnings = _collect_sources(root, model_paths)
@@ -82,15 +100,21 @@ def _load_project_yaml(root: Path) -> dict[str, Any]:
         raise NotADbtProjectError(f"no dbt_project.yml at {root}")
     try:
         loaded = yaml.safe_load(project_file.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
         raise NotADbtProjectError(f"dbt_project.yml at {root} could not be parsed: {exc}") from exc
     if not isinstance(loaded, dict):
         raise NotADbtProjectError(f"dbt_project.yml at {root} is not a mapping")
     return loaded
 
 
-def _collect_models(root: Path, model_paths: tuple[str, ...]) -> list[ModelInfo]:
+def _collect_models(
+    root: Path, model_paths: tuple[str, ...]
+) -> tuple[list[ModelInfo], dict[str, str]]:
     models: list[ModelInfo] = []
+    # layer name -> the model-path it was found under, so _build_layers can
+    # derive <model-path>/<layer> without depending on how deep any one
+    # model happens to be nested inside that layer.
+    layer_bases: dict[str, str] = {}
     for mp in model_paths:
         base = root / mp
         if not base.is_dir():
@@ -98,6 +122,7 @@ def _collect_models(root: Path, model_paths: tuple[str, ...]) -> list[ModelInfo]
         for sql in sorted(base.rglob("*.sql")):
             rel_to_base = sql.relative_to(base)
             layer = rel_to_base.parts[0] if len(rel_to_base.parts) > 1 else "root"
+            layer_bases.setdefault(layer, mp)
             models.append(
                 ModelInfo(
                     name=sql.stem,
@@ -105,7 +130,7 @@ def _collect_models(root: Path, model_paths: tuple[str, ...]) -> list[ModelInfo]
                     layer=layer,
                 )
             )
-    return models
+    return models, layer_bases
 
 
 def _collect_sources(
@@ -121,9 +146,10 @@ def _collect_sources(
             rel = yml.relative_to(root).as_posix()
             try:
                 loaded = yaml.safe_load(yml.read_text(encoding="utf-8"))
-            except yaml.YAMLError as exc:
-                # Demo lesson: broken YAML exists in real projects. Skip the
-                # file, but record the skip — never silently, never fatally.
+            except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
+                # Demo lesson: broken YAML (and files that aren't even valid
+                # text) exist in real projects. Skip the file, but record the
+                # skip — never silently, never fatally.
                 warnings.append(
                     Detection(
                         key="warning.unparseable_yaml",
@@ -135,10 +161,16 @@ def _collect_sources(
                 continue
             if not isinstance(loaded, dict):
                 continue
-            for src in loaded.get("sources") or []:
+            sources_raw = loaded.get("sources")
+            if not isinstance(sources_raw, list):
+                continue
+            for src in sources_raw:
                 if not isinstance(src, dict) or "name" not in src:
                     continue
-                for table in src.get("tables") or []:
+                tables_raw = src.get("tables")
+                if not isinstance(tables_raw, list):
+                    continue
+                for table in tables_raw:
                     if isinstance(table, dict) and "name" in table:
                         sources.append(
                             SourceInfo(
@@ -189,7 +221,7 @@ def _detect_prefix(stems: list[str], layer_name: str, layer_path: str) -> Detect
 
 def _build_layers(
     models: list[ModelInfo],
-    model_paths: tuple[str, ...],
+    layer_bases: dict[str, str],
     models_config: dict[str, Any] | None,
 ) -> tuple[list[LayerInfo], list[Detection]]:
     groups: dict[str, list[ModelInfo]] = defaultdict(list)
@@ -199,9 +231,11 @@ def _build_layers(
     detections: list[Detection] = []
     for layer_name in sorted(groups):
         members = groups[layer_name]
-        # A layer's dir path: model-path root for "root", else <model-path>/<dir>.
-        first_path = members[0].path
-        dir_path = first_path.rsplit("/", 1)[0]
+        # A layer's dir path: model-path root for "root", else <model-path>/<layer>.
+        # Derived from the model-path the layer was found under — not from any one
+        # member's file path, which may sit arbitrarily deep inside the layer dir.
+        base = layer_bases[layer_name]
+        dir_path = base if layer_name == "root" else f"{base}/{layer_name}"
         det = _detect_prefix([m.name for m in members], layer_name, dir_path)
         detections.append(det)
 

@@ -64,3 +64,46 @@ def test_single_model_layer_is_undetermined(tmp_path):
     det = {d.key: d for d in ctx.detections}["layer.staging.prefix"]
     assert det.status == "undetermined"
     assert "only one model" in det.evidence
+
+
+def test_model_paths_null_raises(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: p\nmodel-paths: null\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
+
+
+def test_model_paths_bare_string_raises(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: p\nmodel-paths: models\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
+
+
+def test_models_scalar_raises(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: p\nmodels: foo\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
+
+
+def test_vars_scalar_raises(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: p\nvars: foo\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
+
+
+def test_missing_name_raises(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("config-version: 2\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
+
+
+def test_empty_name_raises(tmp_path):
+    (tmp_path / "dbt_project.yml").write_text("name: ''\nconfig-version: 2\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
+
+
+def test_non_utf8_dbt_project_yml_raises(tmp_path):
+    # 0xe9 alone (no continuation bytes) is not valid UTF-8.
+    (tmp_path / "dbt_project.yml").write_bytes(b"name: caf\xe9\n")
+    with pytest.raises(NotADbtProjectError):
+        read_project(tmp_path)
