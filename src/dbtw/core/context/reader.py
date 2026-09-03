@@ -19,6 +19,7 @@ from dbtw.core.context.types import (
     ModelInfo,
     NotADbtProjectError,
     ProjectContext,
+    SourceInfo,
 )
 
 _DBT_DEFAULT_MODEL_PATHS = ("models",)
@@ -61,12 +62,15 @@ def read_project(root: Path | str) -> ProjectContext:
     layers, layer_detections = _build_layers(models, model_paths, models_config)
     detections.extend(layer_detections)
 
+    found_sources, source_warnings = _collect_sources(root, model_paths)
+    detections.extend(source_warnings)
+
     return ProjectContext(
         project_name=project_name,
         model_paths=model_paths,
         layers=tuple(layers),
         existing_models=tuple(models),
-        existing_sources=(),
+        existing_sources=tuple(found_sources),
         vars_declared=vars_declared,
         detections=tuple(detections),
     )
@@ -102,6 +106,48 @@ def _collect_models(root: Path, model_paths: tuple[str, ...]) -> list[ModelInfo]
                 )
             )
     return models
+
+
+def _collect_sources(
+    root: Path, model_paths: tuple[str, ...]
+) -> tuple[list[SourceInfo], list[Detection]]:
+    sources: list[SourceInfo] = []
+    warnings: list[Detection] = []
+    for mp in model_paths:
+        base = root / mp
+        if not base.is_dir():
+            continue
+        for yml in sorted([*base.rglob("*.yml"), *base.rglob("*.yaml")]):
+            rel = yml.relative_to(root).as_posix()
+            try:
+                loaded = yaml.safe_load(yml.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                # Demo lesson: broken YAML exists in real projects. Skip the
+                # file, but record the skip — never silently, never fatally.
+                warnings.append(
+                    Detection(
+                        key="warning.unparseable_yaml",
+                        status="undetermined",
+                        value=None,
+                        evidence=f"skipped {rel}: {exc}",
+                    )
+                )
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            for src in loaded.get("sources") or []:
+                if not isinstance(src, dict) or "name" not in src:
+                    continue
+                for table in src.get("tables") or []:
+                    if isinstance(table, dict) and "name" in table:
+                        sources.append(
+                            SourceInfo(
+                                source_name=str(src["name"]),
+                                table=str(table["name"]),
+                                declared_in=rel,
+                            )
+                        )
+    return sources, warnings
 
 
 def _detect_prefix(stems: list[str], layer_name: str, layer_path: str) -> Detection:

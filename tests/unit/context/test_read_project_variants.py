@@ -36,3 +36,32 @@ def test_plus_materialized_wins_over_bare_on_same_node(tmp_path):
     ctx = read_project(tmp_path)
     root = next(layer for layer in ctx.layers if layer.name == "root")
     assert root.materialization == "table"
+
+
+def test_sources_are_collected_with_declaring_file():
+    ctx = read_project(FIXTURES / "with_sources")
+    pairs = {(s.source_name, s.table) for s in ctx.existing_sources}
+    assert pairs == {("raw", "customers"), ("raw", "orders")}
+    assert all(s.declared_in == "models/staging/sources.yml" for s in ctx.existing_sources)
+
+
+def test_non_source_yaml_is_ignored():
+    ctx = read_project(FIXTURES / "jaffle_shop")  # schema.yml has models:, no sources:
+    assert ctx.existing_sources == ()
+
+
+def test_unparseable_yaml_is_recorded_not_fatal(tmp_path):
+    """Demo lesson: real projects contain broken YAML. Skip the file, but
+    record the skip as a Detection — never silently, never fatally."""
+    (tmp_path / "dbt_project.yml").write_text("name: p\nconfig-version: 2\n")
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "broken.yml").write_text("sources: [unclosed\n  bad: :\n")
+    (models / "good.yml").write_text(
+        "version: 2\nsources:\n  - name: raw\n    tables:\n      - name: events\n"
+    )
+    ctx = read_project(tmp_path)
+    assert {(s.source_name, s.table) for s in ctx.existing_sources} == {("raw", "events")}
+    warn = next(d for d in ctx.detections if d.key == "warning.unparseable_yaml")
+    assert warn.status == "undetermined"
+    assert "models/broken.yml" in warn.evidence
