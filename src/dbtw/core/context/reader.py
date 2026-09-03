@@ -31,6 +31,7 @@ def read_project(root: Path | str) -> ProjectContext:
     detections: list[Detection] = []
 
     project_name = str(raw.get("name", ""))
+    models_config = (raw.get("models") or {}).get(project_name)
 
     if "model-paths" in raw:
         model_paths = tuple(str(p) for p in raw["model-paths"])
@@ -57,7 +58,7 @@ def read_project(root: Path | str) -> ProjectContext:
     vars_declared = tuple(sorted((str(k), v) for k, v in vars_block.items()))
 
     models = _collect_models(root, model_paths)
-    layers, layer_detections = _build_layers(models, model_paths)
+    layers, layer_detections = _build_layers(models, model_paths, models_config)
     detections.extend(layer_detections)
 
     return ProjectContext(
@@ -141,7 +142,9 @@ def _detect_prefix(stems: list[str], layer_name: str, layer_path: str) -> Detect
 
 
 def _build_layers(
-    models: list[ModelInfo], model_paths: tuple[str, ...]
+    models: list[ModelInfo],
+    model_paths: tuple[str, ...],
+    models_config: dict[str, Any] | None,
 ) -> tuple[list[LayerInfo], list[Detection]]:
     groups: dict[str, list[ModelInfo]] = defaultdict(list)
     for m in models:
@@ -155,12 +158,63 @@ def _build_layers(
         dir_path = first_path.rsplit("/", 1)[0]
         det = _detect_prefix([m.name for m in members], layer_name, dir_path)
         detections.append(det)
+
+        parts = () if layer_name == "root" else (layer_name,)
+        mat = _materialization_for(models_config, parts)
+        mat_key = f"layer.{layer_name}.materialization"
+        if mat is not None:
+            detections.append(
+                Detection(
+                    key=mat_key,
+                    status="detected",
+                    value=mat,
+                    evidence=f"models config in dbt_project.yml for {dir_path}",
+                )
+            )
+        else:
+            detections.append(
+                Detection(
+                    key=mat_key,
+                    status="undetermined",
+                    value=None,
+                    evidence=f"no materialized setting found for {dir_path} in dbt_project.yml",
+                )
+            )
+
         layers.append(
             LayerInfo(
                 name=layer_name,
                 path=dir_path,
                 prefix=det.value if det.status == "detected" else None,
-                materialization=None,
+                materialization=mat,
             )
         )
     return layers, detections
+
+
+def _materialization_for(
+    models_config: dict[str, Any] | None, layer_dir_parts: tuple[str, ...]
+) -> str | None:
+    """Nearest-ancestor materialization for a dir under the models config tree.
+
+    layer_dir_parts is the path under the model-path root, () for root.
+    Accepts both '+materialized' and 'materialized' at every level.
+    """
+    if models_config is None:
+        return None
+    node: Any = models_config
+    found = _mat_at(node)
+    for part in layer_dir_parts:
+        child = node.get(part) if isinstance(node, dict) else None
+        if not isinstance(child, dict):
+            break
+        node = child
+        found = _mat_at(node) or found
+    return found
+
+
+def _mat_at(node: Any) -> str | None:
+    if not isinstance(node, dict):
+        return None
+    value = node.get("+materialized", node.get("materialized"))
+    return str(value) if value is not None else None

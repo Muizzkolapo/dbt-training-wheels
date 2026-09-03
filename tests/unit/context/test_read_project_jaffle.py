@@ -44,3 +44,13 @@ def test_root_layer_has_no_prefix_as_a_detected_finding():
     det = {d.key: d for d in ctx.detections}["layer.root.prefix"]
     assert det.status == "detected"
     assert det.value is None
+
+
+def test_materializations_resolved_from_config():
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    assert _layer(ctx, "staging").materialization == "view"
+    assert _layer(ctx, "root").materialization == "table"  # project default
+    det = {d.key: d for d in ctx.detections}["layer.staging.materialization"]
+    assert det.status == "detected"
+    assert det.value == "view"
+    assert "dbt_project.yml" in det.evidence
