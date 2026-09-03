@@ -1,3 +1,4 @@
+from dbtw.core.ingest.ingestor import ingest
 from dbtw.core.ingest.types import (
     ClassifiedStatement,
     IngestResult,
@@ -12,4 +13,5 @@ __all__ = [
     "RawStatement",
     "StatementKind",
     "UnknownDialectError",
+    "ingest",
 ]
