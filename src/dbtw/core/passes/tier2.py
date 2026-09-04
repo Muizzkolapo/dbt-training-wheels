@@ -38,7 +38,15 @@ def _target_of(node: exp.Expr) -> exp.Table | None:
 
 
 def _decision(
-    stmt: ClassifiedStatement, index: int, name: str, tier: Tier, action: str, reason: str
+    stmt: ClassifiedStatement,
+    index: int,
+    name: str,
+    tier: Tier,
+    action: str,
+    reason: str,
+    question: str = "",
+    chosen: str = "",
+    alternatives: tuple[str, ...] = (),
 ) -> Decision:
     return Decision(
         key=f"tier2.{name}.{stmt.raw.source_file}:{index}",
@@ -48,6 +56,9 @@ def _decision(
         source_file=stmt.raw.source_file,
         line_start=stmt.raw.line_start,
         line_end=stmt.raw.line_end,
+        question=question,
+        chosen=chosen,
+        alternatives=alternatives,
     )
 
 
@@ -174,6 +185,170 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                     "truncate-then-insert is a full rebuild, like dbt's table materialization; "
                     "the column list maps positionally onto the SELECT's projections"
                 ),
+            )
+        )
+    return PassState(
+        pending=tuple((i, s) for i, s in pending if i not in consumed),
+        drafts=drafts,
+        decisions=tuple(decisions),
+        dialect=state.dialect,
+    )
+
+
+def _merge_unique_key(node: exp.Merge, target: str) -> tuple[tuple[str, ...], str | None]:
+    """Target-side column names from the ON clause; `(keys, refusal_reason)`.
+
+    `refusal_reason` is `None` iff `keys` is non-empty; otherwise it names why
+    no key could be extracted, for `merge_pass` to turn into a Decision:
+
+    - `"disjunctive"`: the ON clause contains an `exp.Or` anywhere — dbt's
+      `unique_key` is inherently a conjunction of columns, so a disjunctive
+      match condition (`t.id = s.id OR t.legacy_id = s.legacy_id`) has no
+      `unique_key` representation. Detected before any equality is walked,
+      so an OR anywhere in the clause refuses the whole clause rather than
+      silently keying on whichever equalities happen not to sit under it.
+    - `"no_key"`: walking `find_all(exp.EQ)` (which descends through `And`
+      transparently, so `t.id = s.id` and `t.a = s.a AND t.b = s.b` both
+      yield their keys) found no usable equality. An equality is usable only
+      when both sides are `exp.Column` (`ON 1 = 1` has neither) AND exactly
+      one side's table qualifier matches `target` (the MERGE target's alias,
+      or its bare name when unaliased) — `s.src_id = t.id` keys on `id`, not
+      `src_id`, because `unique_key` must name a column on the target model,
+      never the source. An equality qualified to neither side of the target
+      (`other.x = elsewhere.y`) or ambiguously to both is excluded, same as
+      one with a non-Column side. A target column equated twice (`t.id =
+      s.id AND t.id = s.id2`) dedupes to one entry, in the order the
+      equalities were written.
+    """
+    on = node.args["on"]
+    if next(on.find_all(exp.Or), None) is not None:
+        return (), "disjunctive"
+    keys: list[str] = []
+    for eq in on.find_all(exp.EQ):
+        if not (isinstance(eq.this, exp.Column) and isinstance(eq.expression, exp.Column)):
+            continue
+        this_is_target = eq.this.table == target
+        expression_is_target = eq.expression.table == target
+        if this_is_target and not expression_is_target:
+            key_column = eq.this
+        elif expression_is_target and not this_is_target:
+            key_column = eq.expression
+        else:
+            continue  # ambiguous: neither side (or both sides) qualify to the target
+        if key_column.name not in keys:
+            keys.append(key_column.name)
+    if not keys:
+        return (), "no_key"
+    return tuple(keys), None
+
+
+def _merge_body(node: exp.Merge, dialect: str | None) -> str:
+    """The MERGE's USING source, rendered as a standalone SELECT.
+
+    A subquery USING (`USING (SELECT ...) AS s`) already *is* a query — its
+    inner query is used directly. A plain table USING (`USING stg_c AS s`)
+    isn't a query at all, so it's wrapped as `SELECT * FROM <table>`.
+    """
+    using = node.args["using"]
+    if isinstance(using, exp.Subquery):
+        query = using.this
+    else:
+        query = exp.select("*").from_(using.copy())
+    return query.sql(dialect=dialect, pretty=True)
+
+
+def merge_pass(state: PassState) -> PassState:
+    """Convert a pending MERGE into an incremental model keyed on its ON clause.
+
+    A MERGE's matched/not-matched branches are exactly what dbt's `merge`
+    incremental strategy performs against `unique_key` — so the ON clause's
+    equality columns become the draft's `unique_key`, and the USING source
+    becomes the model body (see `_merge_body`). Whether that key actually
+    identifies a row uniquely isn't decidable from the SQL alone (a MERGE
+    still runs correctly even if `ON` picks out more than one existing row,
+    just non-deterministically), so this is a tier-2 Decision: the user is
+    asked to confirm the key, with "append every row" offered as the
+    alternative to keeping the match/update semantics at all.
+
+    A MERGE whose ON clause yields no extractable key can't be mapped to
+    `unique_key` at all — dbt's merge strategy requires one. Two shapes
+    refuse: no target-column = source-column equality at all (e.g. `ON 1 =
+    1`, or every equality qualified to neither side of the target), and a
+    disjunctive (OR-joined) ON clause, which has no `unique_key`
+    representation regardless of what its equalities look like — see
+    `_merge_unique_key`. Either way the MERGE is left pending, with a
+    tier-2 Decision recording the refusal so it's never silently dropped.
+    """
+    pending = list(state.pending)
+    drafts = state.drafts
+    decisions = list(state.decisions)
+    consumed: set[int] = set()
+    for index, stmt in pending:
+        if stmt.kind != "merge":
+            continue
+        node = _parse(stmt, state.dialect)
+        assert isinstance(node, exp.Merge)  # classifier only assigns kind="merge" to this shape
+        table = node.this
+        assert isinstance(table, exp.Table)  # sqlglot's MERGE grammar always parses `this` as one
+        target = table.alias or table.name
+        keys, refusal_reason = _merge_unique_key(node, target)
+        if refusal_reason is not None:
+            if refusal_reason == "disjunctive":
+                action = (
+                    f"deferred: MERGE INTO {table.name} has no unique key extractable "
+                    "from its ON clause — the ON clause is disjunctive (OR), which has "
+                    "no unique_key representation"
+                )
+                reason = (
+                    "dbt's merge incremental strategy's unique_key is inherently a "
+                    "conjunction of columns; a disjunctive (OR) match condition cannot "
+                    "be expressed as one, and converting it anyway would silently "
+                    "change the MERGE's match semantics"
+                )
+            else:
+                action = (
+                    f"deferred: MERGE INTO {table.name} has no unique key extractable "
+                    "from its ON clause"
+                )
+                reason = (
+                    "dbt's merge incremental strategy requires a unique_key; an ON "
+                    "clause with no target-column = source-column equality gives no "
+                    "column to use as one"
+                )
+            decisions.append(_decision(stmt, index, "merge", 2, action=action, reason=reason))
+            continue
+        body = _merge_body(node, state.dialect)
+        draft = ModelDraft(
+            name=table.name,
+            qualified_name=qualified_name(table),
+            body=body,
+            materialization="incremental",
+            grants=(),
+            source_indices=(index,),
+            leading_comments=tuple(c.strip() for c in (node.comments or ())),
+            incremental_strategy="merge",
+            unique_key=keys,
+        )
+        drafts = (*drafts, draft)
+        consumed.add(index)
+        key_list = ", ".join(keys)
+        decisions.append(
+            _decision(
+                stmt,
+                index,
+                "merge",
+                2,
+                action=(
+                    f"MERGE INTO {table.name} became an incremental model "
+                    f"(incremental_strategy='merge', unique_key={list(keys)!r})"
+                ),
+                reason=(
+                    "MERGE's matched/not-matched branches are what dbt's merge "
+                    "incremental strategy performs against unique_key"
+                ),
+                question=f"does {key_list} uniquely identify a row in {table.name}?",
+                chosen=f"merge on {key_list}",
+                alternatives=("append every row",),
             )
         )
     return PassState(
