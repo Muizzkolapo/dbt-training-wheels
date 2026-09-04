@@ -64,7 +64,10 @@ def test_vars_section_appears_with_yaml_block_and_merge_warning():
     assert "## Add to your dbt_project.yml" in out
     assert "```yaml" in out
     assert "vars:" in out
-    assert "  cutoff: '2024-01-01'" in out
+    # Double-quoted, wrapping the SQL literal (with its own single quotes)
+    # verbatim — a bare single-quoted `cutoff: '2024-01-01'` is a YAML
+    # single-quoted scalar and loses its quotes on load (FINDING 1).
+    assert '  cutoff: "\'2024-01-01\'"' in out
     # the merge warning: fragment to merge, not a replacement
     assert "merge" in out.lower()
     assert "dbt_project.yml" in out
@@ -148,8 +151,36 @@ def test_vars_block_stays_parseable_yaml_for_awkward_defaults():
     )
     block = out.split("```yaml\n", 1)[1].split("```", 1)[0]
     loaded = yaml.safe_load(block)
-    assert loaded["vars"]["window"] == "12:00:00"
-    assert loaded["vars"]["owner"] == "O'Brien"
+    # The loaded value must be the SQL literal TEXT, quotes and all — that's
+    # what var() renders byte-identically to what --inline-vars would splice
+    # into the SQL. If YAML strips the quotes (loaded["window"] == "12:00:00"
+    # instead of "'12:00:00'"), a date/string default renders unquoted into
+    # the compiled SQL and becomes integer arithmetic instead of a literal
+    # (see FINDING 1: `WHERE order_date >= 2024-01-01` compiles as date minus
+    # 1 minus 1, not a date comparison).
+    assert loaded["vars"]["window"] == "'12:00:00'"
+    assert loaded["vars"]["owner"] == "'O''Brien'"
+
+
+def test_vars_block_escapes_a_default_containing_a_double_quote():
+    """A SQL literal that itself contains a double-quote character (e.g. an
+    apostrophe-quoted string holding one) must not break the double-quoted
+    YAML scalar it's wrapped in — otherwise the fix for awkward single-quote
+    defaults just trades one unparseable-YAML failure mode for another.
+    """
+    out = _report(
+        variables=(
+            Variable(
+                name="quip",
+                default_sql='\'she said "hi"\'',
+                source_file="etl.sql",
+                line_start=1,
+            ),
+        )
+    )
+    block = out.split("```yaml\n", 1)[1].split("```", 1)[0]
+    loaded = yaml.safe_load(block)
+    assert loaded["vars"]["quip"] == '\'she said "hi"\''
 
 
 def test_question_bearing_decision_with_no_alternatives_omits_the_parenthetical():

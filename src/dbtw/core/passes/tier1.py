@@ -10,6 +10,7 @@ import sqlglot
 from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
+from dbtw.core.naming import qualified_name
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
 
@@ -36,11 +37,6 @@ def _target_of(node: exp.Expr) -> exp.Table | None:
     if isinstance(node, exp.Grant):
         return _as_table(node.args.get("securable"))
     return None
-
-
-def _qualified(table: exp.Table) -> str:
-    """Dotted catalog.db.name, dropping empty parts; bare name if unqualified."""
-    return ".".join(part for part in (table.catalog, table.db, table.name) if part)
 
 
 def _decision(
@@ -115,7 +111,7 @@ def build_models_pass(state: PassState) -> PassState:
         materialization = "view" if stmt.kind == "create_view" else "table"
         draft = ModelDraft(
             name=table.name,
-            qualified_name=_qualified(table),
+            qualified_name=qualified_name(table),
             body=body,
             materialization=materialization,
             grants=(),
@@ -225,7 +221,7 @@ def truncate_insert_pass(state: PassState) -> PassState:
         body = node.expression.sql(dialect=state.dialect, pretty=True)
         draft = ModelDraft(
             name=table.name,
-            qualified_name=_qualified(table),
+            qualified_name=qualified_name(table),
             body=body,
             materialization="table",
             grants=(),

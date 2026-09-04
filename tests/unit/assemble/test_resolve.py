@@ -103,3 +103,25 @@ def test_catalog_only_ref_says_a_schema_is_needed():
     r = _resolve(TableRef("mydb", "", "orders"))
     assert r.kind == "unresolved"
     assert "schema" in r.reason.lower()
+
+
+def test_catalog_and_schema_qualified_ref_does_not_collapse_by_db_and_name_alone():
+    """FINDING 2 probe: prod.raw.orders and dev.raw.orders both have db="raw",
+    name="orders" and only differ by catalog. Matching sources by (db, name)
+    alone — discarding catalog — made resolve_references treat them as the
+    SAME source, even when one is separately declared. A source declaration
+    has no catalog field, so a catalog-qualified ref can never safely become
+    one; it must stay unresolved instead of silently merging two tables.
+    """
+    r = _resolve(
+        TableRef("prod", "raw", "orders"),
+        declared_sources={("raw", "orders"): "raw"},
+    )
+    assert r.kind == "unresolved"
+    assert "database" in r.reason.lower()
+
+
+def test_catalog_and_schema_qualified_ref_is_unresolved_even_unproposed():
+    r = _resolve(TableRef("dev", "raw", "orders"))
+    assert r.kind == "unresolved"
+    assert "database" in r.reason.lower()

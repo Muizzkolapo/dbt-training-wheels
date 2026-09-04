@@ -19,6 +19,14 @@ to look a source up by, so its only path to resolution is the qualified_name
 match; otherwise it is unresolved. Treating `ref.db` as the sole qualification
 signal reopens exactly the bug class this module exists to close, just via the
 catalog field instead of the schema field.
+
+A *schema-and-catalog*-qualified reference (both non-empty, e.g. `prod.raw.orders`)
+has exactly the same problem one level up: a source declaration is keyed by
+`(source_name, table)` only — sources.yml has no catalog/database field — so
+matching one by `(ref.db, ref.name)` alone, discarding `ref.catalog`, would
+silently treat `prod.raw.orders` and `dev.raw.orders` as the same source.
+There is no safe source declaration for a catalog-qualified reference, so it
+stays unresolved rather than risk merging two different catalogs' tables.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from dbtw.core.assemble.types import TableRef
+from dbtw.core.naming import is_qualified, qualified_name
 
 ResolutionKind = Literal["ref", "source", "unresolved"]
 
@@ -41,17 +50,6 @@ class Resolution:
     target: str  # final model name (kind == "ref"); table name (kind == "source"); "" otherwise
     source_name: str  # the source block name (kind == "source" only); "" otherwise
     reason: str  # names the evidence behind the resolution
-
-
-def _qualified_key(ref: TableRef) -> str:
-    """Dotted catalog.db.name, dropping empty parts.
-
-    Mirrors assemble.assembler._qualified / passes.tier1._qualified exactly —
-    the same rule that produces ModelDraft.qualified_name — so a qualified
-    reference can be compared against it directly. A catalog-only ref (db
-    empty) still collapses correctly here: only the non-empty parts join.
-    """
-    return ".".join(part for part in (ref.catalog, ref.db, ref.name) if part)
 
 
 def resolve_references(
@@ -84,10 +82,10 @@ def _resolve_one(
     declared_sources: Mapping[tuple[str, str], str],
     proposed_sources: Mapping[tuple[str, str], str],
 ) -> Resolution:
-    qualified = bool(ref.db) or bool(ref.catalog)
+    qualified = is_qualified(ref)
 
     if qualified:
-        key = _qualified_key(ref)
+        key = qualified_name(ref)
         final = qualified_to_final.get(key)
         if final is not None:
             return Resolution(
@@ -109,6 +107,25 @@ def _resolve_one(
                 target="",
                 source_name="",
                 reason=f"reference to {key} needs a schema to declare it as a source",
+            )
+
+        if ref.catalog:
+            # Both catalog and schema present (e.g. prod.raw.orders): a
+            # source declaration is keyed by (source_name, table) only, with
+            # no catalog field. Matching one by (ref.db, ref.name) alone
+            # would silently collapse prod.raw.orders and dev.raw.orders
+            # onto the same source() call — the FINDING 2 identity bug, one
+            # level up from the schema-stripping bug this module already
+            # guards against. Left unresolved and as written instead.
+            return Resolution(
+                ref=ref,
+                kind="unresolved",
+                target="",
+                source_name="",
+                reason=(
+                    "source declarations carry no database; catalog-qualified "
+                    "reference left as written"
+                ),
             )
 
         source_key = (ref.db, ref.name)

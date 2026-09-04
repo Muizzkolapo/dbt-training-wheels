@@ -129,3 +129,29 @@ def test_qualified_reference_dedup_decision_survives_a_coexisting_bare_named_dra
     assert change.sources == ()
     skipped = [d for d in change.decisions if "already declared" in d.action]
     assert len(skipped) == 1
+
+
+def test_two_catalogs_of_the_same_table_do_not_collapse_into_one_source():
+    """FINDING 2 probe: FROM prod.raw.orders AS a JOIN dev.raw.orders AS b —
+    two different catalogs' tables that happen to share (schema, table).
+    Before the fix, both `resolve_references` (matching sources by (db,
+    name)) and `_source_entries` (bucketing external refs the same way)
+    discarded `ref.catalog`, so the two joined tables collapsed onto the
+    SAME `{{ source('raw', 'orders') }}` call — a self-join of one table —
+    with a single proposed source entry and zero Decisions recorded. Neither
+    catalog-qualified ref has a safe (db, name)-only source declaration
+    (sources.yml carries no catalog), so both must be left unresolved and as
+    written, and no source entry may be proposed for either.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = assemble(
+        _state("SELECT a FROM prod.raw.orders AS a JOIN dev.raw.orders AS b ON 1 = 1"), ctx
+    )
+    assert change.sources == ()
+    unresolved = [d for d in change.decisions if "left as written" in d.action]
+    assert len(unresolved) == 2
+    assert all("database" in d.reason.lower() for d in unresolved)
+    body = change.models[0].body
+    assert "{{ source(" not in body
+    assert "{{ ref(" not in body
+    assert "prod" in body and "raw" in body and "dev" in body

@@ -69,6 +69,20 @@ def test_cte_alias_is_never_rewritten():
     assert "{{ ref(" not in out
 
 
+def test_cte_alias_is_never_rewritten_case_insensitively():
+    """FINDING 9 probe: `WITH Totals AS (...) SELECT * FROM totals` (tsql,
+    case-insensitive identifiers) plus a draft named `totals` rewrote the
+    CTE read into {{ ref('stg_totals') }} — refs.py and rewrite.py must stay
+    mirror images of each other, or one module's CTE-exclusion and the
+    other's rewrite-exclusion disagree and the read silently becomes a
+    different table.
+    """
+    body = "WITH Totals AS (SELECT 1 AS x) SELECT * FROM totals"
+    out = rewrite_body(body, "tsql", _res("", "", "totals", "ref", "stg_totals"), {}, False)
+    assert "{{ ref(" not in out
+    assert "totals" in out.lower()
+
+
 def test_parameter_becomes_a_var():
     out = rewrite_body(
         "SELECT a FROM t WHERE d >= @start_date", "tsql", {}, {"start_date": "'2024-01-01'"}, False
@@ -82,6 +96,38 @@ def test_parameter_is_inlined_when_asked():
     )
     assert "'2024-01-01'" in out
     assert "var(" not in out
+    # An atomic literal default needs no defensive parens (FINDING 7 only
+    # requires wrapping compound expressions).
+    assert "('2024-01-01')" not in out
+
+
+def _squashed(sql: str) -> str:
+    """Whitespace-insensitive comparison: rewrite_body pretty-prints, and
+    sqlglot's pretty printer puts a `Paren` node on its own indented lines,
+    so a literal "(1 + 2) * 3" substring check would fail on formatting
+    alone, not on the parenthesization this test actually cares about.
+    """
+    return sql.replace(" ", "").replace("\n", "")
+
+
+def test_inline_vars_wraps_a_compound_default_in_parens():
+    """FINDING 7 probe: DECLARE @n INT = 1 + 2, used as SELECT @n * 3. The
+    parsed default (Add(1, 2)) replaced the Parameter node in-place with no
+    grouping, so the generator emitted `1 + 2 * 3` — which evaluates to 7
+    under normal operator precedence, not the 9 the original script computed
+    with @n substituted as a value. The default must be parenthesized unless
+    it's already atomic, so it always evaluates as a single unit wherever it
+    lands.
+    """
+    out = rewrite_body("SELECT @n * 3 AS result", "tsql", {}, {"n": "1 + 2"}, True)
+    assert "(1+2)*3" in _squashed(out)
+    assert "1+2*3" not in _squashed(out)
+
+
+def test_inline_vars_does_not_double_wrap_an_already_parenthesized_default():
+    out = rewrite_body("SELECT @n * 3 AS result", "tsql", {}, {"n": "(1 + 2)"}, True)
+    assert "(1+2)*3" in _squashed(out)
+    assert "((1+2))*3" not in _squashed(out)
 
 
 def test_unknown_parameter_is_left_alone():
@@ -116,3 +162,85 @@ def test_inline_vars_falls_back_to_a_var_call_when_the_default_will_not_parse():
         True,
     )
     assert "{{ var('start_date') }}" in out
+
+
+def test_getvariable_call_becomes_a_var():
+    """FINDING 3: duckdb's SET VARIABLE / spark's SET VAR are read back via a
+    GETVARIABLE('name') call, not a Parameter node — extract_variables()
+    already consumes the declaring statement (Task 4), but rewrite_body only
+    ever matched exp.Parameter, so the reference form was left untouched:
+    the report claimed the variable was "referenced via var('cutoff')" while
+    the body still called GETVARIABLE('cutoff'), which returns NULL at run
+    time and filters every row.
+    """
+    out = rewrite_body(
+        "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff')",
+        "duckdb",
+        {},
+        {"cutoff": "'2024-06-30'"},
+        False,
+    )
+    assert "{{ var('cutoff') }}" in out
+    assert "GETVARIABLE" not in out.upper()
+
+
+def test_getvariable_call_is_case_insensitively_matched():
+    out = rewrite_body(
+        "SELECT a FROM t WHERE d >= getVariable('cutoff')",
+        "duckdb",
+        {},
+        {"cutoff": "'2024-06-30'"},
+        False,
+    )
+    assert "{{ var('cutoff') }}" in out
+
+
+def test_getvariable_call_is_inlined_when_asked():
+    out = rewrite_body(
+        "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff')",
+        "duckdb",
+        {},
+        {"cutoff": "'2024-06-30'"},
+        True,
+    )
+    assert "'2024-06-30'" in out
+    assert "var(" not in out
+    assert "GETVARIABLE" not in out.upper()
+
+
+def test_unknown_getvariable_call_is_left_alone():
+    out = rewrite_body(
+        "SELECT a FROM t WHERE d >= GETVARIABLE('other')",
+        "duckdb",
+        {},
+        {"cutoff": "'x'"},
+        False,
+    )
+    assert "GETVARIABLE('other')" in out
+    assert "var(" not in out
+
+
+def test_getvariable_call_works_under_spark_dialect_too():
+    out = rewrite_body(
+        "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff')",
+        "spark",
+        {},
+        {"cutoff": "'2024-06-30'"},
+        False,
+    )
+    assert "{{ var('cutoff') }}" in out
+
+
+def test_getvariable_call_with_more_than_one_argument_is_left_alone():
+    """A guard against over-matching: GETVARIABLE is only ever a clean,
+    unambiguous rewrite target when it has exactly the one string-literal
+    argument the real function takes.
+    """
+    out = rewrite_body(
+        "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff', 'extra')",
+        "duckdb",
+        {},
+        {"cutoff": "'2024-06-30'"},
+        False,
+    )
+    assert "var(" not in out

@@ -12,21 +12,13 @@ from dbtw.core.assemble.rewrite import rewrite_body
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
 from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ProjectContext
+from dbtw.core.naming import is_qualified, qualified_name
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
 # is always tried first by the caller; this is the order the remaining roles
 # are tried in, skipping whichever one *was* the role already checked.
 _FALLBACK_ROLE_ORDER = ("mart", "staging", "intermediate")
-
-
-def _qualified(ref: TableRef) -> str:
-    """Dotted catalog.db.name, dropping empty parts; bare name if unqualified.
-
-    Mirrors tier1._qualified — the same rule that produces ModelDraft.qualified_name
-    — so a schema-qualified reference can be compared against it directly.
-    """
-    return ".".join(part for part in (ref.catalog, ref.db, ref.name) if part)
 
 
 def _decision(kind: str, name: str, action: str, reason: str) -> Decision:
@@ -121,13 +113,24 @@ def _source_entries(
     source in the target project is skipped with a Decision citing where it's
     declared, instead of being duplicated.
 
-    Matching a *qualified* reference (one with a db/schema) against a draft or
-    an existing model is done by dotted qualified name only, never by bare
-    name: a qualified reference can never actually be the CTE-free bare
-    ModelInfo entries read off the target project's filesystem — those carry
-    no schema information at all — and it can only be a draft in this change
-    when that draft's own qualified_name matches exactly. An unqualified
-    reference keeps matching by bare name, as before.
+    Matching a *qualified* reference (one with a db/schema and/or catalog)
+    against a draft or an existing model is done by dotted qualified name
+    only, never by bare name: a qualified reference can never actually be the
+    CTE-free bare ModelInfo entries read off the target project's filesystem
+    — those carry no schema information at all — and it can only be a draft
+    in this change when that draft's own qualified_name matches exactly. An
+    unqualified reference keeps matching by bare name, as before.
+
+    A reference qualified by *catalog* (with or without a schema, e.g.
+    `prod.raw.orders` or Snowflake's catalog-only `mydb..orders`) is never
+    proposed as a source either: a SourceEntry is keyed by `(source_name,
+    table)` only, with no catalog field, so stripping the catalog to look one
+    up would silently collapse two different catalogs' tables (or, for a
+    catalog-only ref, would have nothing to key a source by at all) onto the
+    same source() call — the identity bug this module exists to avoid, one
+    level up. It is left out of both the `external` and `unqualified`
+    buckets; `resolve.py`'s per-model rewrite independently records the
+    Decision that explains why it stays unresolved and as written.
     """
     existing_model_names = {m.name for m in ctx.existing_models}
     draft_qualified_names = {d.qualified_name for d in drafts}
@@ -137,8 +140,10 @@ def _source_entries(
     unqualified: set[str] = set()
     for draft in drafts:
         for ref in refs[draft.name]:
-            if ref.db:
-                if _qualified(ref) in draft_qualified_names:
+            if is_qualified(ref):
+                if qualified_name(ref) in draft_qualified_names:
+                    continue
+                if ref.catalog:
                     continue
                 external.setdefault((ref.db, ref.name), ref)
             else:
@@ -237,19 +242,21 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     # Step 1
     refs = {d.name: references_in(d.body, state.dialect) for d in drafts}
 
-    # Step 2. A qualified reference (has a db/schema) can only be a dependency
-    # on a draft whose own qualified_name matches it exactly — its bare name
-    # matching some unrelated draft's bare name is not enough (e.g. a read of
-    # raw.orders is not a dependency on a draft that merely happens to be
-    # named "orders" while targeting analytics.orders). An unqualified
-    # reference keeps matching by bare draft name, as before.
+    # Step 2. A qualified reference (has a db/schema and/or catalog) can only
+    # be a dependency on a draft whose own qualified_name matches it exactly
+    # — its bare name matching some unrelated draft's bare name is not enough
+    # (e.g. a read of raw.orders is not a dependency on a draft that merely
+    # happens to be named "orders" while targeting analytics.orders, and a
+    # catalog-only read of mydb..orders is not a dependency on a draft merely
+    # named "orders" either). An unqualified reference keeps matching by bare
+    # draft name, as before.
     qualified_to_draft_name = {d.qualified_name: d.name for d in drafts}
     deps: dict[str, frozenset[str]] = {}
     for name in refs:
         dep_names: set[str] = set()
         for r in refs[name]:
-            if r.db:
-                dep_draft_name = qualified_to_draft_name.get(_qualified(r))
+            if is_qualified(r):
+                dep_draft_name = qualified_to_draft_name.get(qualified_name(r))
                 if dep_draft_name is not None and dep_draft_name != name:
                     dep_names.add(dep_draft_name)
             elif r.name in draft_names and r.name != name:
@@ -427,14 +434,51 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     declared_var_names = {name for name, _ in ctx.vars_declared}
     variable_defaults: dict[str, str | None] = {}
     kept_variables: list[Variable] = []
+    # name -> its index in kept_variables, so a later fill-in (below) can
+    # replace that entry's default_sql without disturbing its position.
+    kept_variable_index: dict[str, int] = {}
     seen_var_names: set[str] = set()
     for variable in variables_found:
         if variable.name in seen_var_names:
+            # A later statement for an already-seen variable (e.g. DECLARE
+            # followed by SET on the very next line) never gets its own
+            # Decision — only the first occurrence is reported — but
+            # extraction preserves statement order, so a later non-None
+            # default still fills in a previously recorded None instead of
+            # being silently discarded: `DECLARE @cutoff DATE; SET @cutoff =
+            # '2024-06-30';` must report and inline '2024-06-30', not the
+            # DECLARE's empty default (FINDING 4 — the most common T-SQL
+            # parameter idiom).
+            # A variable already declared in the target project (below) is
+            # never filled in here either — it's pinned to None so it can
+            # never be inlined, and a later local default must not undo that.
+            if (
+                variable.name not in declared_var_names
+                and variable_defaults.get(variable.name) is None
+                and variable.default_sql is not None
+            ):
+                variable_defaults[variable.name] = variable.default_sql
+                kept_index = kept_variable_index.get(variable.name)
+                if kept_index is not None:
+                    stale = kept_variables[kept_index]
+                    kept_variables[kept_index] = Variable(
+                        name=stale.name,
+                        default_sql=variable.default_sql,
+                        source_file=stale.source_file,
+                        line_start=stale.line_start,
+                    )
             continue
         seen_var_names.add(variable.name)
-        variable_defaults[variable.name] = variable.default_sql
 
         if variable.name in declared_var_names:
+            # Already declared in the target project's own vars — never
+            # inline it, even with --inline-vars: doing so would silently
+            # override the project's own declared value with whatever this
+            # particular script happened to set locally. Pin the rewrite's
+            # variable map to None (a var-only marker) so rewrite_body always
+            # renders var(), matching what this Decision actually says
+            # (FINDING 6 — Decision and disk must agree).
+            variable_defaults[variable.name] = None
             new_decisions.append(
                 Decision(
                     key=f"assemble.variable.{variable.name}",
@@ -454,14 +498,35 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
             )
             continue
 
-        if inline_vars:
+        variable_defaults[variable.name] = variable.default_sql
+
+        # --inline-vars only actually inlines when there is a literal default
+        # to inline. A default-less variable (e.g. `DECLARE @region VARCHAR`
+        # with nothing assigned) has no SQL to splice in — rewrite_body
+        # falls back to a var() call regardless of inline_vars — so claiming
+        # "inlined region's literal default value" would be a lie the body
+        # doesn't back up, and skipping change.variables for it would leave
+        # the emitted var() call undeclared, breaking `dbt compile` on an
+        # undefined var (FINDING 5). Treat it exactly like the keep-as-var
+        # case, honestly worded.
+        if inline_vars and variable.default_sql is not None:
             chosen = "inline the literal value"
             alternatives = ("keep as a dbt var",)
             action = f"inlined {variable.name}'s literal default value in place of the parameter"
         else:
             chosen = "keep as a dbt var"
             alternatives = ("inline the literal value",)
-            action = f"declared {variable.name} as a dbt var, referenced via var('{variable.name}')"
+            if inline_vars:
+                action = (
+                    f"{variable.name} has no default in the source SQL, so there is no "
+                    "literal value to inline; kept as a dbt var instead"
+                )
+            else:
+                action = (
+                    f"declared {variable.name} as a dbt var, "
+                    f"referenced via var('{variable.name}')"
+                )
+            kept_variable_index[variable.name] = len(kept_variables)
             kept_variables.append(variable)
 
         new_decisions.append(
@@ -557,7 +622,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
         )
 
         for r in unresolved_resolutions:
-            label = _qualified(r.ref) or r.ref.name
+            label = qualified_name(r.ref) or r.ref.name
             new_decisions.append(
                 Decision(
                     key=f"assemble.rewrite_unresolved.{model.name}.{label}",

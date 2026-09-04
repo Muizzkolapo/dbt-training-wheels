@@ -53,3 +53,14 @@ def test_qualified_reference_is_never_mistaken_for_a_cte_even_by_join():
     body = "WITH c AS (SELECT 1 AS x) SELECT * FROM c JOIN raw.c ON 1 = 1"
     refs = references_in(body, None)
     assert refs == (TableRef("", "raw", "c"),)
+
+
+def test_cte_alias_matching_is_case_insensitive():
+    """FINDING 9 probe (tsql, case-insensitive identifiers): `WITH Totals AS
+    (...) SELECT * FROM totals` reads the CTE, not some external `totals`
+    table — cte_names compared the alias's original case against the read's
+    original case and missed the match, so the CTE read looked exactly like
+    an undeclared external reference.
+    """
+    body = "WITH Totals AS (SELECT 1 AS x) SELECT * FROM totals"
+    assert references_in(body, "tsql") == ()

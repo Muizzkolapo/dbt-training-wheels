@@ -221,6 +221,61 @@ def test_qualified_reference_does_not_create_a_false_dependency_on_a_bare_named_
     assert models["stg_raw_orders"].depends_on == ()
 
 
+def test_catalog_only_reference_does_not_create_a_false_dependency_either():
+    """FINDING 8 probe: FROM mydb..orders (catalog-only — db empty) beside a
+    draft literally named `orders`. The deps-construction loop tested
+    `if r.db:` — false for a catalog-only ref — so it fell through to
+    bare-name matching and manufactured a dependency edge on the `orders`
+    draft that resolve.py (which correctly tests `db or catalog`) and the
+    rewritten body both disagree with: both say unresolved / left as
+    written. The Models table's depends_on and the Decisions/body must
+    agree — a single shared qualification predicate is what keeps them from
+    drifting apart again.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")  # both drafts land in staging, prefixed stg_
+    change = assemble(
+        _state(
+            _draft("orders", "SELECT 1 AS x"),
+            _draft("reader", "SELECT a FROM mydb..orders"),
+        ),
+        ctx,
+    )
+    models = _by_name(change)
+    assert models["stg_reader"].depends_on == ()
+    assert "{{ ref(" not in models["stg_reader"].body
+    assert "mydb" in models["stg_reader"].body
+    unresolved = [d for d in change.decisions if "left as written" in d.action]
+    assert any("mydb" in d.action for d in unresolved)
+
+
+def test_case_mismatched_cte_read_is_never_rewritten_to_an_unrelated_draft():
+    """FINDING 9 probe: WITH Totals AS (...) SELECT * FROM totals (tsql,
+    case-insensitive) alongside a draft literally named `totals`. The CTE
+    read must stay a plain CTE read — not silently become a dependency on,
+    and a ref() to, the unrelated `totals` draft, which would read
+    completely different data under the same name.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = assemble(
+        _state(
+            _draft("totals", "SELECT 1 AS x"),
+            _draft(
+                "reader",
+                "WITH Totals AS (SELECT 2 AS y) SELECT * FROM totals",
+            ),
+            dialect="tsql",
+        ),
+        ctx,
+    )
+    # The final name (and even which layer it lands in) depends on whether a
+    # dependency edge exists, which is exactly the bug under test — so find
+    # the model by its distinctive body content, not by a final name that
+    # itself shifts between the buggy and fixed behavior.
+    reader = next(m for m in change.models if "Totals" in m.body)
+    assert reader.depends_on == ()
+    assert "{{ ref(" not in reader.body
+
+
 def test_single_non_synonym_layer_is_used_as_a_last_resort(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: reporting_only\nconfig-version: 2\n")
     reporting = tmp_path / "models" / "reporting"

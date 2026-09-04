@@ -89,14 +89,30 @@ def _render_sources(change: ProjectChange) -> str:
     return "\n".join(lines)
 
 
+def _yaml_double_quoted(text: str) -> str:
+    """Wrap `text` as a YAML double-quoted scalar whose *content* is `text`
+    verbatim, backslash/double-quote escaped so the scalar stays well-formed.
+    """
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
 def _render_vars(change: ProjectChange) -> str:
-    # default_sql is interpolated into a YAML value unescaped. This is safe
-    # only because sqlglot's canonical .sql() output quotes string literals
-    # with single quotes and doubles embedded quotes ('O''Brien'), which is
-    # exactly YAML's single-quoted scalar escaping — and renders structured
-    # literals (lists, structs) as function calls rather than raw [ / { {
-    # syntax. If variable extraction ever emits SQL literals another way,
-    # re-verify this invariant (see test_vars_block_stays_parseable_yaml_for_awkward_defaults).
+    # default_sql is the raw SQL literal text (e.g. `'2024-01-01'`, quotes
+    # included for a string default). It must reach `var()` byte-identical to
+    # what --inline-vars would splice into the SQL — that's the whole point
+    # of keeping a variable instead of inlining it. Interpolating it bare
+    # (`{name}: {default_sql}`) puts it in YAML's *plain* scalar syntax,
+    # where a leading `'` starts a *single-quoted* scalar and YAML strips
+    # those quotes on load: `start_date: '2024-01-01'` loads as the bare
+    # string `2024-01-01`, and dbt renders that unquoted into the compiled
+    # SQL — `WHERE order_date >= 2024-01-01` is integer arithmetic, not a
+    # date comparison (FINDING 1, proven with a real `dbt compile`).
+    #
+    # The fix: wrap default_sql in a YAML *double*-quoted scalar, so its
+    # content — the SQL literal, quotes and all — survives the YAML round
+    # trip intact and var() renders exactly what --inline-vars would inline.
+    # See test_vars_block_stays_parseable_yaml_for_awkward_defaults.
     lines = [
         "## Add to your dbt_project.yml",
         "",
@@ -111,7 +127,7 @@ def _render_vars(change: ProjectChange) -> str:
         if v.default_sql is None:
             lines.append(f"  {v.name}:  # no default in the source; set one")
         else:
-            lines.append(f"  {v.name}: {v.default_sql}")
+            lines.append(f"  {v.name}: {_yaml_double_quoted(v.default_sql)}")
     lines.append("```")
     return "\n".join(lines)
 

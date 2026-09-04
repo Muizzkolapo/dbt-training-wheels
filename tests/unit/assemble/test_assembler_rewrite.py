@@ -97,4 +97,169 @@ def test_inline_vars_substitutes_the_literal_and_declares_nothing():
     change = assemble(_variable_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True)
     assert "'2024-01-01'" in change.models[0].body
     assert "var(" not in change.models[0].body
-    assert change.variables == ()
+
+
+def _set_variable_state():
+    """FINDING 3 probe (duckdb): SET VARIABLE declares `cutoff`; the body
+    reads it back via GETVARIABLE('cutoff') — the real duckdb reference
+    syntax, not a Parameter. Before the fix, the report claimed cutoff was
+    "declared as a dbt var, referenced via var('cutoff')" while the body
+    still called GETVARIABLE('cutoff'), which returns NULL at run time.
+    """
+    raw = RawStatement(
+        source_file="e.sql",
+        index=0,
+        text="SET VARIABLE cutoff = '2024-06-30'",
+        line_start=1,
+        line_end=1,
+    )
+    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
+    draft = ModelDraft(
+        name="m",
+        qualified_name="m",
+        body="SELECT a FROM raw.t WHERE d >= GETVARIABLE('cutoff')",
+        materialization="table",
+        grants=(),
+        source_indices=(1,),
+        leading_comments=(),
+    )
+    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="duckdb")
+
+
+def test_set_variable_reference_is_actually_rewritten_to_a_var_call():
+    change = assemble(_set_variable_state(), read_project(PROJECTS / "jaffle_shop"))
+    body = change.models[0].body
+    assert "{{ var('cutoff') }}" in body
+    assert "GETVARIABLE" not in body.upper()
+    assert change.pending == ()
+    assert [v.name for v in change.variables] == ["cutoff"]
+
+
+def _declare_then_set_state():
+    """FINDING 4 probe: DECLARE @cutoff DATE; SET @cutoff = '2024-06-30'; —
+    the DECLARE's None default (first-wins dedup) previously survived into
+    the report even though the very next statement set a real value, and
+    both statements were consumed. Extraction preserves statement order, so
+    the later SET's non-None default must fill the DECLARE's recorded None.
+    """
+    declare_raw = RawStatement(
+        source_file="e.sql", index=0, text="DECLARE @cutoff DATE", line_start=1, line_end=1
+    )
+    set_raw = RawStatement(
+        source_file="e.sql",
+        index=1,
+        text="SET @cutoff = '2024-06-30'",
+        line_start=2,
+        line_end=2,
+    )
+    pending = (
+        (0, ClassifiedStatement(raw=declare_raw, kind="variable", reason="t")),
+        (1, ClassifiedStatement(raw=set_raw, kind="variable", reason="t")),
+    )
+    draft = ModelDraft(
+        name="m",
+        qualified_name="m",
+        body="SELECT a FROM raw.t WHERE d >= @cutoff",
+        materialization="table",
+        grants=(),
+        source_indices=(2,),
+        leading_comments=(),
+    )
+    return PassState(pending=pending, drafts=(draft,), decisions=(), dialect="tsql")
+
+
+def test_declare_then_set_reports_the_assigned_value_not_none():
+    change = assemble(_declare_then_set_state(), read_project(PROJECTS / "jaffle_shop"))
+    assert change.pending == ()  # both statements consumed
+    assert [(v.name, v.default_sql) for v in change.variables] == [("cutoff", "'2024-06-30'")]
+
+
+def test_declare_then_set_inlines_the_assigned_value():
+    change = assemble(
+        _declare_then_set_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True
+    )
+    assert "'2024-06-30'" in change.models[0].body
+    assert "var(" not in change.models[0].body
+
+
+def _default_less_variable_state():
+    """FINDING 5 probe: --inline-vars on a variable with no default in the
+    source. The assembler took the inline branch unconditionally on
+    inline_vars, without checking default_sql is not None — the Decision
+    claimed "inlined region's literal default value", the body actually
+    fell back to var('region') (rewrite.py correctly refuses to inline
+    nothing), and the var was never added to change.variables — so the vars
+    section is absent from the report AND `dbt compile` fails on an
+    undefined var. The report lied and the output was broken.
+    """
+    raw = RawStatement(
+        source_file="e.sql", index=0, text="DECLARE @region VARCHAR(50)", line_start=1, line_end=1
+    )
+    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
+    draft = ModelDraft(
+        name="m",
+        qualified_name="m",
+        body="SELECT a FROM raw.t WHERE r = @region",
+        materialization="table",
+        grants=(),
+        source_indices=(1,),
+        leading_comments=(),
+    )
+    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="tsql")
+
+
+def test_inline_vars_on_a_default_less_variable_keeps_it_as_a_var_honestly():
+    change = assemble(
+        _default_less_variable_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True
+    )
+    assert "{{ var('region') }}" in change.models[0].body
+    assert [v.name for v in change.variables] == ["region"]
+    var_decisions = [d for d in change.decisions if d.key == "assemble.variable.region"]
+    assert len(var_decisions) == 1
+    action = var_decisions[0].action.lower()
+    assert "inlined" not in action
+    assert "no" in action and ("default" in action or "literal" in action)
+
+
+def _target_declared_variable_state():
+    """FINDING 6 probe: the `with_sources` fixture project already declares
+    `start_date` in its own dbt_project.yml. The script DECLAREs start_date
+    again locally, with a different literal, and --inline-vars is on. The
+    Decision says "its reference was rewritten to var(), not re-declared" —
+    but variable_defaults[name] was populated with the script's own local
+    default before the declared-in-target `continue`, so rewrite_body still
+    inlined that local literal, silently overriding the project's own
+    declared value. Decision and disk disagreed.
+    """
+    raw = RawStatement(
+        source_file="e.sql",
+        index=0,
+        text="DECLARE @start_date DATE = '1999-01-01'",
+        line_start=1,
+        line_end=1,
+    )
+    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
+    draft = ModelDraft(
+        name="m",
+        qualified_name="m",
+        body="SELECT a FROM raw.t WHERE d >= @start_date",
+        materialization="table",
+        grants=(),
+        source_indices=(1,),
+        leading_comments=(),
+    )
+    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="tsql")
+
+
+def test_target_declared_variable_is_never_inlined_even_with_inline_vars():
+    change = assemble(
+        _target_declared_variable_state(),
+        read_project(PROJECTS / "with_sources"),
+        inline_vars=True,
+    )
+    body = change.models[0].body
+    assert "{{ var('start_date') }}" in body
+    assert "1999-01-01" not in body
+    decision = next(d for d in change.decisions if d.key == "assemble.variable.start_date")
+    assert "var(" in decision.action
+    assert "not re-declared" in decision.action
