@@ -37,6 +37,12 @@ def test_create_view():
     assert _kind("CREATE OR REPLACE VIEW v AS SELECT a FROM t") == "create_view"
 
 
+def test_query_less_create_view_is_ddl_other():
+    # probe-verified: sqlglot 30.18.0 parses "CREATE VIEW v" to
+    # Create(kind="VIEW", expression=None) — schema-only DDL, not a query.
+    assert _kind("CREATE VIEW v") == "ddl_other"
+
+
 def test_insert_select_with_and_without_columns():
     assert _kind("INSERT INTO x SELECT a FROM t") == "insert_select"
     assert _kind("INSERT INTO x (a) SELECT a FROM t") == "insert_select"
@@ -73,6 +79,11 @@ def test_dml_kinds():
 
 def test_grant():
     assert _kind("GRANT SELECT ON x TO reporting_role") == "grant"
+
+
+def test_revoke_is_grant_kind():
+    # RFC: kind "grant" covers both GRANT and REVOKE (permissions management).
+    assert _kind("REVOKE SELECT ON x FROM r") == "grant"
 
 
 def test_variables():
