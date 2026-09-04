@@ -109,8 +109,11 @@ def test_empty_pending_says_so():
     assert "Nothing — every statement was handled." in _report()
 
 
-def test_not_done_yet_names_the_reference_gap():
-    assert "Table references are not yet rewritten as ref() or source() calls." in _report()
+def test_not_done_yet_states_references_are_rewritten_and_names_deferred_work():
+    out = _report()
+    assert "Table references are not yet rewritten as ref() or source() calls." not in out
+    assert "Table references and script variables have been rewritten as ref(), source()," in out
+    assert "Incremental models" in out
 
 
 def test_no_sources_says_none_to_declare():
