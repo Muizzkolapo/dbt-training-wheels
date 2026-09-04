@@ -1,0 +1,8 @@
+name: sources_at_root
+config-version: 2
+model-paths: ["models"]
+models:
+  sources_at_root:
+    +materialized: table
+    staging:
+      +materialized: view
