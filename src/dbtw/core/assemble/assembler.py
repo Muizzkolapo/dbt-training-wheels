@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 from dbtw.core.assemble.layers import layer_roles, role_for
 from dbtw.core.assemble.refs import references_in
-from dbtw.core.assemble.types import AssembledModel, ProjectChange
+from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
 from dbtw.core.context import Detection, LayerInfo, ProjectContext
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
@@ -94,6 +94,70 @@ def _final_name(
     return final_name, [_decision("rename", final_name, action, reason)]
 
 
+def _source_entries(
+    drafts: tuple[ModelDraft, ...],
+    refs: Mapping[str, tuple[TableRef, ...]],
+    draft_names: set[str],
+    ctx: ProjectContext,
+) -> tuple[tuple[SourceEntry, ...], list[Decision]]:
+    """External references become SourceEntry rows, or a Decision when they can't.
+
+    A reference is external when its name matches neither a draft in this change
+    nor an existing model in the target project. An external reference without a
+    schema is reported, never guessed at — inventing a schema would be a
+    fabrication. An external, schema-qualified reference already declared as a
+    source in the target project is skipped with a Decision citing where it's
+    declared, instead of being duplicated.
+    """
+    existing_model_names = {m.name for m in ctx.existing_models}
+    declared = {(s.source_name, s.table): s for s in ctx.existing_sources}
+
+    external: dict[tuple[str, str], TableRef] = {}
+    unqualified: set[str] = set()
+    for draft in drafts:
+        for ref in refs[draft.name]:
+            if ref.name in draft_names or ref.name in existing_model_names:
+                continue
+            if ref.db:
+                external.setdefault((ref.db, ref.name), ref)
+            else:
+                unqualified.add(ref.name)
+
+    decisions: list[Decision] = []
+    entries: list[SourceEntry] = []
+    for key in sorted(external):
+        source_name, table = key
+        ref = external[key]
+        already_declared = declared.get(key)
+        if already_declared is not None:
+            decisions.append(
+                _decision(
+                    "source_dedup",
+                    f"{source_name}.{table}",
+                    f"{source_name}.{table} already declared as a source",
+                    f"already declared as a source in {already_declared.declared_in}; "
+                    "skipped to avoid duplicating it",
+                )
+            )
+            continue
+        entries.append(SourceEntry(source_name=ref.db, schema=ref.db, table=ref.name))
+
+    for name in sorted(unqualified):
+        decisions.append(
+            _decision(
+                "source_unqualified",
+                name,
+                f"{name} is read but not schema-qualified",
+                f"{name} can't be declared as a source without a schema; inventing "
+                "one would be a fabrication, so it stays as written until Tier 2 "
+                "resolves it",
+            )
+        )
+
+    entries.sort(key=lambda e: (e.source_name, e.table))
+    return tuple(entries), decisions
+
+
 def _topological(models: list[AssembledModel]) -> tuple[list[AssembledModel], list[Decision]]:
     """Kahn's algorithm, alphabetical tie-break; a cycle is recorded, never fatal.
 
@@ -160,6 +224,9 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
         for dep in dep_names:
             dependents[dep].add(name)
     dependents_frozen = {name: frozenset(deps_of) for name, deps_of in dependents.items()}
+
+    source_entries, source_decisions = _source_entries(drafts, refs, draft_names, ctx)
+    new_decisions.extend(source_decisions)
 
     roles = layer_roles(ctx)
     detections_by_key = {d.key: d for d in ctx.detections}
@@ -290,7 +357,7 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
 
     return ProjectChange(
         models=tuple(ordered),
-        sources=(),
+        sources=source_entries,
         decisions=state.decisions + tuple(new_decisions),
         pending=state.pending,
         dialect=state.dialect,
