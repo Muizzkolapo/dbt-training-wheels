@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import sqlglot
+from sqlglot.errors import SqlglotError
+
 from dbtw.core.assemble import ProjectChange
 from dbtw.core.context import ProjectContext
+from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision
 
 _NOT_DONE_YET = """\
@@ -97,6 +101,25 @@ def _yaml_double_quoted(text: str) -> str:
     return f'"{escaped}"'
 
 
+def _parenthesized_if_compound(default_sql: str, dialect: str | None) -> str:
+    """A compound default (`1 + 2`) must reach `var()` with the same
+    defensive parens `--inline-vars` would give it — `naming.is_atomic_sql`
+    is the one shared rule both paths use, so they can never disagree on
+    what counts as "needs parens" (FINDING 7: `{{ var('n') }} * 3` and an
+    inlined `(1 + 2) * 3` must compute the same thing for the same `n`).
+    An unparseable default_sql (extraction should never actually produce
+    one, since it always comes from a node that did parse) degrades to the
+    unwrapped text rather than crashing report rendering.
+    """
+    try:
+        node = sqlglot.parse_one(default_sql, read=dialect)
+    except SqlglotError:
+        return default_sql
+    if is_atomic_sql(node):
+        return default_sql
+    return f"({default_sql})"
+
+
 def _render_vars(change: ProjectChange) -> str:
     # default_sql is the raw SQL literal text (e.g. `'2024-01-01'`, quotes
     # included for a string default). It must reach `var()` byte-identical to
@@ -127,7 +150,8 @@ def _render_vars(change: ProjectChange) -> str:
         if v.default_sql is None:
             lines.append(f"  {v.name}:  # no default in the source; set one")
         else:
-            lines.append(f"  {v.name}: {_yaml_double_quoted(v.default_sql)}")
+            value = _parenthesized_if_compound(v.default_sql, change.dialect)
+            lines.append(f"  {v.name}: {_yaml_double_quoted(value)}")
     lines.append("```")
     return "\n".join(lines)
 

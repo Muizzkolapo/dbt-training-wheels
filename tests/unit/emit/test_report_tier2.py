@@ -67,7 +67,7 @@ def test_vars_section_appears_with_yaml_block_and_merge_warning():
     # Double-quoted, wrapping the SQL literal (with its own single quotes)
     # verbatim — a bare single-quoted `cutoff: '2024-01-01'` is a YAML
     # single-quoted scalar and loses its quotes on load (FINDING 1).
-    assert '  cutoff: "\'2024-01-01\'"' in out
+    assert "  cutoff: \"'2024-01-01'\"" in out
     # the merge warning: fragment to merge, not a replacement
     assert "merge" in out.lower()
     assert "dbt_project.yml" in out
@@ -172,7 +172,7 @@ def test_vars_block_escapes_a_default_containing_a_double_quote():
         variables=(
             Variable(
                 name="quip",
-                default_sql='\'she said "hi"\'',
+                default_sql="'she said \"hi\"'",
                 source_file="etl.sql",
                 line_start=1,
             ),
@@ -180,7 +180,80 @@ def test_vars_block_escapes_a_default_containing_a_double_quote():
     )
     block = out.split("```yaml\n", 1)[1].split("```", 1)[0]
     loaded = yaml.safe_load(block)
-    assert loaded["vars"]["quip"] == '\'she said "hi"\''
+    assert loaded["vars"]["quip"] == "'she said \"hi\"'"
+
+
+def test_compound_default_is_parenthesized_in_the_vars_block():
+    """FINDING 7 (var() path — the default, more common path): a compound
+    default (`1 + 2`) must reach var() with the same defensive parens
+    --inline-vars gives it, or `{{ var('n') }} * 3` (from this YAML value)
+    and an inlined `(1 + 2) * 3` compute different things for the same
+    variable. Reuses naming.is_atomic_sql/maybe_paren — the same rule
+    rewrite.py's --inline-vars path already applies.
+    """
+    out = _report(
+        variables=(
+            Variable(
+                name="n",
+                default_sql="1 + 2",
+                source_file="etl.sql",
+                line_start=1,
+            ),
+        )
+    )
+    block = out.split("```yaml\n", 1)[1].split("```", 1)[0]
+    loaded = yaml.safe_load(block)
+    assert loaded["vars"]["n"] == "(1 + 2)"
+
+
+def test_atomic_default_is_not_parenthesized_in_the_vars_block():
+    out = _report(
+        variables=(
+            Variable(
+                name="cutoff",
+                default_sql="'2024-01-01'",
+                source_file="etl.sql",
+                line_start=1,
+            ),
+        )
+    )
+    block = out.split("```yaml\n", 1)[1].split("```", 1)[0]
+    loaded = yaml.safe_load(block)
+    assert loaded["vars"]["cutoff"] == "'2024-01-01'"
+
+
+def test_already_parenthesized_default_is_not_double_wrapped_in_the_vars_block():
+    out = _report(
+        variables=(
+            Variable(
+                name="n",
+                default_sql="(1 + 2)",
+                source_file="etl.sql",
+                line_start=1,
+            ),
+        )
+    )
+    block = out.split("```yaml\n", 1)[1].split("```", 1)[0]
+    loaded = yaml.safe_load(block)
+    assert loaded["vars"]["n"] == "(1 + 2)"
+
+
+def test_vars_block_falls_back_to_unwrapped_when_the_default_will_not_parse():
+    """Defensive: an unparseable default_sql — which extraction should never
+    actually produce, since it always comes from a node that did parse —
+    must not crash report rendering.
+    """
+    out = _report(
+        variables=(
+            Variable(
+                name="n",
+                default_sql="SELEC garbage NOPE (",
+                source_file="etl.sql",
+                line_start=1,
+            ),
+        )
+    )
+    assert "SELEC garbage NOPE (" in out
 
 
 def test_question_bearing_decision_with_no_alternatives_omits_the_parenthetical():

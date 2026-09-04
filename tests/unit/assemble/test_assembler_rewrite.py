@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import yaml
+
 from dbtw.core.assemble import assemble
 from dbtw.core.context import read_project
+from dbtw.core.emit.report import render_report
 from dbtw.core.ingest import ClassifiedStatement, RawStatement, classify_statements, ingest
 from dbtw.core.passes import ModelDraft, PassState, run_passes
 
@@ -97,6 +100,7 @@ def test_inline_vars_substitutes_the_literal_and_declares_nothing():
     change = assemble(_variable_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True)
     assert "'2024-01-01'" in change.models[0].body
     assert "var(" not in change.models[0].body
+    assert change.variables == ()
 
 
 def _set_variable_state():
@@ -133,6 +137,46 @@ def test_set_variable_reference_is_actually_rewritten_to_a_var_call():
     assert "GETVARIABLE" not in body.upper()
     assert change.pending == ()
     assert [v.name for v in change.variables] == ["cutoff"]
+
+
+def _spark_set_var_state():
+    """FINDING 3 correction probe (spark): SET VAR declares `cutoff`; the
+    body reads it back via a BARE IDENTIFIER (`cutoff`) — Spark/Databricks'
+    real read-back form, since Spark has no GETVARIABLE function at all.
+    The statement must be left pending, with a Decision explaining why, and
+    the body must be left completely untouched: a bare `cutoff` is
+    indistinguishable from a column and must never be rewritten.
+    """
+    raw = RawStatement(
+        source_file="e.sql",
+        index=0,
+        text="SET VAR cutoff = '2024-06-30'",
+        line_start=1,
+        line_end=1,
+    )
+    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
+    draft = ModelDraft(
+        name="m",
+        qualified_name="m",
+        body="SELECT a FROM raw.t WHERE d >= cutoff",
+        materialization="table",
+        grants=(),
+        source_indices=(1,),
+        leading_comments=(),
+    )
+    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="spark")
+
+
+def test_spark_set_var_is_left_pending_with_an_explaining_decision():
+    change = assemble(_spark_set_var_state(), read_project(PROJECTS / "jaffle_shop"))
+    body = change.models[0].body
+    assert "var(" not in body
+    assert "cutoff" in body
+    assert len(change.pending) == 1
+    assert change.pending[0][1].raw.text == "SET VAR cutoff = '2024-06-30'"
+    assert change.variables == ()
+    deferred = [d for d in change.decisions if "bare identifier" in d.reason.lower()]
+    assert len(deferred) == 1
 
 
 def _declare_then_set_state():
@@ -263,3 +307,48 @@ def test_target_declared_variable_is_never_inlined_even_with_inline_vars():
     decision = next(d for d in change.decisions if d.key == "assemble.variable.start_date")
     assert "var(" in decision.action
     assert "not re-declared" in decision.action
+
+
+def _compound_default_state():
+    raw = RawStatement(
+        source_file="e.sql", index=0, text="DECLARE @n INT = 1 + 2", line_start=1, line_end=1
+    )
+    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
+    draft = ModelDraft(
+        name="m",
+        qualified_name="m",
+        body="SELECT @n * 3 AS result",
+        materialization="table",
+        grants=(),
+        source_indices=(1,),
+        leading_comments=(),
+    )
+    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="tsql")
+
+
+def _squashed(sql: str) -> str:
+    return sql.replace(" ", "").replace("\n", "")
+
+
+def test_var_path_and_inline_path_agree_on_a_compound_default():
+    """FINDING 7 (both paths must agree): DECLARE @n INT = 1 + 2, read as
+    @n * 3. --inline-vars produces (1 + 2) * 3 = 9 (FINDING 7's first fix);
+    the var()-kept path's YAML fragment must describe the exact same
+    expression, or a user who reads the report's vars block and pastes it
+    into dbt_project.yml gets a DIFFERENT answer (1 + 2 * 3 = 7) than a user
+    who ran --inline-vars on the identical script.
+    """
+    ctx = read_project(PROJECTS / "jaffle_shop")
+
+    kept = assemble(_compound_default_state(), ctx)
+    report = render_report(kept, ctx)
+    vars_block = report.split("```yaml\n", 1)[1].split("```", 1)[0]
+    loaded = yaml.safe_load(vars_block)
+    assert loaded["vars"]["n"] == "(1 + 2)"
+
+    inlined = assemble(_compound_default_state(), ctx, inline_vars=True)
+    assert "(1+2)*3" in _squashed(inlined.models[0].body)
+
+    # Both paths' effective SQL must literally be the same parenthesized
+    # expression — not just "both happen to evaluate to 9".
+    assert loaded["vars"]["n"].replace(" ", "") in _squashed(inlined.models[0].body)

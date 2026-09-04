@@ -83,6 +83,24 @@ def test_cte_alias_is_never_rewritten_case_insensitively():
     assert "totals" in out.lower()
 
 
+def test_quoted_case_distinct_table_is_rewritten_as_an_external_reference():
+    """FINDING 9 correction (rewrite.py mirror of refs.py's fix): a quoted,
+    case-distinct table read is a genuinely different, external table — not
+    the differently-cased CTE — so it must still be a rewrite candidate.
+    Unconditional casefolding (round 1) wrongly excluded it from rewriting,
+    same as it wrongly excluded it from refs.py's output.
+    """
+    body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "totals"'
+    out = rewrite_body(body, "postgres", _res("", "", "totals", "ref", "stg_totals"), {}, False)
+    assert "{{ ref('stg_totals') }}" in out
+
+
+def test_quoted_same_case_table_is_still_excluded_as_a_cte_read():
+    body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "Totals"'
+    out = rewrite_body(body, "postgres", _res("", "", "totals", "ref", "stg_totals"), {}, False)
+    assert "{{ ref(" not in out
+
+
 def test_parameter_becomes_a_var():
     out = rewrite_body(
         "SELECT a FROM t WHERE d >= @start_date", "tsql", {}, {"start_date": "'2024-01-01'"}, False
@@ -220,15 +238,32 @@ def test_unknown_getvariable_call_is_left_alone():
     assert "var(" not in out
 
 
-def test_getvariable_call_works_under_spark_dialect_too():
+def test_spark_style_bare_identifier_reference_is_never_rewritten():
+    """FINDING 3 correction: this test previously claimed
+    GETVARIABLE('cutoff') "works under spark dialect too" — true only of
+    sqlglot's parse (spark has no real GETVARIABLE either, so it falls back
+    to the same generic Anonymous-function shape duckdb does), but false as
+    a claim about real Spark/Databricks scripts, which have no GETVARIABLE
+    function at all. A real Spark SET VAR-declared variable is read back by
+    BARE IDENTIFIER (`SELECT cutoff`), which parses as exp.Column —
+    indistinguishable from an ordinary column of the same name. rewrite_body
+    must never treat a bare column as a variable reference just because its
+    name happens to match one; only exp.Parameter (@name) and the
+    unambiguous GETVARIABLE('name') call are ever rewritten — anything else
+    would silently turn a real column into a var() call. (variables.py's
+    spark deferral means extract_variables never even offers a
+    spark-declared name into this function's `variables` map in practice —
+    this is the belt-and-suspenders guarantee at the rewrite layer itself.)
+    """
     out = rewrite_body(
-        "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff')",
+        "SELECT cutoff FROM t WHERE d >= cutoff",
         "spark",
         {},
         {"cutoff": "'2024-06-30'"},
         False,
     )
-    assert "{{ var('cutoff') }}" in out
+    assert "var(" not in out
+    assert "cutoff" in out
 
 
 def test_getvariable_call_with_more_than_one_argument_is_left_alone():

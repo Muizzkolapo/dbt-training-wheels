@@ -27,9 +27,12 @@ sat inside (e.g. `@n * 3`), with no grouping added automatically, so an
 unparenthesized `1 + 2` swapped into `@n * 3` prints as `1 + 2 * 3` —
 operator precedence silently changes what the expression evaluates to (7,
 not the 9 the original script computed with @n substituted as a value).
-`_maybe_paren` wraps every inlined default except the atomic ones (a bare
-literal, NULL, a boolean, or an already-parenthesized default), where the
-extra parens would just be noise.
+`naming.maybe_paren` wraps every inlined default except the atomic ones (a
+bare literal, NULL, a boolean, or an already-parenthesized default), where
+the extra parens would just be noise — `emit.report`'s vars-block renderer
+needs the identical rule for the *other* path (the kept `var()` default,
+which reaches dbt_project.yml as YAML text instead), so the rule lives in
+`naming.py`, not here, where both can import the one definition.
 
 The table rewrite must re-apply the original alias: a bare `exp.Var` or
 `exp.Identifier` swapped in for a `FROM raw.orders AS o` silently drops the
@@ -39,10 +42,10 @@ the original table carried an alias — is the one injection shape that
 survives sqlglot's generator intact.
 
 A table's exclusion from rewriting mirrors `refs.py`'s CTE-alias rule
-exactly, casefolded comparison included: only an *unqualified* name matching
-a CTE alias is excluded, since a CTE alias is never schema-qualified and a
-qualified reference can never actually be a CTE. The two modules must stay
-mirror images of each other — if refs.py excludes a case-insensitively
+exactly, via the same shared `naming.is_cte_read`: only an *unqualified*
+name matching a CTE alias is excluded, since a CTE alias is never
+schema-qualified and a qualified reference can never actually be a CTE. The
+two modules must stay mirror images of each other — if refs.py excludes a
 matching CTE read from `_source_entries`/dependency edges but this module's
 own exclusion check disagreed, the read would be rewritten straight past the
 CTE onto an unrelated model that happened to share its name, silently
@@ -60,18 +63,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble.resolve import Resolution
-
-# Node types that never need defensive parens when inlined: a bare literal,
-# NULL, or boolean can't have its meaning changed by the surrounding
-# expression's operator precedence, and an already-parenthesized default is
-# already a self-contained unit.
-_ATOMIC_DEFAULT_TYPES = (exp.Literal, exp.Boolean, exp.Null, exp.Paren)
-
-
-def _maybe_paren(node: exp.Expr) -> exp.Expr:
-    if isinstance(node, _ATOMIC_DEFAULT_TYPES):
-        return node
-    return exp.Paren(this=node)
+from dbtw.core.naming import is_cte_read, maybe_paren
 
 
 def rewrite_body(
@@ -86,11 +78,11 @@ def rewrite_body(
     except SqlglotError:
         return body
 
-    cte_names = {cte.alias.casefold() for cte in node.find_all(exp.CTE)}
+    ctes = tuple(node.find_all(exp.CTE))
 
     def _rewrite_table(table: exp.Table) -> exp.Expr:
         is_candidate = bool(table.name) and (
-            table.db or table.catalog or table.name.casefold() not in cte_names
+            table.db or table.catalog or not is_cte_read(table, ctes)
         )
         if not is_candidate:
             return table
@@ -112,7 +104,7 @@ def rewrite_body(
         default_sql = variables[name]
         if inline_vars and default_sql is not None:
             try:
-                return _maybe_paren(sqlglot.parse_one(default_sql, read=dialect))
+                return maybe_paren(sqlglot.parse_one(default_sql, read=dialect))
             except SqlglotError:
                 # An un-inlinable default is better rendered as a var call than
                 # crashing the whole conversion.

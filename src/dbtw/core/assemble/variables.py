@@ -10,6 +10,17 @@ variable either via a bare Parameter lhs (`SET @x = 5`) or via the
 / `SET VAR x = 5` (Spark), whose lhs is a plain Column; a session setting
 (`SET search_path = analytics`, Column lhs, no VARIABLE marker) is not a
 variable and must be ignored without being consumed.
+
+The `kind="VARIABLE"` SET form is consumed for every dialect except
+spark/databricks. DuckDB reads such a variable back with an unambiguous
+`GETVARIABLE('name')` call (see rewrite.py), but Spark/Databricks has no
+such function — a SET VAR-declared session variable is read back by BARE
+IDENTIFIER (`SELECT cutoff`), which sqlglot parses as `exp.Column`,
+indistinguishable from an ordinary column reference of the same name.
+Rewriting that would silently turn a real column into a `var()` call — the
+exact silent-garbage class this project exists to avoid. So under
+spark/databricks, this form is left pending with a Decision explaining why,
+for a human to resolve, instead of being guessed at.
 """
 
 from __future__ import annotations
@@ -21,6 +32,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from dbtw.core.ingest.types import ClassifiedStatement
+from dbtw.core.passes.types import Decision
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,12 +45,47 @@ class Variable:
     line_start: int  # source line number
 
 
+# Dialects where a SET VAR-declared variable's read-back form (a bare
+# identifier) cannot be told apart from a column reference.
+_BARE_IDENTIFIER_READBACK_DIALECTS = frozenset({"spark", "databricks"})
+
+
+def _is_undeferrable_spark_set_var(node: exp.Expr, dialect: str | None) -> bool:
+    """True for a `SET VAR`/`SET VARIABLE` statement under spark/databricks —
+    the one shape this module must leave pending rather than consume.
+    """
+    if dialect not in _BARE_IDENTIFIER_READBACK_DIALECTS:
+        return False
+    if not isinstance(node, exp.Set):
+        return False
+    return any(item.args.get("kind") == "VARIABLE" for item in node.expressions)
+
+
+def _spark_deferral_decision(stmt: ClassifiedStatement, index: int) -> Decision:
+    raw = stmt.raw
+    return Decision(
+        key=f"variables.spark_set_var_deferred.{raw.source_file}:{index}",
+        tier=2,
+        action="left SET VAR/SET VARIABLE statement as written; not converted to a dbt var",
+        reason=(
+            "Spark/Databricks has no GETVARIABLE function; a SET VAR-declared "
+            "session variable is read back by a bare identifier, which parses "
+            "identically to a column reference — there is no safe way to tell "
+            "them apart, so this statement is left pending for a human to resolve"
+        ),
+        source_file=raw.source_file,
+        line_start=raw.line_start,
+        line_end=raw.line_end,
+    )
+
+
 def extract_variables(
     pending: tuple[tuple[int, ClassifiedStatement], ...],
     dialect: str | None,
-) -> tuple[tuple[Variable, ...], tuple[int, ...]]:
+) -> tuple[tuple[Variable, ...], tuple[int, ...], tuple[Decision, ...]]:
     variables: list[Variable] = []
     consumed: list[int] = []
+    decisions: list[Decision] = []
     for index, stmt in pending:
         if stmt.kind != "variable":
             continue
@@ -46,11 +93,14 @@ def extract_variables(
             node = sqlglot.parse_one(stmt.raw.text, read=dialect)
         except SqlglotError:
             continue
+        if _is_undeferrable_spark_set_var(node, dialect):
+            decisions.append(_spark_deferral_decision(stmt, index))
+            continue
         found = _variables_in(node, stmt.raw.source_file, stmt.raw.line_start)
         if found:
             variables.extend(found)
             consumed.append(index)
-    return tuple(variables), tuple(consumed)
+    return tuple(variables), tuple(consumed), tuple(decisions)
 
 
 def _variables_in(node: exp.Expr, source_file: str, line_start: int) -> tuple[Variable, ...]:

@@ -426,8 +426,14 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     # deliberately the last thing that touches a model's body.
 
     # Step 2: pull script variables out of pending; consumed statements never
-    # come back around the pipeline again.
-    variables_found, consumed_indices = extract_variables(state.pending, state.dialect)
+    # come back around the pipeline again. A spark/databricks SET VAR/SET
+    # VARIABLE statement is never consumed (its read-back form is a bare
+    # identifier, ambiguous with a column reference); extract_variables
+    # records the Decision that explains why instead.
+    variables_found, consumed_indices, spark_deferral_decisions = extract_variables(
+        state.pending, state.dialect
+    )
+    new_decisions.extend(spark_deferral_decisions)
     consumed = set(consumed_indices)
     remaining_pending = tuple(item for item in state.pending if item[0] not in consumed)
 
@@ -523,8 +529,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
                 )
             else:
                 action = (
-                    f"declared {variable.name} as a dbt var, "
-                    f"referenced via var('{variable.name}')"
+                    f"declared {variable.name} as a dbt var, referenced via var('{variable.name}')"
                 )
             kept_variable_index[variable.name] = len(kept_variables)
             kept_variables.append(variable)
