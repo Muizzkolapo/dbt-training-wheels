@@ -49,18 +49,24 @@ def _build_parser() -> argparse.ArgumentParser:
     convert.add_argument(
         "--dialect", metavar="DIALECT", default=None, help="The source SQL dialect"
     )
+    convert.add_argument(
+        "--inline-vars",
+        action="store_true",
+        default=False,
+        help="replace script variables with their literal values instead of dbt var() calls",
+    )
 
     return parser
 
 
-def _convert(sql_path: str, project: str, out: str, dialect: str | None) -> int:
+def _convert(sql_path: str, project: str, out: str, dialect: str | None, inline_vars: bool) -> int:
     ingest_result = ingest(sql_path, dialect)
     for warning in ingest_result.warnings:
         print(f"warning: {warning}", file=sys.stderr)
     classified = classify_statements(ingest_result)
     state = run_passes(classified, ingest_result.dialect)
     ctx = read_project(project)
-    change = assemble(state, ctx)
+    change = assemble(state, ctx, inline_vars=inline_vars)
 
     out_dir = Path(out)
     emit(change, ctx, out_dir)
@@ -79,7 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        return _convert(args.sql_path, args.project, args.out, args.dialect)
+        return _convert(args.sql_path, args.project, args.out, args.dialect, args.inline_vars)
     except _USAGE_ERRORS as exc:
         print(str(exc), file=sys.stderr)
         return 2
