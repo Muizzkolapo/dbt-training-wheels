@@ -7,7 +7,10 @@ from collections.abc import Mapping
 
 from dbtw.core.assemble.layers import layer_roles, role_for
 from dbtw.core.assemble.refs import references_in
+from dbtw.core.assemble.resolve import resolve_references
+from dbtw.core.assemble.rewrite import rewrite_body
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
+from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ProjectContext
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
@@ -226,7 +229,7 @@ def _topological(models: list[AssembledModel]) -> tuple[list[AssembledModel], li
     return [by_name[name] for name in ordered_names], decisions
 
 
-def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
+def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
     draft_names = {d.name for d in drafts}
@@ -386,6 +389,7 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
 
     # Step 8: translate dependency names to final names now that every draft has one.
     models: list[AssembledModel] = []
+    final_to_draft_name: dict[str, str] = {}
     for draft in drafts:
         if draft.name in dropped_names:
             continue
@@ -404,15 +408,177 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
                 source_indices=model.source_indices,
             )
         )
+        final_to_draft_name[model.name] = draft.name
 
     ordered, cycle_decisions = _topological(models)
     new_decisions.extend(cycle_decisions)
 
+    # From here on, everything above (placement, naming, dependency edges, and
+    # source entries) has been computed from the RAW bodies — required, since
+    # a rewritten body no longer re-parses as SQL. The rewrite stage below is
+    # deliberately the last thing that touches a model's body.
+
+    # Step 2: pull script variables out of pending; consumed statements never
+    # come back around the pipeline again.
+    variables_found, consumed_indices = extract_variables(state.pending, state.dialect)
+    consumed = set(consumed_indices)
+    remaining_pending = tuple(item for item in state.pending if item[0] not in consumed)
+
+    declared_var_names = {name for name, _ in ctx.vars_declared}
+    variable_defaults: dict[str, str | None] = {}
+    kept_variables: list[Variable] = []
+    seen_var_names: set[str] = set()
+    for variable in variables_found:
+        if variable.name in seen_var_names:
+            continue
+        seen_var_names.add(variable.name)
+        variable_defaults[variable.name] = variable.default_sql
+
+        if variable.name in declared_var_names:
+            new_decisions.append(
+                Decision(
+                    key=f"assemble.variable.{variable.name}",
+                    tier=2,
+                    action=(
+                        f"{variable.name} already declared as a var in the target project; "
+                        "its reference was rewritten to var(), not re-declared"
+                    ),
+                    reason=(
+                        f"{variable.name} is already declared in the target project's vars; "
+                        "declaring it again would duplicate it"
+                    ),
+                    source_file=variable.source_file,
+                    line_start=variable.line_start,
+                    line_end=variable.line_start,
+                )
+            )
+            continue
+
+        if inline_vars:
+            chosen = "inline the literal value"
+            alternatives = ("keep as a dbt var",)
+            action = f"inlined {variable.name}'s literal default value in place of the parameter"
+        else:
+            chosen = "keep as a dbt var"
+            alternatives = ("inline the literal value",)
+            action = f"declared {variable.name} as a dbt var, referenced via var('{variable.name}')"
+            kept_variables.append(variable)
+
+        new_decisions.append(
+            Decision(
+                key=f"assemble.variable.{variable.name}",
+                tier=2,
+                action=action,
+                reason=(
+                    f"{variable.name} is a script parameter with no fixed value in the "
+                    "source SQL; it can be kept as a run-time dbt var or inlined as a "
+                    "literal constant"
+                ),
+                source_file=variable.source_file,
+                line_start=variable.line_start,
+                line_end=variable.line_start,
+                question=f"Is {variable.name} a run-time parameter or a constant?",
+                chosen=chosen,
+                alternatives=alternatives,
+            )
+        )
+
+    # Step 3: resolution maps, built from the assembled models (their final
+    # names), the target project's existing models/sources, and the sources
+    # this change itself proposes.
+    draft_to_final = {d.name: final_names[d.name] for d in drafts}
+    qualified_to_final = {d.qualified_name: final_names[d.name] for d in drafts}
+    existing_model_names = frozenset(m.name for m in ctx.existing_models)
+    declared_sources_map = {(s.source_name, s.table): s.source_name for s in ctx.existing_sources}
+    proposed_sources_map = {(e.source_name, e.table): e.source_name for e in source_entries}
+
+    # Step 4 + 5: rewrite each model's body into dbt Jinja, last, and record
+    # a Decision for every rewrite and every reference left unresolved.
+    rewritten_models: list[AssembledModel] = []
+    for model in ordered:
+        draft_name = final_to_draft_name[model.name]
+        model_refs = refs[draft_name]
+        resolutions = resolve_references(
+            model_refs,
+            draft_to_final=draft_to_final,
+            qualified_to_final=qualified_to_final,
+            existing_models=existing_model_names,
+            declared_sources=declared_sources_map,
+            proposed_sources=proposed_sources_map,
+        )
+        resolutions_by_key = {(r.ref.catalog, r.ref.db, r.ref.name): r for r in resolutions}
+        rewritten_body = rewrite_body(
+            model.body, state.dialect, resolutions_by_key, variable_defaults, inline_vars
+        )
+        rewritten_models.append(
+            AssembledModel(
+                name=model.name,
+                path=model.path,
+                body=rewritten_body,
+                materialization=model.materialization,
+                grants=model.grants,
+                layer=model.layer,
+                depends_on=model.depends_on,
+                leading_comments=model.leading_comments,
+                source_indices=model.source_indices,
+            )
+        )
+
+        ref_resolutions = [r for r in resolutions if r.kind == "ref"]
+        source_resolutions = [r for r in resolutions if r.kind == "source"]
+        unresolved_resolutions = [r for r in resolutions if r.kind == "unresolved"]
+
+        summary_parts = []
+        if ref_resolutions:
+            summary_parts.append(f"{len(ref_resolutions)} reference(s) rewritten to ref()")
+        if source_resolutions:
+            summary_parts.append(f"{len(source_resolutions)} reference(s) rewritten to source()")
+        if not summary_parts:
+            summary_parts.append("no references needed rewriting")
+        chosen_parts = [
+            f"{r.ref.name}: {r.reason}" for r in (*ref_resolutions, *source_resolutions)
+        ]
+
+        new_decisions.append(
+            Decision(
+                key=f"assemble.rewrite.{model.name}",
+                tier=2,
+                action=f"rewrote {model.name}'s body: " + ", ".join(summary_parts),
+                reason=(
+                    "raw table references were mapped to this project's models and "
+                    "sources so the body runs as dbt Jinja"
+                ),
+                source_file="",
+                line_start=0,
+                line_end=0,
+                chosen="; ".join(chosen_parts) if chosen_parts else "no rewrite applied",
+                alternatives=tuple(sorted({r.ref.name for r in unresolved_resolutions})),
+            )
+        )
+
+        for r in unresolved_resolutions:
+            label = _qualified(r.ref) or r.ref.name
+            new_decisions.append(
+                Decision(
+                    key=f"assemble.rewrite_unresolved.{model.name}.{label}",
+                    tier=2,
+                    action=(
+                        f"{label} in {model.name} left as written; could not resolve it "
+                        "to ref() or source()"
+                    ),
+                    reason=r.reason,
+                    source_file="",
+                    line_start=0,
+                    line_end=0,
+                )
+            )
+
     return ProjectChange(
-        models=tuple(ordered),
+        models=tuple(rewritten_models),
         sources=source_entries,
         decisions=state.decisions + tuple(new_decisions),
-        pending=state.pending,
+        pending=remaining_pending,
         dialect=state.dialect,
         project_name=ctx.project_name,
+        variables=tuple(kept_variables),
     )
