@@ -53,3 +53,43 @@ def test_qualified_reference_is_never_mistaken_for_a_cte_even_by_join():
     body = "WITH c AS (SELECT 1 AS x) SELECT * FROM c JOIN raw.c ON 1 = 1"
     refs = references_in(body, None)
     assert refs == (TableRef("", "raw", "c"),)
+
+
+def test_cte_alias_matching_is_case_insensitive():
+    """FINDING 9 probe (tsql, case-insensitive identifiers): `WITH Totals AS
+    (...) SELECT * FROM totals` reads the CTE, not some external `totals`
+    table — cte_names compared the alias's original case against the read's
+    original case and missed the match, so the CTE read looked exactly like
+    an undeclared external reference.
+    """
+    body = "WITH Totals AS (SELECT 1 AS x) SELECT * FROM totals"
+    assert references_in(body, "tsql") == ()
+
+
+def test_quoted_case_distinct_table_read_is_not_swallowed_by_a_differently_cased_cte():
+    """FINDING 9 correction: unconditionally casefolding the CTE-alias
+    comparison (round 1's fix) introduced a false positive — a genuinely
+    case-sensitive QUOTED table read now vanished as if it were the CTE.
+    Postgres quoted identifiers are case-sensitive: "totals" and "Totals"
+    are different names. Casefolding must apply only when NEITHER
+    identifier is quoted; when either is, the comparison must be exact.
+    """
+    body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "totals"'
+    assert references_in(body, "postgres") == (TableRef(catalog="", db="", name="totals"),)
+
+
+def test_one_side_quoted_forces_an_exact_comparison_too():
+    """Mixed quoting (one side quoted, the other not) is the conservative
+    case: an exact comparison is required, not a casefolded one — an
+    unquoted CTE and a quoted, case-distinct read must not silently match.
+    """
+    body = 'WITH Totals AS (SELECT 1 AS x) SELECT * FROM "totals"'
+    assert references_in(body, "postgres") == (TableRef(catalog="", db="", name="totals"),)
+
+
+def test_quoted_same_case_table_read_still_matches_its_cte():
+    """A quoted read that matches its CTE's alias exactly (same case) must
+    still be recognized as the CTE, not treated as an external reference.
+    """
+    body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "Totals"'
+    assert references_in(body, "postgres") == ()
