@@ -21,6 +21,9 @@ class Decision:
     source_file: str
     line_start: int
     line_end: int
+    question: str = ""  # Tier-2 only: the design question posed to the user
+    chosen: str = ""  # Tier-2 only: what the user chose
+    alternatives: tuple[str, ...] = ()  # Tier-2 only: alternatives presented
 
 
 @dataclass(frozen=True, slots=True)

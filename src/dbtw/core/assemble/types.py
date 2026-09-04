@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from dbtw.core.assemble.variables import Variable
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.passes.types import Decision
 
@@ -51,3 +52,4 @@ class ProjectChange:
     pending: tuple[tuple[int, ClassifiedStatement], ...]  # later-tier material
     dialect: str | None
     project_name: str
+    variables: tuple[Variable, ...] = ()  # variables referenced in the models
