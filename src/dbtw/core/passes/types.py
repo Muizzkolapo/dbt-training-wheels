@@ -37,6 +37,8 @@ class ModelDraft:
     grants: tuple[tuple[str, tuple[str, ...]], ...]  # (privilege, principals)
     source_indices: tuple[int, ...]  # pipeline indices folded into this draft
     leading_comments: tuple[str, ...]  # statement-level comments, no delimiters
+    incremental_strategy: str | None = None  # None means "not incremental"
+    unique_key: tuple[str, ...] = ()  # empty means no unique key
 
 
 @dataclass(frozen=True, slots=True)
