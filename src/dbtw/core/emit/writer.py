@@ -18,6 +18,16 @@ _REPORT_NAME = "CONVERSION_REPORT.md"
 _SOURCES_NAME = "sources.yml"
 
 
+class UnsafeOutputPathError(ValueError):
+    """A model's path would resolve outside out_dir. Input-driven — the model
+    name came from the source SQL (e.g. a quoted identifier like
+    "../../escape") — never a dbtw bug, so callers should treat it as a
+    usage error, not a crash. Subclasses ValueError: emit() already raised
+    plain ValueError here, and existing callers/tests that catch ValueError
+    must keep working unchanged.
+    """
+
+
 def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> tuple[Path, ...]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -54,7 +64,7 @@ def _safe_join(out_dir: Path, relative: str | Path) -> Path:
     out_root = out_dir.resolve()
     resolved = target.resolve()
     if resolved != out_root and out_root not in resolved.parents:
-        raise ValueError(
+        raise UnsafeOutputPathError(
             f"refusing to write outside out_dir: {relative!r} would resolve to {resolved}"
         )
     return target

@@ -135,6 +135,42 @@ def test_two_drafts_resolving_to_one_name_keep_the_later_with_an_honest_decision
     assert not any("cycle" in d.action.lower() for d in change.decisions)
 
 
+def test_dropped_draft_placement_decisions_do_not_duplicate_keys_or_describe_it():
+    """orders and stg_orders both resolve to the final name stg_orders (which
+    already exists in the target project). Only stg_orders survives; its own
+    placement Decisions (collision, materialization) must appear exactly
+    once each, and the dropped orders draft must contribute nothing besides
+    the honest "both resolve to" Decision that explains the drop.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")  # already has stg_orders
+    change = assemble(
+        _state(
+            _draft("orders", "SELECT a FROM raw_orders", "view", source_indices=(0,)),
+            _draft("stg_orders", "SELECT a FROM raw_orders", "view", source_indices=(1,)),
+        ),
+        ctx,
+    )
+    assert [m.name for m in change.models] == ["stg_orders"]
+
+    keys = [d.key for d in change.decisions]
+    assert len(set(keys)) == len(keys), f"duplicate decision keys: {keys}"
+
+    both_resolve = [d for d in change.decisions if "both resolve to" in d.action]
+    assert len(both_resolve) == 1
+    assert "orders" in both_resolve[0].action and "stg_orders" in both_resolve[0].action
+
+    for d in change.decisions:
+        if d is both_resolve[0]:
+            continue
+        # No surviving placement Decision may be keyed to the dropped draft's
+        # own name — its rename/collision/materialization/path decisions were
+        # all for a file that was never written.
+        assert d.key != "assemble.materialization.orders"
+        assert d.key != "assemble.collision.orders"
+        assert d.key != "assemble.path.orders"
+        assert d.key != "assemble.rename.orders"
+
+
 def _model(name: str, depends_on: tuple[str, ...]) -> AssembledModel:
     return AssembledModel(
         name=name,
@@ -166,6 +202,23 @@ def test_topological_duplicate_names_never_produce_a_false_cycle_decision():
     ordered, decisions = _topological(models)
     assert len(ordered) == 1
     assert decisions == []
+
+
+def test_qualified_reference_does_not_create_a_false_dependency_on_a_bare_named_draft():
+    """A draft targeting analytics.orders and a draft reading raw.orders share
+    only a bare name ("orders"); they are different tables and must not be
+    linked by a dependency edge.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = assemble(
+        _state(
+            _draft("orders", "SELECT 1 AS x", qualified_name="analytics.orders"),
+            _draft("stg_raw_orders", "SELECT a FROM raw.orders"),
+        ),
+        ctx,
+    )
+    models = _by_name(change)
+    assert models["stg_raw_orders"].depends_on == ()
 
 
 def test_single_non_synonym_layer_is_used_as_a_last_resort(tmp_path):

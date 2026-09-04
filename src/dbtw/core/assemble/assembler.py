@@ -17,6 +17,15 @@ from dbtw.core.passes.types import Decision, ModelDraft, PassState
 _FALLBACK_ROLE_ORDER = ("mart", "staging", "intermediate")
 
 
+def _qualified(ref: TableRef) -> str:
+    """Dotted catalog.db.name, dropping empty parts; bare name if unqualified.
+
+    Mirrors tier1._qualified — the same rule that produces ModelDraft.qualified_name
+    — so a schema-qualified reference can be compared against it directly.
+    """
+    return ".".join(part for part in (ref.catalog, ref.db, ref.name) if part)
+
+
 def _decision(kind: str, name: str, action: str, reason: str) -> Decision:
     return Decision(
         key=f"assemble.{kind}.{name}",
@@ -91,7 +100,7 @@ def _final_name(
     evidence = detection.evidence if detection is not None else f"{layer.prefix} prefix"
     action = f"renamed {draft_name} to {final_name} (prefix {layer.prefix!r} — {evidence})"
     reason = f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}"
-    return final_name, [_decision("rename", final_name, action, reason)]
+    return final_name, [_decision("rename", draft_name, action, reason)]
 
 
 def _source_entries(
@@ -102,25 +111,36 @@ def _source_entries(
 ) -> tuple[tuple[SourceEntry, ...], list[Decision]]:
     """External references become SourceEntry rows, or a Decision when they can't.
 
-    A reference is external when its name matches neither a draft in this change
-    nor an existing model in the target project. An external reference without a
+    A reference is external when it matches neither a draft in this change nor
+    an existing model in the target project. An external reference without a
     schema is reported, never guessed at — inventing a schema would be a
     fabrication. An external, schema-qualified reference already declared as a
     source in the target project is skipped with a Decision citing where it's
     declared, instead of being duplicated.
+
+    Matching a *qualified* reference (one with a db/schema) against a draft or
+    an existing model is done by dotted qualified name only, never by bare
+    name: a qualified reference can never actually be the CTE-free bare
+    ModelInfo entries read off the target project's filesystem — those carry
+    no schema information at all — and it can only be a draft in this change
+    when that draft's own qualified_name matches exactly. An unqualified
+    reference keeps matching by bare name, as before.
     """
     existing_model_names = {m.name for m in ctx.existing_models}
+    draft_qualified_names = {d.qualified_name for d in drafts}
     declared = {(s.source_name, s.table): s for s in ctx.existing_sources}
 
     external: dict[tuple[str, str], TableRef] = {}
     unqualified: set[str] = set()
     for draft in drafts:
         for ref in refs[draft.name]:
-            if ref.name in draft_names or ref.name in existing_model_names:
-                continue
             if ref.db:
+                if _qualified(ref) in draft_qualified_names:
+                    continue
                 external.setdefault((ref.db, ref.name), ref)
             else:
+                if ref.name in draft_names or ref.name in existing_model_names:
+                    continue
                 unqualified.add(ref.name)
 
     decisions: list[Decision] = []
@@ -214,14 +234,27 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
     # Step 1
     refs = {d.name: references_in(d.body, state.dialect) for d in drafts}
 
-    # Step 2
-    deps: dict[str, frozenset[str]] = {
-        name: frozenset(r.name for r in refs[name] if r.name in draft_names and r.name != name)
-        for name in refs
-    }
+    # Step 2. A qualified reference (has a db/schema) can only be a dependency
+    # on a draft whose own qualified_name matches it exactly — its bare name
+    # matching some unrelated draft's bare name is not enough (e.g. a read of
+    # raw.orders is not a dependency on a draft that merely happens to be
+    # named "orders" while targeting analytics.orders). An unqualified
+    # reference keeps matching by bare draft name, as before.
+    qualified_to_draft_name = {d.qualified_name: d.name for d in drafts}
+    deps: dict[str, frozenset[str]] = {}
+    for name in refs:
+        dep_names: set[str] = set()
+        for r in refs[name]:
+            if r.db:
+                dep_draft_name = qualified_to_draft_name.get(_qualified(r))
+                if dep_draft_name is not None and dep_draft_name != name:
+                    dep_names.add(dep_draft_name)
+            elif r.name in draft_names and r.name != name:
+                dep_names.add(r.name)
+        deps[name] = frozenset(dep_names)
     dependents: dict[str, set[str]] = {name: set() for name in refs}
-    for name, dep_names in deps.items():
-        for dep in dep_names:
+    for name, deps_for_name in deps.items():
+        for dep in deps_for_name:
             dependents[dep].add(name)
     dependents_frozen = {name: frozenset(deps_of) for name, deps_of in dependents.items()}
 
@@ -234,22 +267,32 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
 
     final_names: dict[str, str] = {}
     placed: dict[str, AssembledModel] = {}
+    # Keyed by draft.name — unique per tier-1's upsert invariant, unlike
+    # final_name, which two drafts can share (one gets prefixed into the
+    # other's own name; see the dedup loop below). Collecting each draft's
+    # own placement Decisions here, instead of appending them to
+    # new_decisions immediately, lets a dropped draft's Decisions be
+    # discarded wholesale once dropped_names is known — a decision keyed and
+    # worded around a model that was never written is not a fix, it's a
+    # different bug.
+    placement_decisions: dict[str, list[Decision]] = {}
 
     for draft in drafts:
+        local_decisions: list[Decision] = []
         role = role_for(draft.name, deps, dependents_frozen)
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
-        new_decisions.extend(layer_decisions)
+        local_decisions.extend(layer_decisions)
 
         final_name, name_decisions = _final_name(draft.name, layer, detections_by_key)
-        new_decisions.extend(name_decisions)
+        local_decisions.extend(name_decisions)
         final_names[draft.name] = final_name
 
         existing = existing_by_name.get(final_name)
         if existing is not None:
-            new_decisions.append(
+            local_decisions.append(
                 _decision(
                     "collision",
-                    final_name,
+                    draft.name,
                     f"{final_name} already exists in the target project at {existing.path}",
                     "a model with this final name is already present in the target project",
                 )
@@ -260,10 +303,10 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
         else:
             base = ctx.model_paths[0] if ctx.model_paths else "models"
             path = f"{base}/{final_name}.sql"
-            new_decisions.append(
+            local_decisions.append(
                 _decision(
                     "path",
-                    final_name,
+                    draft.name,
                     f"placed {final_name} at {path} — no layer resolved for it",
                     f"the target project has no layers at all, so there is nowhere to "
                     f"place {final_name}; fell back to the first configured model-path, "
@@ -274,10 +317,10 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
 
         if layer is not None and draft.materialization == layer.materialization:
             materialization = None
-            new_decisions.append(
+            local_decisions.append(
                 _decision(
                     "materialization",
-                    final_name,
+                    draft.name,
                     f"materialized config omitted for {final_name} "
                     f"(matches the {layer.name} layer default of {layer.materialization!r})",
                     "materialization matches the layer's detected default; "
@@ -298,6 +341,7 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
             leading_comments=draft.leading_comments,
             source_indices=draft.source_indices,
         )
+        placement_decisions[draft.name] = local_decisions
 
     # Two drafts can resolve to the same final name (e.g. one gets prefixed
     # into the other's own name). A dbt model is one file, so — before the
@@ -330,6 +374,15 @@ def assemble(state: PassState, ctx: ProjectContext) -> ProjectChange:
                     "the same final name — resolve this collision in the source SQL",
                 )
             )
+
+    # Only a kept draft's own placement Decisions are real — a dropped
+    # draft's file was never written, so its rename/collision/path/
+    # materialization Decisions above are discarded; the "both resolve to"
+    # Decision just recorded is the only honest record of it.
+    for draft in drafts:
+        if draft.name in dropped_names:
+            continue
+        new_decisions.extend(placement_decisions[draft.name])
 
     # Step 8: translate dependency names to final names now that every draft has one.
     models: list[AssembledModel] = []

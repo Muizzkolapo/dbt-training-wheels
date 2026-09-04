@@ -13,6 +13,12 @@ def _run(tmp_path, *extra: str) -> int:
     return main(["convert", str(SQL), "--project", str(PROJECT), "--out", str(tmp_path), *extra])
 
 
+def _run_against(sql_path, out_dir, *extra: str) -> int:
+    return main(
+        ["convert", str(sql_path), "--project", str(PROJECT), "--out", str(out_dir), *extra]
+    )
+
+
 def test_convert_writes_models_and_a_report(tmp_path, capsys):
     assert _run(tmp_path, "--dialect", "tsql") == 0
     report = tmp_path / "CONVERSION_REPORT.md"
@@ -61,3 +67,52 @@ def test_no_arguments_exits_two(capsys):
     with pytest.raises(SystemExit) as excinfo:
         main([])
     assert excinfo.value.code == 2
+
+
+def test_ingest_warnings_are_printed_to_stderr(tmp_path, capsys):
+    """A non-UTF-8 .sql file is skipped by ingest() and recorded as a warning
+    (ingestor.py). The CLI must surface it — silently dropping an entire
+    input file while still exiting 0 is exactly the kind of untruthful
+    report the project's reporting rule forbids.
+    """
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    (sql_dir / "good.sql").write_text("SELECT 1 AS a", encoding="utf-8")
+    bad_file = sql_dir / "bad.sql"
+    bad_file.write_bytes(b"SELECT 1 AS a -- \xff\xfe not valid utf-8 \x80")
+    out_dir = tmp_path / "out"
+
+    code = _run_against(sql_dir, out_dir, "--dialect", "tsql")
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "warning:" in err
+    assert "bad.sql" in err
+
+
+def test_out_path_pointing_at_an_existing_file_exits_two_not_a_traceback(tmp_path, capsys):
+    out_as_file = tmp_path / "out"
+    out_as_file.write_text("occupied", encoding="utf-8")
+    code = _run_against(SQL, out_as_file, "--dialect", "tsql")
+    assert code == 2
+    assert capsys.readouterr().err
+
+
+def test_a_quoted_identifier_that_escapes_out_dir_exits_two_not_a_traceback(tmp_path, capsys):
+    """A quoted identifier like "../../deep_escape" survives ingestion and
+    naming untouched, and only trips emit's out-of-out_dir guard at write
+    time. That guard is correct to refuse the write — but the refusal is
+    input-driven (a quoted identifier in the source SQL), not a dbtw bug,
+    and must exit 2 like every other bad-input case, not crash with a
+    traceback.
+    """
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    (sql_dir / "escape.sql").write_text(
+        "CREATE TABLE base_t AS SELECT 1 AS a;\n"
+        'CREATE TABLE "../../deep_escape" AS SELECT a FROM base_t;\n',
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out"
+    code = _run_against(sql_dir, out_dir, "--dialect", "tsql")
+    assert code == 2
+    assert capsys.readouterr().err

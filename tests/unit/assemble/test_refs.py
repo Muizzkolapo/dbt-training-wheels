@@ -42,3 +42,14 @@ def test_duplicates_collapse_and_order_is_deterministic():
 
 def test_unparseable_body_yields_no_references():
     assert references_in("SELEC nope FRM", None) == ()
+
+
+def test_qualified_reference_survives_even_when_its_bare_name_matches_a_cte():
+    body = "WITH orders AS (SELECT * FROM raw.orders) SELECT * FROM orders"
+    assert references_in(body, None) == (TableRef("", "raw", "orders"),)
+
+
+def test_qualified_reference_is_never_mistaken_for_a_cte_even_by_join():
+    body = "WITH c AS (SELECT 1 AS x) SELECT * FROM c JOIN raw.c ON 1 = 1"
+    refs = references_in(body, None)
+    assert refs == (TableRef("", "raw", "c"),)
