@@ -265,3 +265,54 @@ def grants_pass(state: PassState) -> PassState:
         decisions=tuple(decisions),
         dialect=state.dialect,
     )
+
+
+def drop_session_pass(state: PassState) -> PassState:
+    pending: list[tuple[int, ClassifiedStatement]] = []
+    decisions = list(state.decisions)
+    for index, stmt in state.pending:
+        if stmt.kind != "session":
+            pending.append((index, stmt))
+            continue
+        decisions.append(
+            _decision(
+                stmt,
+                index,
+                "session",
+                action=f"dropped session statement: {stmt.raw.text.splitlines()[-1][:60]}",
+                reason="connection and session state live in profiles.yml, not in models",
+            )
+        )
+    return PassState(
+        pending=tuple(pending),
+        drafts=state.drafts,
+        decisions=tuple(decisions),
+        dialect=state.dialect,
+    )
+
+
+def drop_ddl_pass(state: PassState) -> PassState:
+    pending: list[tuple[int, ClassifiedStatement]] = []
+    decisions = list(state.decisions)
+    for index, stmt in state.pending:
+        if stmt.kind not in ("ddl_other", "truncate"):
+            pending.append((index, stmt))
+            continue
+        decisions.append(
+            _decision(
+                stmt,
+                index,
+                "ddl",
+                action=f"dropped DDL statement: {stmt.raw.text.splitlines()[-1][:60]}",
+                reason=(
+                    "dbt rebuilds objects from scratch; if an index is genuinely needed it "
+                    "belongs in a post-hook"
+                ),
+            )
+        )
+    return PassState(
+        pending=tuple(pending),
+        drafts=state.drafts,
+        decisions=tuple(decisions),
+        dialect=state.dialect,
+    )
