@@ -56,6 +56,8 @@ def _classify_node(node: exp.Expr) -> tuple[StatementKind, str]:
         return "truncate", "TRUNCATE empties a table"
     if isinstance(node, exp.Grant):
         return "grant", "GRANT manages permissions"
+    if isinstance(node, exp.Revoke):
+        return "grant", "REVOKE manages permissions"
     if isinstance(node, exp.Alter):
         if str(node.args.get("kind") or "").upper() == "SESSION":
             return "session", "ALTER SESSION sets connection state"
@@ -88,7 +90,9 @@ def _classify_create(node: exp.Create) -> tuple[StatementKind, str]:
             return "create_table_as", "CREATE TABLE ... AS SELECT"
         return "ddl_other", "CREATE TABLE without a SELECT (schema-only DDL)"
     if kind == "VIEW":
-        return "create_view", "CREATE VIEW from a query"
+        if isinstance(node.expression, exp.Query):
+            return "create_view", "CREATE VIEW from a query"
+        return "ddl_other", "CREATE VIEW without a query body (schema-only DDL)"
     if kind in ("PROCEDURE", "FUNCTION"):
         return "procedural", f"CREATE {kind} is procedural code"
     return "ddl_other", f"CREATE {kind or 'object'}"

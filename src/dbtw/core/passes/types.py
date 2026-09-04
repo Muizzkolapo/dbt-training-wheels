@@ -28,6 +28,7 @@ class ModelDraft:
     """A dbt model in the making. Naming/layout finalized at assemble (slice 4)."""
 
     name: str  # target table identifier (unqualified)
+    qualified_name: str  # dotted catalog.db.name (non-empty parts only); bare name if unqualified
     body: str  # the SELECT, regenerated pretty; inner comments preserved
     materialization: str  # "table" | "view"; assemble may omit if layer default
     grants: tuple[tuple[str, tuple[str, ...]], ...]  # (privilege, principals)

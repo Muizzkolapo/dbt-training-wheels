@@ -38,6 +38,11 @@ def _target_of(node: exp.Expr) -> exp.Table | None:
     return None
 
 
+def _qualified(table: exp.Table) -> str:
+    """Dotted catalog.db.name, dropping empty parts; bare name if unqualified."""
+    return ".".join(part for part in (table.catalog, table.db, table.name) if part)
+
+
 def _decision(
     stmt: ClassifiedStatement, index: int, name: str, action: str, reason: str
 ) -> Decision:
@@ -52,12 +57,31 @@ def _decision(
     )
 
 
-def _upsert_draft(
+def _replace_draft(
     drafts: tuple[ModelDraft, ...], new: ModelDraft
-) -> tuple[tuple[ModelDraft, ...], bool]:
-    """Insert new draft; replace an existing same-named one. Returns (drafts, replaced)."""
+) -> tuple[tuple[ModelDraft, ...], str | None, ModelDraft | None]:
+    """Upsert `new` keyed by unqualified name, honestly resolving collisions.
+
+    Compares file order by the highest source index each draft folds in, so
+    whichever definition is later in the file always wins — regardless of
+    which pass or which call built it first.
+
+    Returns (drafts, verdict, existing):
+    - verdict is None when there was no prior draft for this name.
+    - "redefinition": same qualified name defined twice; later statement wins.
+    - "collision": different qualified names map to the same model name; later wins.
+    - "superseded": the existing draft is later in file order; `new` is dropped
+      and `drafts` is returned unchanged.
+    - `existing` is the prior draft when one was found, else None.
+    """
+    existing = next((d for d in drafts if d.name == new.name), None)
+    if existing is None:
+        return (*drafts, new), None, None
+    if max(existing.source_indices) > max(new.source_indices):
+        return drafts, "superseded", existing
     kept = tuple(d for d in drafts if d.name != new.name)
-    return (*kept, new), len(kept) != len(drafts)
+    verdict = "redefinition" if existing.qualified_name == new.qualified_name else "collision"
+    return (*kept, new), verdict, existing
 
 
 def build_models_pass(state: PassState) -> PassState:
@@ -91,21 +115,57 @@ def build_models_pass(state: PassState) -> PassState:
         materialization = "view" if stmt.kind == "create_view" else "table"
         draft = ModelDraft(
             name=table.name,
+            qualified_name=_qualified(table),
             body=body,
             materialization=materialization,
             grants=(),
             source_indices=(index,),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts, replaced = _upsert_draft(drafts, draft)
-        if replaced:
+        drafts, verdict, existing = _replace_draft(drafts, draft)
+        if verdict == "superseded":
             decisions.append(
                 _decision(
                     stmt,
                     index,
-                    "build",
+                    "build.supersede",
+                    action=(
+                        f"superseded: this earlier definition of {table.name} is replaced "
+                        "by a later full rebuild"
+                    ),
+                    reason=(
+                        "a later statement in this file fully rebuilds this table; dbt keeps "
+                        "only the final definition"
+                    ),
+                )
+            )
+            continue
+        if verdict == "redefinition":
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "build.redefinition",
                     action=f"redefinition of {table.name} — kept the last definition",
                     reason="defined twice; a dbt model is one file, so the last definition wins",
+                )
+            )
+        elif verdict == "collision":
+            assert existing is not None  # a collision always has a prior draft
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "build.collision",
+                    action=(
+                        f"{existing.qualified_name} and {draft.qualified_name} both map to "
+                        f"model {table.name} — kept {draft.qualified_name}; resolve the "
+                        "collision before deploying"
+                    ),
+                    reason=(
+                        "two different source tables produce the same model name; dbt needs "
+                        "one definition per model"
+                    ),
                 )
             )
         decisions.append(
@@ -127,13 +187,14 @@ def truncate_insert_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
-    truncates: dict[tuple[str, str], tuple[int, ClassifiedStatement]] = {}
+    truncates: dict[tuple[str, str, str, str], tuple[int, ClassifiedStatement]] = {}
     for index, stmt in pending:
         if stmt.kind == "truncate":
             node = _parse(stmt, state.dialect)
             table = _target_of(node)
             if table is not None:
-                truncates[(stmt.raw.source_file, table.name)] = (index, stmt)
+                key = (stmt.raw.source_file, table.catalog, table.db, table.name)
+                truncates[key] = (index, stmt)
             continue
         if stmt.kind != "insert_select":
             continue
@@ -141,7 +202,8 @@ def truncate_insert_pass(state: PassState) -> PassState:
         table = _target_of(node)
         if table is None:
             continue
-        pair = truncates.get((stmt.raw.source_file, table.name))
+        key = (stmt.raw.source_file, table.catalog, table.db, table.name)
+        pair = truncates.get(key)
         if pair is None or pair[0] > index:
             continue
         if isinstance(node.this, exp.Schema):
@@ -158,20 +220,53 @@ def truncate_insert_pass(state: PassState) -> PassState:
                     line_end=stmt.raw.line_end,
                 )
             )
-            del truncates[(stmt.raw.source_file, table.name)]
+            del truncates[key]
             continue
         body = node.expression.sql(dialect=state.dialect, pretty=True)
         draft = ModelDraft(
             name=table.name,
+            qualified_name=_qualified(table),
             body=body,
             materialization="table",
             grants=(),
             source_indices=(pair[0], index),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts, _ = _upsert_draft(drafts, draft)
+        drafts, verdict, existing = _replace_draft(drafts, draft)
+        # Statements within a single call are processed in ascending file
+        # order, and each table's truncates entry is deleted once paired, so
+        # a later pair here can never be superseded by an earlier one.
+        assert verdict != "superseded", "unreachable: pairs form in ascending file order"
         consumed.update({pair[0], index})
-        del truncates[(stmt.raw.source_file, table.name)]
+        del truncates[key]
+        if verdict == "redefinition":
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "truncate_insert.redefinition",
+                    action=f"redefinition of {table.name} — kept the last definition",
+                    reason="defined twice; a dbt model is one file, so the last definition wins",
+                )
+            )
+        elif verdict == "collision":
+            assert existing is not None  # a collision always has a prior draft
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "truncate_insert.collision",
+                    action=(
+                        f"{existing.qualified_name} and {draft.qualified_name} both map to "
+                        f"model {table.name} — kept {draft.qualified_name}; resolve the "
+                        "collision before deploying"
+                    ),
+                    reason=(
+                        "two different source tables produce the same model name; dbt needs "
+                        "one definition per model"
+                    ),
+                )
+            )
         decisions.append(
             _decision(
                 stmt,
@@ -241,6 +336,7 @@ def grants_pass(state: PassState) -> PassState:
         new_grants = d.grants + tuple((priv, principals) for priv in privileges)
         drafts[match] = ModelDraft(
             name=d.name,
+            qualified_name=d.qualified_name,
             body=d.body,
             materialization=d.materialization,
             grants=new_grants,
@@ -295,7 +391,21 @@ def drop_ddl_pass(state: PassState) -> PassState:
     pending: list[tuple[int, ClassifiedStatement]] = []
     decisions = list(state.decisions)
     for index, stmt in state.pending:
-        if stmt.kind not in ("ddl_other", "truncate"):
+        if stmt.kind == "truncate":
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "ddl",
+                    action=f"dropped solo TRUNCATE: {stmt.raw.text.splitlines()[-1][:60]}",
+                    reason=(
+                        "a TRUNCATE with no surviving INSERT pair has no dbt equivalent; dbt's "
+                        "table materialization rebuilds from scratch on every run"
+                    ),
+                )
+            )
+            continue
+        if stmt.kind != "ddl_other":
             pending.append((index, stmt))
             continue
         decisions.append(

@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from dbtw.core.ingest import classify_statements, ingest
+from dbtw.core.ingest.classifier import classify
+from dbtw.core.ingest.types import RawStatement
 from dbtw.core.passes import run_passes
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "sql"
@@ -32,3 +34,19 @@ def test_tier1_pipeline_over_the_etl_fixture():
 def test_empty_input_is_empty_output():
     out = run_passes((), dialect=None)
     assert out.pending == () and out.drafts == () and out.decisions == ()
+
+
+def test_query_less_create_view_survives_the_full_pipeline():
+    # Regression for the crash: "CREATE VIEW v" (no AS query) used to
+    # classify as create_view, then build_models_pass raised AttributeError
+    # calling .sql() on a None expression. It must classify as ddl_other and
+    # be dropped by drop_ddl_pass with a Decision, not raise.
+    raw = RawStatement(source_file="t.sql", index=0, text="CREATE VIEW v", line_start=1, line_end=1)
+    classified = classify(raw)
+    assert classified.kind == "ddl_other"
+
+    out = run_passes((classified,), dialect=None)
+    assert out.pending == ()
+    (dec,) = out.decisions
+    assert dec.tier == 1
+    assert dec.reason

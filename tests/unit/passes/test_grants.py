@@ -11,6 +11,7 @@ def _stmt(text: str, index: int = 0) -> ClassifiedStatement:
 def _draft(name: str) -> ModelDraft:
     return ModelDraft(
         name=name,
+        qualified_name=name,
         body="SELECT 1 AS a",
         materialization="table",
         grants=(),

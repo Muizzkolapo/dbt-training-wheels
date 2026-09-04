@@ -23,6 +23,7 @@ def test_decision_is_immutable_and_carries_location():
 def test_model_draft_defaults():
     draft = ModelDraft(
         name="dim_customers",
+        qualified_name="analytics.dim_customers",
         body="SELECT 1 AS a",
         materialization="table",
         grants=(),
@@ -31,6 +32,7 @@ def test_model_draft_defaults():
     )
     assert draft.grants == ()
     assert draft.source_indices == (4,)
+    assert draft.qualified_name == "analytics.dim_customers"
 
 
 def test_pass_state_holds_pending_with_indices():

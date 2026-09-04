@@ -35,6 +35,18 @@ def test_insert_before_truncate_does_not_pair():
     assert out.drafts == ()
 
 
+def test_cross_schema_truncate_and_insert_do_not_pair():
+    # TRUNCATE staging.t and INSERT INTO mart.t are different tables that
+    # merely share an unqualified name; pairing on name alone would silently
+    # fold two unrelated tables into one model.
+    tr = _stmt("TRUNCATE TABLE staging.t", "truncate", 0)
+    ins = _stmt("INSERT INTO mart.t SELECT a FROM raw_t", "insert_select", 1)
+    out = truncate_insert_pass(_state((0, tr), (1, ins)))
+    assert len(out.pending) == 2
+    assert out.drafts == ()
+    assert out.decisions == ()
+
+
 def test_different_files_do_not_pair():
     tr = _stmt("TRUNCATE TABLE stg_daily", "truncate", 0, file="a.sql")
     ins = _stmt("INSERT INTO stg_daily SELECT a FROM raw_t", "insert_select", 1, file="b.sql")

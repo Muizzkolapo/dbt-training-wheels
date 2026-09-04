@@ -1,6 +1,6 @@
 from dbtw.core.ingest import ClassifiedStatement, RawStatement
 from dbtw.core.passes import PassState
-from dbtw.core.passes.tier1 import build_models_pass
+from dbtw.core.passes.tier1 import build_models_pass, truncate_insert_pass
 
 
 def _stmt(text: str, kind: str, index: int = 0, file: str = "t.sql") -> ClassifiedStatement:
@@ -62,6 +62,56 @@ def test_redefinition_keeps_last_and_records_decision():
     (draft,) = out.drafts
     assert "SELECT" in draft.body and "2" in draft.body
     assert any("redefinition" in d.action for d in out.decisions)
+
+
+def test_cross_schema_ctas_is_an_honest_collision_not_a_redefinition():
+    # staging.t and mart.t are different tables that share an unqualified
+    # name; the pass must say "collision" (name clash across two distinct
+    # source tables), not "redefinition" (one table defined twice).
+    first = _stmt("CREATE TABLE staging.t AS SELECT 1 AS a", "create_table_as", index=0)
+    second = _stmt("CREATE TABLE mart.t AS SELECT 2 AS a", "create_table_as", index=1)
+    out = build_models_pass(_state((0, first), (1, second)))
+    (draft,) = out.drafts
+    assert draft.qualified_name == "mart.t"
+    collisions = [d for d in out.decisions if "collision" in d.action]
+    assert len(collisions) == 1
+    assert "staging.t" in collisions[0].action
+    assert "mart.t" in collisions[0].action
+    assert not any("redefinition" in d.action for d in out.decisions)
+
+
+def test_ctas_truncate_insert_file_order_keeps_the_later_definition():
+    # File order CTAS(0) -> TRUNCATE(1) -> INSERT(2) on the same table t.
+    # truncate_insert_pass pairs (1, 2) into a draft before build_models_pass
+    # ever sees the CTAS at index 0. The CTAS must NOT clobber the later
+    # full-rebuild draft, and the statement it came from must still be
+    # consumed (with an honest "superseded" decision), not silently dropped
+    # or left pending.
+    ctas = _stmt("CREATE TABLE t AS SELECT 99 AS a", "create_table_as", index=0)
+    tr = _stmt("TRUNCATE TABLE t", "truncate", index=1)
+    ins = _stmt("INSERT INTO t SELECT a FROM raw_t", "insert_select", index=2)
+    state0 = PassState(
+        pending=((0, ctas), (1, tr), (2, ins)), drafts=(), decisions=(), dialect=None
+    )
+
+    paired = truncate_insert_pass(state0)
+    out = build_models_pass(paired)
+
+    assert out.pending == ()  # all three indices consumed
+    (draft,) = out.drafts
+    assert "raw_t" in draft.body  # the file-order-later INSERT body wins
+    assert "99" not in draft.body  # the earlier CTAS body does not survive
+
+    assert len(out.decisions) == 2
+    supersede = [d for d in out.decisions if "superseded" in d.action]
+    assert len(supersede) == 1
+    assert "t.sql:0" in supersede[0].key  # references the superseded CTAS statement
+    pairing = [d for d in out.decisions if d is not supersede[0]]
+    assert len(pairing) == 1
+    assert "t.sql:2" in pairing[0].key  # references the INSERT that completed the pair
+
+    # Finding 5: no two decisions share a key.
+    assert len({d.key for d in out.decisions}) == len(out.decisions)
 
 
 def test_non_build_kinds_stay_pending():
