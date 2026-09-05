@@ -11,6 +11,7 @@ from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.naming import qualified_name
+from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
 
@@ -53,33 +54,6 @@ def _decision(
     )
 
 
-def _replace_draft(
-    drafts: tuple[ModelDraft, ...], new: ModelDraft
-) -> tuple[tuple[ModelDraft, ...], str | None, ModelDraft | None]:
-    """Upsert `new` keyed by unqualified name, honestly resolving collisions.
-
-    Compares file order by the highest source index each draft folds in, so
-    whichever definition is later in the file always wins — regardless of
-    which pass or which call built it first.
-
-    Returns (drafts, verdict, existing):
-    - verdict is None when there was no prior draft for this name.
-    - "redefinition": same qualified name defined twice; later statement wins.
-    - "collision": different qualified names map to the same model name; later wins.
-    - "superseded": the existing draft is later in file order; `new` is dropped
-      and `drafts` is returned unchanged.
-    - `existing` is the prior draft when one was found, else None.
-    """
-    existing = next((d for d in drafts if d.name == new.name), None)
-    if existing is None:
-        return (*drafts, new), None, None
-    if max(existing.source_indices) > max(new.source_indices):
-        return drafts, "superseded", existing
-    kept = tuple(d for d in drafts if d.name != new.name)
-    verdict = "redefinition" if existing.qualified_name == new.qualified_name else "collision"
-    return (*kept, new), verdict, existing
-
-
 def build_models_pass(state: PassState) -> PassState:
     pending: list[tuple[int, ClassifiedStatement]] = []
     drafts = state.drafts
@@ -118,7 +92,7 @@ def build_models_pass(state: PassState) -> PassState:
             source_indices=(index,),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts, verdict, existing = _replace_draft(drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         if verdict == "superseded":
             decisions.append(
                 _decision(
@@ -228,7 +202,7 @@ def truncate_insert_pass(state: PassState) -> PassState:
             source_indices=(pair[0], index),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts, verdict, existing = _replace_draft(drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         # Statements within a single call are processed in ascending file
         # order, and each table's truncates entry is deleted once paired, so
         # a later pair here can never be superseded by an earlier one.

@@ -14,6 +14,7 @@ from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.naming import compare_targets, qualified_name
+from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
 
 
@@ -61,6 +62,65 @@ def _decision(
         question=question,
         chosen=chosen,
         alternatives=alternatives,
+    )
+
+
+def _collision_decision(
+    stmt: ClassifiedStatement,
+    index: int,
+    pass_name: str,
+    tier: Tier,
+    table_name: str,
+    draft: ModelDraft,
+    verdict: str,
+    existing: ModelDraft,
+) -> Decision:
+    """Turn a `collisions.replace_draft` verdict into the Decision it implies.
+
+    Mirrors tier 1's wording for the same three verdicts (`superseded`,
+    `redefinition`, `collision`) so a model's collision history reads the
+    same regardless of which tier resolved it -- see `collisions.py` for why
+    every drafting pass, tier 1 and tier 2 alike, must route through
+    `replace_draft` rather than appending a draft directly.
+    """
+    if verdict == "superseded":
+        return _decision(
+            stmt,
+            index,
+            f"{pass_name}.supersede",
+            tier,
+            action=(
+                f"superseded: this earlier definition of {table_name} is replaced "
+                "by a later definition"
+            ),
+            reason=(
+                "a later statement in this file defines this model; dbt keeps "
+                "only the final definition"
+            ),
+        )
+    if verdict == "redefinition":
+        return _decision(
+            stmt,
+            index,
+            f"{pass_name}.redefinition",
+            tier,
+            action=f"redefinition of {table_name} — kept the last definition",
+            reason="defined twice; a dbt model is one file, so the last definition wins",
+        )
+    return _decision(
+        stmt,
+        index,
+        f"{pass_name}.collision",
+        tier,
+        action=(
+            f"{existing.qualified_name} and {draft.qualified_name} both map to "
+            f"model {table_name} — kept {draft.qualified_name}; resolve the "
+            "collision before deploying"
+        ),
+        reason=(
+            "two different source tables produce the same model name; dbt needs "
+            "one definition per model"
+        ),
     )
 
 
@@ -171,8 +231,17 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
             source_indices=(pair[0], index),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts = (*drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         consumed.update({pair[0], index})
+        if verdict is not None:
+            assert existing is not None  # every non-None verdict has a prior draft
+            decisions.append(
+                _collision_decision(
+                    stmt, index, "truncate_insert_columns", 1, table.name, draft, verdict, existing
+                )
+            )
+        if verdict == "superseded":
+            continue
         decisions.append(
             _decision(
                 stmt,
@@ -331,8 +400,15 @@ def merge_pass(state: PassState) -> PassState:
             incremental_strategy="merge",
             unique_key=keys,
         )
-        drafts = (*drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         consumed.add(index)
+        if verdict is not None:
+            assert existing is not None  # every non-None verdict has a prior draft
+            decisions.append(
+                _collision_decision(stmt, index, "merge", 2, table.name, draft, verdict, existing)
+            )
+        if verdict == "superseded":
+            continue
         key_list = ", ".join(keys)
         decisions.append(
             _decision(
@@ -486,8 +562,15 @@ def append_pass(state: PassState) -> PassState:
             incremental_strategy="append",
             unique_key=(),
         )
-        drafts = (*drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         consumed.add(index)
+        if verdict is not None:
+            assert existing is not None  # every non-None verdict has a prior draft
+            decisions.append(
+                _collision_decision(stmt, index, "append", 2, table.name, draft, verdict, existing)
+            )
+        if verdict == "superseded":
+            continue
         reason = (
             "an append incremental re-inserts everything the model selects on every run "
             "unless the model's own SELECT filters to new rows; supply --unique-key to "
