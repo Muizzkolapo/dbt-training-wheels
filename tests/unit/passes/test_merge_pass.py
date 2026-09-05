@@ -694,3 +694,169 @@ def test_an_insert_naming_columns_with_no_values_at_all_is_refused_too():
     assert out.drafts == ()
     assert len(out.decisions) == 1, out.decisions
     assert out.decisions[0].action.startswith("deferred:")
+
+
+# --- what a branch writes INTO its columns, not just which columns it names.
+# The column caveats read the target list and stopped there, so a branch could
+# write a constant, a default, or a differently named source column and the
+# report would say only "inserts only id, city" -- true about the columns,
+# silent about the fact that dbt fills them from somewhere else entirely.
+# dbt's merge fills every column of an inserted or updated row from the model's
+# own SELECT, which is this MERGE's USING source.
+
+
+def _values_caveat(sql: str) -> str:
+    (caveat,) = [
+        c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "not from the source" in c
+    ]
+    return caveat
+
+
+def test_a_branch_that_writes_nothing_from_the_source_is_refused():
+    """`VALUES (DEFAULT, DEFAULT)` inserts a row of the target's own column
+    defaults, exactly as `INSERT DEFAULT VALUES` does, and reads nothing from
+    the source. dbt's merge inserts the row the model selected, so converting
+    would write real source rows where the script wrote a placeholder."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (DEFAULT, DEFAULT)"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert len(out.pending) == 1
+    assert len(out.decisions) == 1, out.decisions
+    assert out.decisions[0].action.startswith("deferred:")
+    assert "no value taken from the source" in out.decisions[0].action
+
+
+def test_a_matched_branch_that_only_sets_a_constant_is_refused_too():
+    """The soft-delete shape: `SET t.is_deleted = TRUE` marks a matched row
+    without reading the source at all. dbt's merge would overwrite every
+    column of that row from the model's SELECT instead -- a different job, not
+    a narrower one."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.is_deleted = TRUE "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert len(out.decisions) == 1, out.decisions
+    assert "no value taken from the source" in out.decisions[0].action
+    assert "t.is_deleted = TRUE" in out.decisions[0].action
+
+
+def test_a_column_written_from_a_constant_beside_source_columns_is_named():
+    """Some of the branch does read the source, so this converts -- but the
+    column that doesn't has to be named, because dbt will fill it from the
+    model's SELECT rather than leave the constant there."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.city, t.is_active = FALSE "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts
+    caveat = _values_caveat(sql)
+    assert "is_active" in caveat
+    assert "FALSE" in caveat
+    assert "city" not in caveat.split("but the converted model")[0].replace("is_active", "")
+
+
+def test_a_column_written_from_a_differently_named_source_column_is_named():
+    """`SET t.city = s.town` and `SET t.city = s.city` are not the same
+    conversion: dbt writes city from the source's own city, so the script's
+    town value is silently dropped unless this is on the record."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.id = s.id, t.city = s.town "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    assert merge_pass(_state((0, _stmt(sql)))).drafts
+    caveat = _values_caveat(sql)
+    assert "city" in caveat
+    assert "s.town" in caveat
+
+
+def test_an_insert_column_written_from_a_default_beside_source_columns_is_named():
+    """The insert side of the same rule -- the reported shape, half of it
+    reading the source."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (s.id, DEFAULT)"
+    )
+    assert merge_pass(_state((0, _stmt(sql)))).drafts
+    caveat = _values_caveat(sql)
+    assert "city" in caveat
+    assert "DEFAULT" in caveat
+
+
+def test_a_column_assigned_from_the_target_itself_is_named():
+    """`SET t.city = t.city` keeps the row's existing value; dbt overwrites it
+    from the source. A source-qualified column of the same name is the only
+    assignment dbt reproduces."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.id = s.id, t.city = t.city "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    assert merge_pass(_state((0, _stmt(sql)))).drafts
+    assert "t.city" in _values_caveat(sql)
+
+
+def test_a_source_column_of_the_same_name_earns_no_values_caveat():
+    """The control. `SET t.city = s.CITY` is exactly what dbt's merge does --
+    unquoted identifiers fold, so the case difference is not a difference."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.CITY "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (s.id, s.city)"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts
+    assert [c for c in _caveats(out) if "not from the source" in c] == []
+
+
+def test_an_insert_whose_column_list_and_values_do_not_line_up_is_refused():
+    """`INSERT (id, city) VALUES (s.id)` names two columns and supplies one
+    value. Nothing can be said about which column gets which value, so nothing
+    is said: the branch is refused rather than half-read."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (s.id)"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert len(out.decisions) == 1, out.decisions
+    assert out.decisions[0].action.startswith("deferred:")
+
+
+def test_a_positional_insert_of_defaults_is_refused_even_with_no_column_list():
+    """`INSERT VALUES (DEFAULT, DEFAULT)` names no columns, so no column
+    caveat is possible -- but whether it reads the source is still knowable,
+    and it doesn't."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT VALUES (DEFAULT, DEFAULT)"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert "no value taken from the source" in out.decisions[0].action
+
+
+def test_a_positional_insert_reading_the_source_still_converts():
+    """The control for the one above: `INSERT VALUES (s.id, s.city)` names no
+    columns either, but it does read the source, so it converts with no
+    column caveat to make."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.city)"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts
+    assert _caveats(out) == []

@@ -10,6 +10,7 @@ statements always leave a Decision; refusals this pass is responsible for
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import sqlglot
 from sqlglot import exp
@@ -321,6 +322,8 @@ class _MergeBranches:
 
     unsupported: tuple[str, ...]  # branches dbt's merge cannot perform, verbatim
     unreadable: tuple[str, ...]  # branches assigning something other than a column, verbatim
+    unpairable: tuple[str, ...]  # branches whose columns and values differ in count, verbatim
+    no_source_values: tuple[str, ...]  # branches writing nothing from the source, verbatim
     valueless_inserts: int  # INSERT branches naming columns but supplying no values
     updates_matched: bool  # any WHEN MATCHED THEN UPDATE branch at all
     inserts_unmatched: bool  # any WHEN NOT MATCHED THEN INSERT branch at all
@@ -328,6 +331,7 @@ class _MergeBranches:
     restricted_inserts: int  # of those, how many named particular columns
     updated_columns: tuple[str, ...]  # named UPDATE SET targets; () means "all"
     inserted_columns: tuple[str, ...]  # named INSERT target columns; () means "all"
+    rewritten: tuple[tuple[str, str], ...]  # (column, value) pairs dbt will not reproduce
     conditions: tuple[str, ...]  # per-branch conditions dbt's merge has no place for
 
 
@@ -399,28 +403,164 @@ def _insert_without_values(then: exp.Insert) -> bool:
     return isinstance(then.this, exp.Tuple) and not then.args.get("expression")
 
 
-def _branch_columns(then: exp.Update | exp.Insert) -> list[tuple[str, bool]] | None:
-    """The columns a branch's action restricts itself to, `[]` when it
-    restricts itself to none, or `None` when one of its targets is not a
-    column — see `_named_columns` for what those three answers mean.
+@dataclass(frozen=True, slots=True)
+class _BranchWrite:
+    """What one convertible WHEN branch writes — see `_branch_write`."""
+
+    columns: tuple[tuple[str, bool], ...]  # named targets; () means "every column"
+    rewritten: tuple[tuple[str, str], ...]  # (column, value SQL) dbt will not reproduce
+    reads_source: bool  # any value at all taken from the source row
+
+
+def _members(node: exp.Expr | None) -> list[exp.Expr] | None:
+    """The members of a row value, or `None` if `node` is not one.
+
+    A row value of several columns is a `Tuple` and one of a single column a
+    `Paren` (probed on 30.18.0), on both sides of a row-value assignment and
+    in an INSERT's column list and VALUES alike.
+    """
+    if isinstance(node, exp.Tuple):
+        return list(node.expressions)
+    if isinstance(node, exp.Paren):
+        return [node.this]
+    return None
+
+
+def _from_source(target: tuple[str, bool], value: exp.Expr, target_alias: str) -> bool:
+    """Whether dbt's merge would write `target` with the same value this
+    assignment does.
+
+    dbt fills every column of an inserted or updated row from the model's own
+    SELECT, and the model's body is this MERGE's USING source — so the only
+    assignment it reproduces is one taking the source's column of the same
+    name. A constant, a `DEFAULT`, an expression, a differently named column,
+    or the target's own column is something dbt will replace.
+
+    A column qualified to nothing is read as the source's: an unqualified
+    right-hand side naming the target's column would be a self-assignment, so
+    the source is the only reading under which the statement does anything.
+    """
+    if not isinstance(value, exp.Column) or isinstance(value.this, exp.Star):
+        return False
+    if value.table and same_identifier(value.table, False, target_alias, False):
+        return False
+    name, quoted = target
+    identifier = value.this
+    value_quoted = bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
+    return same_identifier(name, quoted, value.name, value_quoted)
+
+
+def _pair(
+    targets: list[tuple[str, bool]],
+    values: list[exp.Expr],
+    target_alias: str,
+    dialect: str | None,
+) -> list[tuple[str, str]] | None:
+    """The named columns whose value dbt will not reproduce, paired with the
+    value the script wrote, or `None` when the two lists cannot be lined up.
+
+    A column list and a VALUES list of different lengths (`INSERT (id, city)
+    VALUES (s.id)`) says nothing about which column gets which value, so it is
+    not half-read — the caller refuses the branch.
+    """
+    if len(targets) != len(values):
+        return None
+    return [
+        (name, value.sql(dialect=dialect))
+        for (name, quoted), value in zip(targets, values, strict=True)
+        if not _from_source((name, quoted), value, target_alias)
+    ]
+
+
+def _branch_write(
+    then: exp.Update | exp.Insert, target_alias: str, dialect: str | None
+) -> _BranchWrite | Literal["unreadable", "unpairable"]:
+    """What a branch writes and where each value comes from, or which of the
+    two ways it could not be read: `"unreadable"` for a target that is not a
+    column (see `_named_columns`), `"unpairable"` for a column list its values
+    do not line up with. The two refuse for different reasons, so they are
+    told apart here rather than collapsed into one.
+
+    Reading only the target columns and not the values would call `INSERT
+    (id, city) VALUES (s.id, DEFAULT)` a restriction to id and city and stop
+    there, saying nothing about dbt filling city from the model's SELECT
+    instead of leaving the target's default in it.
     """
     if isinstance(then, exp.Insert):
         target = then.this
-        # `INSERT VALUES ...` leaves `this` None, `INSERT *` a Star and
-        # Snowflake's `INSERT ROW` a Var — none of which names a column
-        # (probed on 30.18.0). `INSERT (id, city) VALUES ...` writes a Tuple
-        # of them, which `_named_columns` reads.
-        if target is None or isinstance(target, exp.Var):
-            return []
-        return _named_columns(target)
-    columns: list[tuple[str, bool]] = []
+        # `INSERT *` and Snowflake's `INSERT ROW` write every source column
+        # and name none (probed on 30.18.0), so they are exactly what dbt's
+        # merge does and there is nothing to pair or report.
+        if isinstance(target, (exp.Star, exp.Var)):
+            return _BranchWrite(columns=(), rewritten=(), reads_source=True)
+        # `INSERT VALUES ...` leaves `this` None; `INSERT (id, city) VALUES
+        # ...` writes a Tuple of columns, which `_named_columns` reads.
+        if target is None:
+            columns = []
+        else:
+            named = _named_columns(target)
+            if named is None:
+                return "unreadable"
+            columns = named
+        values = _members(then.args.get("expression")) or []
+        # A positional INSERT names no column to attach a value to, so only
+        # whether the values read the source at all can be said of it.
+        rewritten = _pair(columns, values, target_alias, dialect) if columns and values else []
+        if rewritten is None:
+            return "unpairable"
+        return _BranchWrite(
+            columns=tuple(columns),
+            rewritten=tuple(rewritten),
+            reads_source=any(_reads_source(value, target_alias) for value in values),
+        )
+    columns = []
+    rewritten = []
+    reads_source = False
     for assignment in then.args["expressions"]:
-        target = assignment.this if isinstance(assignment, exp.EQ) else assignment
+        if isinstance(assignment, exp.EQ):
+            target, value = assignment.this, assignment.expression
+        else:
+            # `UPDATE SET *` is a bare Star with no value beside it, where
+            # `UPDATE SET t.* = s.*` is an EQ of two star columns (probed on
+            # 30.18.0). Both assign every source column.
+            target, value = assignment, None
         named = _named_columns(target)
         if named is None:
-            return None
+            return "unreadable"
+        if not named:
+            # A star target names no column, so there is nothing to pair a
+            # value with and nothing to report as a restriction.
+            reads_source = reads_source or value is None or _reads_source(value, target_alias)
+            continue
+        values = _members(value) or ([] if value is None else [value])
+        reads_source = reads_source or any(_reads_source(v, target_alias) for v in values)
         columns.extend(named)
-    return columns
+        paired = _pair(named, values, target_alias, dialect)
+        if paired is None:
+            return "unpairable"
+        rewritten.extend(paired)
+    return _BranchWrite(
+        columns=tuple(columns), rewritten=tuple(rewritten), reads_source=reads_source
+    )
+
+
+def _reads_source(value: exp.Expr, target_alias: str) -> bool:
+    """Whether a written value takes anything from the source row at all.
+
+    `DEFAULT` parses to a `Var` and a constant to a `Literal` (probed on
+    30.18.0); neither holds a column. A branch every one of whose values is
+    of that kind — `INSERT DEFAULT VALUES`, `VALUES (DEFAULT, DEFAULT)`,
+    `SET t.is_deleted = TRUE` — is not a narrower version of what dbt's merge
+    does but a different job, so `merge_pass` refuses it rather than convert
+    it with a caveat.
+    """
+    if isinstance(value, exp.Star):
+        return True
+    for column in value.find_all(exp.Column):
+        if column.table and same_identifier(column.table, False, target_alias, False):
+            continue
+        return True
+    return False
 
 
 def _add_unique(columns: list[tuple[str, bool]], column: tuple[str, bool]) -> None:
@@ -456,6 +596,12 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     - a branch whose target is not a column at all (`SET t.data['city'] =
       s.city`), collected verbatim into `unreadable`. What it assigns cannot
       be stated in dbt's terms — see `_named_columns`.
+    - a branch whose column list and value list are of different lengths
+      (`INSERT (id, city) VALUES (s.id)`), collected into `unpairable`:
+      which column receives which value cannot be read from it.
+    - a branch writing no value taken from the source at all (`INSERT (id,
+      city) VALUES (DEFAULT, DEFAULT)`, `SET t.is_deleted = TRUE`),
+      collected into `no_source_values` — see `_reads_source`.
     - an INSERT that names columns but supplies no values (`INSERT DEFAULT
       VALUES`), counted into `valueless_inserts`. It is counted rather than
       quoted because sqlglot re-renders it as `INSERT (DEFAULT)`, and a
@@ -484,9 +630,14 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     every column (`SET t.* = s.*`) restricts nothing and is not counted: it
     is what dbt's merge does anyway, and counting it would claim the columns
     named are all the statement ever assigns.
+
+    `rewritten` collects, across every converted branch, the columns whose
+    value dbt will not reproduce — see `_from_source`.
     """
     unsupported: list[str] = []
     unreadable: list[str] = []
+    unpairable: list[str] = []
+    no_source_values: list[str] = []
     valueless_inserts = 0
     updates_matched = False
     inserts_unmatched = False
@@ -494,7 +645,9 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     restricted_inserts = 0
     updated: list[tuple[str, bool]] = []
     inserted: list[tuple[str, bool]] = []
+    rewritten: list[tuple[str, str]] = []
     conditions: list[str] = []
+    target_alias = node.this.alias or node.this.name
     for when in node.args["whens"].expressions:
         then = when.args["then"]
         if when.args["source"] or not isinstance(then, (exp.Update, exp.Insert)):
@@ -503,10 +656,19 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
         if isinstance(then, exp.Insert) and _insert_without_values(then):
             valueless_inserts += 1
             continue
-        named = _branch_columns(then)
-        if named is None:
+        write = _branch_write(then, target_alias, dialect)
+        if write == "unreadable":
             unreadable.append(when.sql(dialect=dialect))
             continue
+        if write == "unpairable":
+            unpairable.append(when.sql(dialect=dialect))
+            continue
+        assert isinstance(write, _BranchWrite)  # the only two refusals are handled above
+        if not write.reads_source:
+            no_source_values.append(when.sql(dialect=dialect))
+            continue
+        named = list(write.columns)
+        rewritten.extend(write.rewritten)
         condition = when.args["condition"]
         if condition is not None:
             conditions.append(condition.sql(dialect=dialect))
@@ -528,6 +690,8 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     return _MergeBranches(
         unsupported=tuple(unsupported),
         unreadable=tuple(unreadable),
+        unpairable=tuple(unpairable),
+        no_source_values=tuple(no_source_values),
         valueless_inserts=valueless_inserts,
         updates_matched=updates_matched,
         inserts_unmatched=inserts_unmatched,
@@ -535,6 +699,7 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
         restricted_inserts=restricted_inserts,
         updated_columns=tuple(name for name, _ in updated),
         inserted_columns=tuple(name for name, _ in inserted),
+        rewritten=tuple(rewritten),
         conditions=tuple(conditions),
     )
 
@@ -621,6 +786,22 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
                 "dbt's merge incremental strategy builds an inserted row from every column "
                 "the model selects, not a chosen subset, so a column this MERGE's INSERT "
                 "left to the target's default is written from the model's own SELECT instead",
+            )
+        )
+    if branches.rewritten:
+        written = " and ".join(f"{column} from {value}" for column, value in branches.rewritten)
+        caveats.append(
+            (
+                "merge.assigned_values",
+                f"caveat: {table_name} writes {written}, not from the source's own column "
+                "of that name, but the converted model writes every column from its own "
+                "SELECT",
+                "dbt's merge incremental strategy fills each column of an updated or "
+                "inserted row from the model's own SELECT, and the model's body is this "
+                "MERGE's USING source. A value the script took from anywhere else — a "
+                "constant, a DEFAULT, an expression, the target's own column, or a source "
+                "column of a different name — is replaced by the source column of the same "
+                "name, changing what lands in that column",
             )
         )
     if branches.conditions:
@@ -758,6 +939,50 @@ def merge_pass(state: PassState) -> PassState:
                         "— an assignment to a path inside one, like SET t.data['city'] = "
                         "s.city, is the usual case — so dbt has no way to perform it, and a "
                         "converted model would overwrite the whole column on every run"
+                    ),
+                )
+            )
+        if branches.unpairable:
+            refused = True
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "merge.unpairable_branch",
+                    2,
+                    action=(
+                        f"deferred: MERGE INTO {table.name} has a WHEN branch naming a "
+                        "different number of columns than values "
+                        f"({'; '.join(branches.unpairable)})"
+                    ),
+                    reason=(
+                        "which column receives which value cannot be read from a list of "
+                        "columns and a list of values of different lengths, so what this "
+                        "branch writes where is unknown; converting it would state one "
+                        "reading of the statement as though it were the only one"
+                    ),
+                )
+            )
+        if branches.no_source_values:
+            refused = True
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "merge.no_source_values_branch",
+                    2,
+                    action=(
+                        f"deferred: MERGE INTO {table.name} has a WHEN branch that writes "
+                        "no value taken from the source "
+                        f"({'; '.join(branches.no_source_values)})"
+                    ),
+                    reason=(
+                        "dbt's merge incremental strategy fills every column of an updated "
+                        "or inserted row from the model's own SELECT, which is this MERGE's "
+                        "USING source. This branch writes only constants, defaults or the "
+                        "target's own columns, so a converted model would put source rows "
+                        "where the script deliberately put none — not a wider version of "
+                        "the same job but a different one"
                     ),
                 )
             )
