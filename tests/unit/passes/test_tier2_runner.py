@@ -144,6 +144,27 @@ def test_a_grant_on_a_merge_built_model_attaches_instead_of_being_dropped():
     assert ("SELECT", ("reporting",)) in draft.grants
 
 
+def test_a_grant_on_a_merge_built_model_keeps_its_incremental_config():
+    """Regression: grants_pass replaced the matched draft by reconstructing
+    ModelDraft field-by-field, a field list that predates incremental_strategy
+    and unique_key -- attaching a GRANT to an incremental model silently
+    stripped its incremental config back to "not incremental" (materialization
+    still said "incremental", but incremental_strategy went to None and
+    unique_key to ()), even though nothing about a GRANT should touch how the
+    model is materialized."""
+    stmts = (
+        _stmt(MERGE_SQL, "merge"),
+        _stmt("GRANT SELECT ON dim_c TO reporting", "grant"),
+    )
+    out = run_passes(stmts, dialect=None)
+    assert out.pending == ()
+    (draft,) = out.drafts
+    assert draft.name == "dim_c"
+    assert ("SELECT", ("reporting",)) in draft.grants
+    assert draft.incremental_strategy == "merge"
+    assert draft.unique_key == ("id",)
+
+
 def test_a_grant_on_a_genuinely_absent_table_still_gets_the_honest_doesnt_create_decision():
     """The fix must not make the "doesn't create" Decision disappear
     entirely -- only stop it from being wrong about tier-2-built tables."""

@@ -6,6 +6,8 @@ always leave a Decision; unhandled statements stay pending for later tiers.
 
 from __future__ import annotations
 
+import dataclasses
+
 import sqlglot
 from sqlglot import exp
 
@@ -304,15 +306,7 @@ def grants_pass(state: PassState) -> PassState:
             continue
         d = drafts[match]
         new_grants = d.grants + tuple((priv, principals) for priv in privileges)
-        drafts[match] = ModelDraft(
-            name=d.name,
-            qualified_name=d.qualified_name,
-            body=d.body,
-            materialization=d.materialization,
-            grants=new_grants,
-            source_indices=d.source_indices,
-            leading_comments=d.leading_comments,
-        )
+        drafts[match] = dataclasses.replace(d, grants=new_grants)
         decisions.append(
             _decision(
                 stmt,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import heapq
 from collections.abc import Mapping
 
@@ -411,19 +412,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
             continue
         model = placed[draft_index]
         depends_on = tuple(sorted({final_names[dep] for dep in deps[draft.name]}))
-        models.append(
-            AssembledModel(
-                name=model.name,
-                path=model.path,
-                body=model.body,
-                materialization=model.materialization,
-                grants=model.grants,
-                layer=model.layer,
-                depends_on=depends_on,
-                leading_comments=model.leading_comments,
-                source_indices=model.source_indices,
-            )
-        )
+        models.append(dataclasses.replace(model, depends_on=depends_on))
         final_to_draft_name[model.name] = draft.name
 
     ordered, cycle_decisions = _topological(models)
@@ -589,19 +578,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
         rewritten_body = rewrite_body(
             model.body, state.dialect, resolutions_by_key, variable_defaults, inline_vars
         )
-        rewritten_models.append(
-            AssembledModel(
-                name=model.name,
-                path=model.path,
-                body=rewritten_body,
-                materialization=model.materialization,
-                grants=model.grants,
-                layer=model.layer,
-                depends_on=model.depends_on,
-                leading_comments=model.leading_comments,
-                source_indices=model.source_indices,
-            )
-        )
+        rewritten_models.append(dataclasses.replace(model, body=rewritten_body))
 
         ref_resolutions = [r for r in resolutions if r.kind == "ref"]
         source_resolutions = [r for r in resolutions if r.kind == "source"]

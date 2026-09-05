@@ -73,6 +73,47 @@ def test_dependencies_use_final_names_and_order_is_topological():
     assert _by_name(change)["revenue"].depends_on == ("stg_base_orders",)
 
 
+def test_reconstructed_models_keep_every_field_the_placement_step_set():
+    """Locks the same property as grants_pass's regression, one layer up:
+    assemble() rebuilds AssembledModel twice after the initial placement --
+    once to fill in depends_on (Step 8, once every draft has a final name),
+    once more to swap in the ref/source-rewritten body -- and both used to
+    enumerate fields by hand, the same shape of field list that let
+    grants_pass silently drop incremental_strategy/unique_key. "revenue"
+    depends on "base_orders", which exercises both reconstructions (a
+    non-empty depends_on, and a body that must be rewritten from a bare
+    table name to `ref()`); every field the placement step already set
+    (grants, leading_comments, source_indices, layer, materialization, path,
+    name) must come through both reconstructions unchanged -- only body and
+    depends_on are expected to differ from the fresh-construction step."""
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = assemble(
+        _state(
+            _draft(
+                "revenue",
+                "SELECT a FROM base_orders",
+                materialization="view",  # differs from root's default so it isn't omitted
+                grants=(("SELECT", ("reporting",)),),
+                leading_comments=("a leading comment",),
+                source_indices=(5, 6),
+            ),
+            _draft("base_orders", "SELECT a FROM raw_orders"),
+        ),
+        ctx,
+    )
+    model = _by_name(change)["revenue"]
+    assert model.name == "revenue"
+    assert model.path == "models/revenue.sql"
+    assert model.layer == "root"
+    assert model.materialization == "view"
+    assert model.grants == (("SELECT", ("reporting",)),)
+    assert model.leading_comments == ("a leading comment",)
+    assert model.source_indices == (5, 6)
+    # the only two fields the reconstructions are meant to change:
+    assert model.depends_on == ("stg_base_orders",)
+    assert model.body == "SELECT\n  a\nFROM {{ ref('stg_base_orders') }}"
+
+
 def test_materialization_matching_the_layer_default_is_omitted():
     ctx = read_project(FIXTURES / "jaffle_shop")  # staging default is view
     change = assemble(_state(_draft("orders_v", "SELECT a FROM raw_orders", "view")), ctx)
