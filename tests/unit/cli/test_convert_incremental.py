@@ -354,3 +354,138 @@ def test_a_quoted_output_name_that_only_differs_by_case_is_left_ambiguous(tmp_pa
     assert "Order_Id" in report
     assert "ambiguous" in report.lower()
     assert "does not select" not in report
+
+
+# --- end to end, over a whole ETL script rather than one statement at a time.
+# Every earlier test in this file drives one or two hand-written statements
+# through `main`; this section runs the checked-in `incremental_etl.sql`
+# fixture -- an append, a MERGE, a TRUNCATE+INSERT rebuild, and a source
+# reference in each -- and asserts on what lands on disk. A conversion that
+# works statement by statement can still assemble the script wrongly.
+
+FIXTURE = ROOT / "sql" / "incremental_etl.sql"
+
+
+def _run_fixture(tmp_path, *extra) -> str:
+    """Convert the checked-in fixture into `tmp_path`, returning the report."""
+    assert (
+        main(["convert", str(FIXTURE), "--project", str(PROJECT), "--out", str(tmp_path), *extra])
+        == 0
+    )
+    return (tmp_path / "CONVERSION_REPORT.md").read_text()
+
+
+def test_the_whole_script_converts_with_nothing_left_pending(tmp_path):
+    """Four statements in, three models out (the TRUNCATE and the INSERT that
+    follows it are one rebuild), and no statement left for a human to carry
+    over by hand."""
+    report = _run_fixture(tmp_path)
+    written = sorted(p.name for p in tmp_path.rglob("*.sql"))
+    assert written == ["stg_daily_totals.sql", "stg_dim_customers.sql", "stg_events.sql"]
+    assert "**Pending statements**: 0" in report
+    assert "Nothing — every statement was handled." in report
+
+
+def test_the_bare_insert_becomes_an_append_reading_from_a_source(tmp_path):
+    """`INSERT INTO events SELECT ... FROM raw.events` has no key to merge on,
+    so it appends; `raw.events` is not a model in this project, so it is
+    proposed as a source and the body reads through source() rather than
+    naming the raw table."""
+    _run_fixture(tmp_path)
+    body = _find(tmp_path, "events")
+    assert "materialized='incremental'" in body
+    assert "incremental_strategy='append'" in body
+    assert "unique_key" not in body
+    assert "{{ source('raw', 'events') }}" in body
+    assert "raw.events" not in body
+
+
+def test_the_merge_keys_on_its_own_on_clause(tmp_path):
+    """The MERGE says what its key is, so nothing has to be asked or guessed:
+    `ON t.customer_id = s.customer_id` becomes `unique_key='customer_id'`."""
+    _run_fixture(tmp_path)
+    body = _find(tmp_path, "dim_customers")
+    assert "materialized='incremental'" in body
+    assert "incremental_strategy='merge'" in body
+    assert "unique_key='customer_id'" in body
+    assert "{{ source('raw', 'customers') }}" in body
+
+
+def test_the_truncate_and_insert_pair_becomes_one_rebuilt_table(tmp_path):
+    """TRUNCATE then INSERT is a full rebuild, which is dbt's table
+    materialization -- not an incremental. The INSERT's `(day, total)` column
+    list maps positionally onto the SELECT's projections, so the model's own
+    output carries those names."""
+    _run_fixture(tmp_path)
+    body = _find(tmp_path, "daily_totals")
+    assert "materialized='table'" in body
+    assert "incremental" not in body
+    assert "occurred_at AS day" in body
+    assert "COUNT(*) AS total" in body
+
+
+def test_the_report_asks_the_append_and_the_merge_question(tmp_path):
+    """Two statements, two different open questions, both on the record: the
+    append can't know whether re-running duplicates rows, and the merge can't
+    know whether its ON columns really identify one."""
+    report = _run_fixture(tmp_path)
+    assert "Should rows be appended on every run, or deduplicated on a unique key?" in report
+    assert "Chose: append every row" in report
+    assert "does customer_id uniquely identify a row in dim_customers?" in report
+    assert "Chose: merge on customer_id" in report
+
+
+def test_the_report_records_where_dbts_merge_will_act_unlike_the_script(tmp_path):
+    """The fixture's MERGE is not what dbt's merge strategy does, in two
+    ways, and the converted model is written anyway -- so both differences
+    have to be on the record rather than discovered in production. The
+    statement has no WHEN NOT MATCHED branch (dbt's merge always inserts an
+    unmatched row) and its UPDATE SET names only `name` while the model body
+    selects every column (dbt's merge updates all of them)."""
+    report = _run_fixture(tmp_path)
+    lines = [line for line in report.splitlines() if line.startswith("- **caveat:")]
+
+    missing_insert = [line for line in lines if "NOT MATCHED" in line]
+    assert len(missing_insert) == 1, lines
+    assert "dim_customers" in missing_insert[0]
+    assert "insert rows that match nothing" in missing_insert[0]
+
+    restricted_update = [line for line in lines if "merge_update_columns" in line]
+    assert len(restricted_update) == 1, lines
+    assert "only name" in restricted_update[0]
+    assert "every column it selects" in restricted_update[0]
+
+    # The caveats describe the model that was written, so the claim they make
+    # about it has to hold: the body really does select every column.
+    assert "SELECT\n  *\n" in _find(tmp_path, "dim_customers")
+
+
+def test_the_flag_upgrades_the_append_and_leaves_the_merges_own_key_alone(tmp_path):
+    """The same script again with `--unique-key event_id`. The append has no
+    key of its own, so the flag answers its question; the MERGE derived
+    `customer_id` from its own ON clause, which outranks a blanket flag, and
+    the report says so rather than leaving the flag's silent non-application
+    for the reader to notice."""
+    report = _run_fixture(tmp_path, "--unique-key", "event_id")
+
+    upgraded = _find(tmp_path, "events")
+    assert "incremental_strategy='merge'" in upgraded
+    assert "unique_key='event_id'" in upgraded
+
+    untouched = _find(tmp_path, "dim_customers")
+    assert "unique_key='customer_id'" in untouched
+    assert "event_id" not in untouched
+
+    assert "upgraded from append by --unique-key" in report
+    assert "dim_customers kept its script-derived unique_key (customer_id)" in report
+    assert "--unique-key event_id was not applied" in report
+
+
+def test_the_flag_does_not_reach_the_rebuilt_table(tmp_path):
+    """`--unique-key` answers the append-or-merge question. daily_totals is a
+    table -- it was never asked that question, so the flag has no business
+    turning it into an incremental."""
+    _run_fixture(tmp_path, "--unique-key", "event_id")
+    body = _find(tmp_path, "daily_totals")
+    assert "materialized='table'" in body
+    assert "unique_key" not in body
