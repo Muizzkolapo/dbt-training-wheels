@@ -40,6 +40,11 @@ def _target_of(node: exp.Expr) -> exp.Table | None:
         return _as_table(node.expressions[0]) if node.expressions else None
     if isinstance(node, exp.Delete):
         return _as_table(node.this)
+    if isinstance(node, exp.Merge):
+        # A MERGE writes its target as surely as an INSERT does. Leaving it
+        # out here made a pending MERGE invisible to `_pending_writers`, so a
+        # pending INSERT blocked a later MERGE but never the reverse.
+        return _as_table(node.this)
     return None
 
 
@@ -198,12 +203,14 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
         key = (stmt.raw.source_file, target_key(table))
         pair = truncates.get(key)
         if pair is None or pair[0] > index:
-            # No truncate left to pair with. If an earlier statement already
-            # rebuilt this target, that is why — the truncate was claimed by
-            # the first INSERT of the pair, and this one adds to the result.
-            # `append_pass` says so for the bare-INSERT spelling of the same
-            # situation; a column list is not a reason to say nothing.
-            if pair is None and written_earlier(drafts, writers, target_key(table), index):
+            # No truncate before this INSERT to pair with, for one of two
+            # reasons, and it owes a Decision either way: this pass owns
+            # INSERTs with a column list, so declining one is a refusal it is
+            # responsible for, not a statement shape it may pass over. Both
+            # were silent before — a lone column-list INSERT was read,
+            # converted by nobody (`append_pass` skips any INSERT carrying a
+            # column list) and never mentioned in the report at all.
+            if written_earlier(drafts, writers, target_key(table), index):
                 decisions.append(
                     _decision(
                         stmt,
@@ -217,12 +224,35 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                             "slice 6c)"
                         ),
                         reason=(
-                            "an earlier statement already became the model for this "
-                            "target; both statements run and both leave rows behind, so "
-                            "converting this one as well would replace that model and "
-                            "discard what the other writes. A dbt model is one SELECT, "
-                            "and combining them would mean inventing a query the script "
-                            "never wrote"
+                            "another statement earlier in this conversion writes this "
+                            "target, and both of them run and leave rows behind. A dbt "
+                            "model is one SELECT, so this statement cannot become one of "
+                            "its own without either replacing what that statement "
+                            "produces or claiming to be the whole of a target two "
+                            "statements write; combining them would mean inventing a "
+                            "query the script never wrote"
+                        ),
+                    )
+                )
+            else:
+                decisions.append(
+                    _decision(
+                        stmt,
+                        index,
+                        "truncate_insert_columns",
+                        2,
+                        action=(
+                            f"deferred: INSERT INTO {table.name} has an explicit column "
+                            "list but no TRUNCATE before it to pair with"
+                        ),
+                        reason=(
+                            "a column list maps positionally onto the SELECT's "
+                            "projections as part of a TRUNCATE+INSERT rebuild, where the "
+                            "pair defines the table's whole contents. On its own this "
+                            "INSERT appends rows under a column mapping, which is a "
+                            "conversion this converter does not make yet (catalog 2.8), "
+                            "so the statement is left as written rather than converted "
+                            "into an append that drops the mapping"
                         ),
                     )
                 )
@@ -1136,10 +1166,11 @@ def merge_pass(state: PassState) -> PassState:
                         "one multi-statement build (catalog 2.8, deferred to slice 6c)"
                     ),
                     reason=(
-                        "an earlier statement already became the model for this target; "
-                        "both statements run and both leave rows behind, so converting "
-                        "the MERGE as well would replace that model and discard what the "
-                        "other writes. A dbt model is one SELECT, and expressing both at "
+                        "another statement earlier in this conversion writes this "
+                        "target, and both of them run and leave rows behind. A dbt model "
+                        "is one SELECT, so the MERGE cannot become one of its own without "
+                        "either replacing what that statement produces or claiming to be "
+                        "the whole of a target two statements write; expressing both at "
                         "once would mean inventing a query the script never wrote"
                     ),
                 )
@@ -1390,11 +1421,13 @@ def append_pass(state: PassState) -> PassState:
                         "one multi-statement build (catalog 2.8, deferred to slice 6c)"
                     ),
                     reason=(
-                        "an earlier statement already became the model for this target; "
-                        "both statements run and both leave rows behind, so converting "
-                        "this one as well would replace that model and discard what the "
-                        "other writes. A dbt model is one SELECT, and combining them "
-                        "would mean inventing a query the script never wrote"
+                        "another statement earlier in this conversion writes this "
+                        "target, and both of them run and leave rows behind. A dbt model "
+                        "is one SELECT, so this statement cannot become one of its own "
+                        "without either replacing what that statement produces or "
+                        "claiming to be the whole of a target two statements write; "
+                        "combining them would mean inventing a query the script never "
+                        "wrote"
                     ),
                 )
             )

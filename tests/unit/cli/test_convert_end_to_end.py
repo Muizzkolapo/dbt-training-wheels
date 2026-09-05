@@ -514,3 +514,65 @@ def test_a_later_full_rebuild_still_replaces_what_came_before_it(tmp_path):
     assert "materialized='table'" in body
     assert "v2" in body
     assert "superseded" in report.lower()
+
+
+# --- a column-list INSERT with no TRUNCATE to pair with. No pass converts
+# one: truncate_insert_columns_pass wants a pair, and append_pass skips any
+# INSERT carrying a column list. It was falling through both in silence --
+# read, not converted, and not a word about it anywhere in the report.
+
+
+def test_a_column_list_insert_with_no_truncate_is_not_silently_dropped(tmp_path):
+    """The most direct "nothing is silent" violation the pipeline could
+    produce: one statement in, no model, and "No decisions were recorded."""
+    report = _report(
+        tmp_path,
+        "INSERT INTO orders (order_id, status) SELECT order_id, status FROM raw.backfill;\n",
+    )
+    assert "No decisions were recorded" not in report
+    assert "no TRUNCATE" in report
+    assert "orders" in report
+
+
+def test_a_truncate_after_the_insert_is_not_a_pair_and_says_so(tmp_path):
+    """A TRUNCATE that follows the INSERT wipes what it just wrote, so the two
+    are not a rebuild pair. Same answer, same Decision owed."""
+    report = _report(
+        tmp_path,
+        "INSERT INTO orders (order_id, status) SELECT order_id, status FROM raw.backfill;\n"
+        "TRUNCATE TABLE orders;\n",
+    )
+    assert "no TRUNCATE" in report
+
+
+def test_a_deferral_does_not_claim_a_model_that_was_never_built(tmp_path):
+    """`written_earlier` answers "does an earlier statement write this
+    target", which a still-pending statement does just as much as a converted
+    one. The reason said "an earlier statement already became the model for
+    this target" either way -- printed here in a report whose own summary
+    says no models were produced at all."""
+    report = _report(
+        tmp_path,
+        "INSERT INTO orders (order_id, status) SELECT order_id, status FROM raw.backfill;\n"
+        "MERGE INTO orders AS t USING raw.orders AS s ON t.order_id = s.order_id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n",
+    )
+    assert "**Models**: 0" in report
+    assert "already became the model" not in report
+    assert "several statements" in report
+
+
+def test_a_pending_merge_blocks_a_later_insert_the_same_way_a_pending_insert_does(tmp_path):
+    """The target of a MERGE was not readable at all where pending statements
+    are collected, so a MERGE never counted as writing anything -- a pending
+    INSERT blocked a later MERGE, but never the reverse. The MERGE here is
+    refused for its delete branch and stays pending; the INSERT after it must
+    still see that something else writes this target."""
+    report = _report(
+        tmp_path,
+        "MERGE INTO orders AS t USING raw.orders AS s ON t.order_id = s.order_id "
+        "WHEN MATCHED THEN DELETE;\n"
+        "INSERT INTO orders (order_id, status) SELECT order_id, status FROM raw.backfill;\n",
+    )
+    assert "several statements" in report
+    assert "**Models**: 0" in report
