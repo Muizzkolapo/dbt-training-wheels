@@ -12,6 +12,7 @@ def _draft(name: str, body: str, materialization: str = "table", **kw) -> ModelD
     return ModelDraft(
         name=name,
         qualified_name=kw.get("qualified_name", name),
+        identity=kw.get("identity", ("", "", name.casefold())),
         body=body,
         materialization=materialization,
         grants=kw.get("grants", ()),
@@ -71,6 +72,47 @@ def test_dependencies_use_final_names_and_order_is_topological():
     order = [m.name for m in change.models]
     assert order.index("stg_base_orders") < order.index("revenue")
     assert _by_name(change)["revenue"].depends_on == ("stg_base_orders",)
+
+
+def test_reconstructed_models_keep_every_field_the_placement_step_set():
+    """Locks the same property as grants_pass's regression, one layer up:
+    assemble() rebuilds AssembledModel twice after the initial placement --
+    once to fill in depends_on (Step 8, once every draft has a final name),
+    once more to swap in the ref/source-rewritten body -- and both used to
+    enumerate fields by hand, the same shape of field list that let
+    grants_pass silently drop incremental_strategy/unique_key. "revenue"
+    depends on "base_orders", which exercises both reconstructions (a
+    non-empty depends_on, and a body that must be rewritten from a bare
+    table name to `ref()`); every field the placement step already set
+    (grants, leading_comments, source_indices, layer, materialization, path,
+    name) must come through both reconstructions unchanged -- only body and
+    depends_on are expected to differ from the fresh-construction step."""
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = assemble(
+        _state(
+            _draft(
+                "revenue",
+                "SELECT a FROM base_orders",
+                materialization="view",  # differs from root's default so it isn't omitted
+                grants=(("SELECT", ("reporting",)),),
+                leading_comments=("a leading comment",),
+                source_indices=(5, 6),
+            ),
+            _draft("base_orders", "SELECT a FROM raw_orders"),
+        ),
+        ctx,
+    )
+    model = _by_name(change)["revenue"]
+    assert model.name == "revenue"
+    assert model.path == "models/revenue.sql"
+    assert model.layer == "root"
+    assert model.materialization == "view"
+    assert model.grants == (("SELECT", ("reporting",)),)
+    assert model.leading_comments == ("a leading comment",)
+    assert model.source_indices == (5, 6)
+    # the only two fields the reconstructions are meant to change:
+    assert model.depends_on == ("stg_base_orders",)
+    assert model.body == "SELECT\n  a\nFROM {{ ref('stg_base_orders') }}"
 
 
 def test_materialization_matching_the_layer_default_is_omitted():
@@ -169,6 +211,111 @@ def test_dropped_draft_placement_decisions_do_not_duplicate_keys_or_describe_it(
         assert d.key != "assemble.collision.orders"
         assert d.key != "assemble.path.orders"
         assert d.key != "assemble.rename.orders"
+
+
+def test_two_same_named_drafts_keep_the_later_one_not_neither():
+    """Regression: dropping the loser by NAME also blacklisted the winner, emitting zero models."""
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    first = _draft("dup", "SELECT 1 AS a FROM raw.x", source_indices=(0,))
+    second = _draft("dup", "SELECT 2 AS a FROM raw.y", source_indices=(5,))
+    change = assemble(_state(first, second), ctx)
+    assert len(change.models) == 1
+    # the file-order-later definition survives — raw.y, correctly rewritten
+    # to dbt's source() syntax (qualified table refs always are; see
+    # test_rewrite.py::test_qualified_table_becomes_a_source), not raw.x
+    assert "source('raw', 'y')" in change.models[0].body
+    assert any("both resolve to" in d.action for d in change.decisions)
+
+
+def test_the_surviving_draft_keeps_its_own_placement_decisions():
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = assemble(
+        _state(
+            _draft("dup", "SELECT 1 AS a FROM raw.x", source_indices=(0,)),
+            _draft("dup", "SELECT 2 AS a FROM raw.y", source_indices=(5,)),
+        ),
+        ctx,
+    )
+    assert len({d.key for d in change.decisions}) == len(change.decisions)
+    model_names = {m.name for m in change.models}
+    for d in change.decisions:
+        if d.key.startswith("assemble.materialization."):
+            assert any(n in d.action or n in d.key for n in model_names)
+
+
+def test_placed_data_for_the_survivor_matches_the_winner_not_tuple_order():
+    """The winner is picked by max(source_indices), independent of which draft
+    is later in the `drafts` tuple. Keying the survivor's placed body/path by
+    NAME (instead of by the winning draft's own identity) would silently
+    surface the tuple-order-last same-named draft's data instead of the
+    actual winner's — a second, quieter flavor of the same identity bug,
+    inside the very collision block this fix touches.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    earlier_in_tuple_but_higher_source_index = _draft(
+        "dup", "SELECT 1 AS a FROM raw_x", source_indices=(9,)
+    )
+    later_in_tuple_but_lower_source_index = _draft(
+        "dup", "SELECT 2 AS a FROM raw_y", source_indices=(0,)
+    )
+    change = assemble(
+        _state(
+            earlier_in_tuple_but_higher_source_index,
+            later_in_tuple_but_lower_source_index,
+        ),
+        ctx,
+    )
+    assert len(change.models) == 1
+    # raw_x/raw_y are unqualified (no schema), so they stay as written —
+    # unlike the qualified raw.x/raw.y elsewhere in this file, nothing here
+    # rewrites the FROM clause, keeping this test isolated to the placed{}
+    # lookup this test targets.
+    assert "raw_x" in change.models[0].body
+
+
+def test_same_name_and_different_name_collisions_together_do_not_cross_contaminate():
+    """Interaction check: a same-name collision (orders_dup x2) and an
+    already-correct different-name collision (orders -> stg_orders colliding
+    with stg_orders itself) processed in the same assemble() call must each
+    resolve independently — the different-name path's behavior (one survivor,
+    dropped draft's placement decisions discarded, an honest "both resolve
+    to" decision naming both) must be exactly what it was before the
+    same-name fix, even sharing a single drafts tuple and a single
+    dropped-index set with the same-name pair.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")  # already has stg_orders
+    change = assemble(
+        _state(
+            _draft("orders", "SELECT a FROM raw_orders", "view", source_indices=(0,)),
+            _draft("stg_orders", "SELECT a FROM raw_orders", "view", source_indices=(1,)),
+            _draft("dup", "SELECT 1 AS a FROM raw.x", source_indices=(2,)),
+            _draft("dup", "SELECT 2 AS a FROM raw.y", source_indices=(7,)),
+        ),
+        ctx,
+    )
+    model_names = {m.name for m in change.models}
+    assert model_names == {"stg_orders", "stg_dup"}
+
+    dup_model = next(m for m in change.models if m.name == "stg_dup")
+    assert "source('raw', 'y')" in dup_model.body
+
+    collisions = [d for d in change.decisions if "both resolve to" in d.action]
+    assert len(collisions) == 2
+    orders_collision = next(d for d in collisions if "orders" in d.action)
+    assert "orders" in orders_collision.action and "stg_orders" in orders_collision.action
+    assert any(d.action.count("dup") >= 2 for d in collisions)
+
+    # the dropped drafts' own placement decisions must not survive either
+    # group — every other decision's key must be unique, so if a discarded
+    # placement decision leaked back in under the same "assemble.collision."
+    # or "assemble.materialization." key as one of these two retained
+    # decisions, it would show up here as a duplicate.
+    assert not any(
+        d.key == "assemble.materialization.dup" for d in change.decisions if d not in collisions
+    )
+
+    keys = [d.key for d in change.decisions]
+    assert len(set(keys)) == len(keys), f"duplicate decision keys: {keys}"
 
 
 def _model(name: str, depends_on: tuple[str, ...]) -> AssembledModel:

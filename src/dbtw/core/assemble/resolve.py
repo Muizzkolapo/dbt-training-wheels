@@ -93,7 +93,7 @@ def _resolve_one(
                 kind="ref",
                 target=final,
                 source_name="",
-                reason="matches the model built from this script",
+                reason="matches a model built by this conversion",
             )
 
         if not ref.db:
@@ -163,7 +163,7 @@ def _resolve_one(
             kind="ref",
             target=final,
             source_name="",
-            reason="matches the model built from this script",
+            reason="matches a model built by this conversion",
         )
 
     if ref.name in existing_models:

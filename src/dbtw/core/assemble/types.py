@@ -31,6 +31,8 @@ class AssembledModel:
     depends_on: tuple[str, ...]  # final names of other models in this change
     leading_comments: tuple[str, ...]
     source_indices: tuple[int, ...]
+    incremental_strategy: str | None = None  # None means "not incremental"
+    unique_key: tuple[str, ...] = ()  # empty means no unique key
 
 
 @dataclass(frozen=True, slots=True)

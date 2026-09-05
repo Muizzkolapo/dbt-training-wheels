@@ -38,6 +38,15 @@ def _config_args(model: AssembledModel) -> list[str]:
     if model.materialization is not None:
         args.append(f"materialized={model.materialization!r}")
 
+    if model.incremental_strategy is not None:
+        args.append(f"incremental_strategy={model.incremental_strategy!r}")
+
+    if model.unique_key:
+        key: str | list[str] = (
+            model.unique_key[0] if len(model.unique_key) == 1 else list(model.unique_key)
+        )
+        args.append(f"unique_key={key!r}")
+
     if model.grants:
         merged: dict[str, list[str]] = {}
         for privilege, principals in model.grants:

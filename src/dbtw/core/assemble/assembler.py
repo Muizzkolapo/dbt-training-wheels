@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import heapq
 from collections.abc import Mapping
+from typing import Literal
+
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble.layers import layer_roles, role_for
 from dbtw.core.assemble.refs import references_in
@@ -12,7 +18,7 @@ from dbtw.core.assemble.rewrite import rewrite_body
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
 from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ProjectContext
-from dbtw.core.naming import is_qualified, qualified_name
+from dbtw.core.naming import is_qualified, qualified_name, same_identifier
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
@@ -234,7 +240,336 @@ def _topological(models: list[AssembledModel]) -> tuple[list[AssembledModel], li
     return [by_name[name] for name in ordered_names], decisions
 
 
-def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False) -> ProjectChange:
+def _keys_str(keys: tuple[str, ...]) -> str:
+    return ", ".join(keys)
+
+
+def _decision_statement_index(dec: Decision) -> int | None:
+    """The pipeline statement index embedded in a Decision's key.
+
+    `Decision.key`'s documented shape is "<prefix>.<source_file>:<index>"
+    (see the example in `Decision`'s own docstring) -- every `_decision()`
+    helper across tier 1 and tier 2 builds it this way. Reading it back out
+    here is reading that documented contract, not parsing prose.
+    """
+    _, _, suffix = dec.key.rpartition(":")
+    return int(suffix) if suffix.isdigit() else None
+
+
+def _find_append_decision_index(
+    decisions: tuple[Decision, ...], source_indices: tuple[int, ...]
+) -> int | None:
+    """Locate the tier-2 Decision recording the append conversion for the
+    statement that actually survived into this model.
+
+    Matching on `chosen == "append every row"` alone is not enough: a
+    *collision* -- two differently qualified tables sharing a bare name, say
+    `staging.orders` beside `mart.orders` -- gets a full `chosen="append
+    every row"` Decision recorded for BOTH statements, since `append_pass`
+    only skips recording one for a "superseded" verdict. Matching the
+    statement index embedded in the Decision's key against
+    `AssembledModel.source_indices` (which always names the *surviving*
+    statement) is what tells those two Decisions apart; text-matching the
+    action against the model's name cannot, since a collision's two
+    statements share that name by construction.
+
+    Two INSERTs into the *same* target no longer reach here as a
+    redefinition -- `collisions.written_earlier` defers the later one before
+    it is ever drafted -- so a collision between different tables is now the
+    only way two append Decisions can compete for one model.
+    """
+    wanted = set(source_indices)
+    for i, dec in enumerate(decisions):
+        if dec.chosen == "append every row" and _decision_statement_index(dec) in wanted:
+            return i
+    return None
+
+
+def _known_projections(
+    body: str, dialect: str | None
+) -> tuple[list[tuple[str, bool]], bool] | None:
+    """The named, non-star output columns a query body projects, as
+    (name, was-written-quoted) pairs, plus whether a star projection (`*`
+    or `t.*`) is present anywhere in it.
+
+    Works on any `exp.Query` -- a plain `SELECT` or a set operation
+    (`UNION`/`INTERSECT`/`EXCEPT`) alike, via `.selects`, which sqlglot's
+    own `named_selects` is built on. An unaliased compound projection (a
+    bare `CASE` with no `AS`) has no output name at all and is simply
+    skipped: it can never match a --unique-key column (which must name a
+    real output column), so leaving it out never hides a real match --
+    see `_key_status` below, which is the only thing that reads this list.
+
+    None means the body couldn't be parsed as a query at all -- should not
+    happen for an append draft's body (always exactly the INSERT's own
+    SELECT, re-parsed with the same dialect it was rendered with), but
+    callers must describe this honestly rather than folding it into the
+    star case, which would claim a construct that was never actually
+    there (FINDING 6).
+    """
+    try:
+        node = sqlglot.parse_one(body, read=dialect)
+    except SqlglotError:
+        return None
+    if not isinstance(node, exp.Query):
+        return None
+
+    projections: list[tuple[str, bool]] = []
+    has_star = False
+    for projection in node.selects:
+        name = projection.alias_or_name
+        if not name:
+            continue  # unnamed (e.g. a bare CASE): can never match a key
+        if name == "*":
+            has_star = True
+            continue
+        if isinstance(projection, exp.Alias):
+            identifier = projection.args.get("alias")
+        elif isinstance(projection, exp.Column):
+            identifier = projection.this
+        else:
+            identifier = None
+        quoted = bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
+        projections.append((name, quoted))
+    return projections, has_star
+
+
+_KeyStatus = Literal["matched", "ambiguous", "missing"]
+
+
+def _key_status(key: str, projections: list[tuple[str, bool]]) -> tuple[_KeyStatus, str | None]:
+    """Whether `key` (always unquoted -- a CLI flag value can never carry
+    quoting) is one of `projections`' output names.
+
+    `same_identifier` folds case unless either side was written quoted, so
+    a *quoted* projection whose spelling matches `key` only case-
+    insensitively (`SELECT "Order_Id"` against `--unique-key order_id`) is
+    never a confident "matched" -- whether they're really the same column
+    depends on how this warehouse folds unquoted identifiers, which the
+    SQL text never reveals. That's the same unknowable-from-the-text-alone
+    shape `naming.compare_targets` already carries a name for
+    ("ambiguous"); guessing either "matched" or "missing" here would be
+    exactly the kind of confident-but-wrong guess that module's docstring
+    warns against.
+    """
+    ambiguous_name: str | None = None
+    for name, quoted in projections:
+        if same_identifier(key, False, name, quoted):
+            return "matched", name
+        if quoted and ambiguous_name is None and key.casefold() == name.casefold():
+            ambiguous_name = name
+    if ambiguous_name is not None:
+        return "ambiguous", ambiguous_name
+    return "missing", None
+
+
+def _upgrade_to_merge(
+    dec: Decision, draft_name: str, keys: tuple[str, ...], *, caveat: str
+) -> Decision:
+    """Rewrite an append Decision into the merge upgrade `--unique-key` chose.
+
+    `chosen`/`alternatives` mirror the wording `merge_pass` already uses for
+    its own script-derived merges ("merge on <keys>" / "append every row"),
+    so a model's incremental history reads the same regardless of whether
+    the merge came from the script or from this flag. `caveat` is appended
+    to `reason` verbatim -- callers own its exact wording, so this function
+    never has to guess (and can never fabricate) what's actually true of
+    the model's body (FINDING 6).
+    """
+    keys_str = _keys_str(keys)
+    return dataclasses.replace(
+        dec,
+        action=(
+            f"INSERT INTO {draft_name} became an incremental model "
+            f"(incremental_strategy='merge', unique_key={list(keys)!r}) — upgraded "
+            "from append by --unique-key"
+        ),
+        reason=(
+            "--unique-key was supplied on the command line; an append incremental "
+            "re-inserts everything the model selects on every run, so this model "
+            "was switched to a merge on the given key instead" + caveat
+        ),
+        chosen=f"merge on {keys_str}",
+        alternatives=(dec.chosen,),
+    )
+
+
+def _apply_unique_key(
+    models: list[AssembledModel],
+    decisions: tuple[Decision, ...],
+    unique_key: tuple[str, ...],
+    final_to_draft_name: Mapping[str, str],
+    dialect: str | None,
+) -> tuple[list[AssembledModel], tuple[Decision, ...], list[Decision]]:
+    """Upgrade every eligible append model to merge on `unique_key`.
+
+    A model that is already `merge` keeps its own key untouched -- its ON
+    clause is better evidence of the true unique key than a blanket CLI
+    flag -- but a Decision is still recorded when the flag disagrees with
+    it, so the override that was declined is visible in the report. An
+    append model is upgraded only when its own body backs up the key
+    (FINDING 2/5/6): every key column must be a real output column of the
+    model (matched case-insensitively, per `_key_status`, since a CLI value
+    can never be quoted), a star projection gets the key applied with an
+    honest caveat instead of a confident match, a genuinely absent column
+    blocks the upgrade outright, and a quoted output name that only
+    differs by case is left ambiguous rather than guessed either way.
+    Naming in every new Decision kind here uses the pre-rename draft name
+    -- matching the convention every surrounding tier-2 Decision already
+    uses (FINDING 3).
+    """
+    keys_str = _keys_str(unique_key)
+    decisions_list = list(decisions)
+    extra_decisions: list[Decision] = []
+    new_models: list[AssembledModel] = []
+    found_incremental = False
+
+    for model in models:
+        if model.incremental_strategy == "append":
+            found_incremental = True
+            draft_name = final_to_draft_name[model.name]
+            known = _known_projections(model.body, dialect)
+
+            if known is None:
+                caveat = (
+                    " (this model's body could not be parsed to confirm its output "
+                    "columns, so this could not be verified)"
+                )
+            else:
+                projections, has_star = known
+                # (key, status, matched-or-ambiguous-name) per key column --
+                # built as one list, not zip(unique_key, statuses), so the
+                # three views below can never drift out of alignment.
+                statuses = [(k, *_key_status(k, projections)) for k in unique_key]
+                missing = [k for k, status, _ in statuses if status == "missing"]
+                ambiguous = [(k, name) for k, status, name in statuses if status == "ambiguous"]
+                all_matched = all(status == "matched" for _, status, _ in statuses)
+
+                if missing and not has_star:
+                    extra_decisions.append(
+                        Decision(
+                            key=f"assemble.unique_key_not_selected.{draft_name}",
+                            tier=2,
+                            action=(
+                                f"--unique-key {keys_str} was not applied to "
+                                f"{draft_name}: it does not select {_keys_str(tuple(missing))}"
+                            ),
+                            reason=(
+                                "a merge's unique_key must be one of the model's own "
+                                "output columns; forcing this key onto a model that "
+                                "doesn't select it would fail at dbt run time, so it "
+                                "was left as an append incremental instead"
+                            ),
+                            source_file="",
+                            line_start=0,
+                            line_end=0,
+                        )
+                    )
+                    new_models.append(model)
+                    continue
+
+                if ambiguous and not has_star and not missing:
+                    named = ", ".join(f'{k} as "{name}"' for k, name in ambiguous)
+                    extra_decisions.append(
+                        Decision(
+                            key=f"assemble.unique_key_ambiguous.{draft_name}",
+                            tier=2,
+                            action=(
+                                f"--unique-key {keys_str} was not applied to "
+                                f"{draft_name}: whether it selects {named} is "
+                                "ambiguous, not confirmed"
+                            ),
+                            reason=(
+                                "a quoted output column is case-sensitive, so whether "
+                                "it's really the same column as an unquoted "
+                                "--unique-key value can't be told from the SQL text "
+                                "alone -- the same ambiguous/same/different tri-state "
+                                "naming.compare_targets uses for cross-statement "
+                                "target identity; left as an append incremental "
+                                "rather than guessing either way"
+                            ),
+                            source_file="",
+                            line_start=0,
+                            line_end=0,
+                        )
+                    )
+                    new_models.append(model)
+                    continue
+
+                if has_star and not all_matched:
+                    caveat = (
+                        f" (this model selects *, so whether it actually projects "
+                        f"{keys_str} could not be verified)"
+                    )
+                else:
+                    caveat = ""
+
+            index = _find_append_decision_index(decisions, model.source_indices)
+            assert index is not None  # every append model has its own append_pass Decision
+            decisions_list[index] = _upgrade_to_merge(
+                decisions_list[index], draft_name, unique_key, caveat=caveat
+            )
+            new_models.append(
+                dataclasses.replace(model, incremental_strategy="merge", unique_key=unique_key)
+            )
+        elif model.incremental_strategy == "merge":
+            found_incremental = True
+            if model.unique_key != unique_key:
+                draft_name = final_to_draft_name[model.name]
+                extra_decisions.append(
+                    Decision(
+                        key=f"assemble.unique_key_ignored.{draft_name}",
+                        tier=2,
+                        action=(
+                            f"{draft_name} kept its script-derived unique_key "
+                            f"({_keys_str(model.unique_key)}); --unique-key {keys_str} "
+                            "was not applied"
+                        ),
+                        reason=(
+                            "this model's own MERGE ON clause is stronger evidence of "
+                            "its true unique key than a blanket --unique-key flag on "
+                            "the command line, so the script-derived key was kept "
+                            "instead of the flag's"
+                        ),
+                        source_file="",
+                        line_start=0,
+                        line_end=0,
+                    )
+                )
+            new_models.append(model)
+        else:
+            new_models.append(model)
+
+    if not found_incremental:
+        extra_decisions.append(
+            Decision(
+                key="assemble.unique_key_unused",
+                tier=2,
+                action=(
+                    f"--unique-key {keys_str} was supplied but no model in this "
+                    "change is incremental"
+                ),
+                reason=(
+                    "no model converted from this SQL has an append or merge "
+                    "incremental strategy, so there was nothing for --unique-key to "
+                    "apply to -- check for a typo in the flag or in the input SQL"
+                ),
+                source_file="",
+                line_start=0,
+                line_end=0,
+            )
+        )
+
+    return new_models, tuple(decisions_list), extra_decisions
+
+
+def assemble(
+    state: PassState,
+    ctx: ProjectContext,
+    *,
+    inline_vars: bool = False,
+    unique_key: tuple[str, ...] = (),
+) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
     draft_names = {d.name for d in drafts}
@@ -276,18 +611,22 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     existing_by_name = {m.name: m for m in ctx.existing_models}
 
     final_names: dict[str, str] = {}
-    placed: dict[str, AssembledModel] = {}
-    # Keyed by draft.name — unique per tier-1's upsert invariant, unlike
-    # final_name, which two drafts can share (one gets prefixed into the
-    # other's own name; see the dedup loop below). Collecting each draft's
+    # Keyed by the draft's own position in `drafts`, not by draft.name: two
+    # drafts can legitimately share a name (e.g. two same-named drafts that
+    # also collide on final name below), and a name-keyed dict would let the
+    # second draft processed silently overwrite the first's own placement —
+    # surfacing the wrong draft's body/path/materialization for whichever
+    # draft is looked up by that shared name, even for the survivor.
+    placed: dict[int, AssembledModel] = {}
+    # Also keyed by position, for the same reason. Collecting each draft's
     # own placement Decisions here, instead of appending them to
     # new_decisions immediately, lets a dropped draft's Decisions be
-    # discarded wholesale once dropped_names is known — a decision keyed and
-    # worded around a model that was never written is not a fix, it's a
+    # discarded wholesale once dropped_indices is known — a decision keyed
+    # and worded around a model that was never written is not a fix, it's a
     # different bug.
-    placement_decisions: dict[str, list[Decision]] = {}
+    placement_decisions: dict[int, list[Decision]] = {}
 
-    for draft in drafts:
+    for draft_index, draft in enumerate(drafts):
         local_decisions: list[Decision] = []
         role = role_for(draft.name, deps, dependents_frozen)
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
@@ -325,7 +664,11 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
                 )
             )
 
-        if layer is not None and draft.materialization == layer.materialization:
+        if (
+            layer is not None
+            and draft.materialization == layer.materialization
+            and draft.incremental_strategy is None
+        ):
             materialization = None
             local_decisions.append(
                 _decision(
@@ -340,7 +683,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
         else:
             materialization = draft.materialization
 
-        placed[draft.name] = AssembledModel(
+        placed[draft_index] = AssembledModel(
             name=final_name,
             path=path,
             body=draft.body,
@@ -350,38 +693,61 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
             depends_on=(),  # filled in below, once every draft has a final name
             leading_comments=draft.leading_comments,
             source_indices=draft.source_indices,
+            incremental_strategy=draft.incremental_strategy,
+            unique_key=draft.unique_key,
         )
-        placement_decisions[draft.name] = local_decisions
+        placement_decisions[draft_index] = local_decisions
 
     # Two drafts can resolve to the same final name (e.g. one gets prefixed
     # into the other's own name). A dbt model is one file, so — before the
     # model list is built — keep only the file-order-later draft (highest
     # max(source_indices), same precedent as tier1's _replace_draft) and
     # record an honest Decision naming both for every draft that's dropped.
-    by_final_name: dict[str, list[ModelDraft]] = {}
-    for draft in drafts:
-        by_final_name.setdefault(final_names[draft.name], []).append(draft)
+    # Grouped by the folded final name, not the final name as spelled. Two
+    # models whose names differ only in case are two models to dbt but one
+    # file on a case-insensitive filesystem, where the second write silently
+    # replaces the first — so they are resolved here, with the loss recorded,
+    # rather than left for the filesystem to resolve in silence.
+    by_final_name: dict[str, list[tuple[int, ModelDraft]]] = {}
+    for draft_index, draft in enumerate(drafts):
+        by_final_name.setdefault(final_names[draft.name].casefold(), []).append(
+            (draft_index, draft)
+        )
 
-    dropped_names: set[str] = set()
-    for shared_final_name, group in by_final_name.items():
+    # Indices, not names: two colliding drafts can share a name (see above),
+    # and dropping the loser's NAME would blacklist the winner too, since
+    # `draft.name in dropped_names` can't tell them apart — the winner would
+    # be filtered out right along with the loser, emitting zero models while
+    # the Decision below claims one survived.
+    dropped_indices: set[int] = set()
+    for group in by_final_name.values():
         if len(group) == 1:
             continue
-        kept = group[0]
-        for candidate in group[1:]:
+        kept_index, kept = group[0]
+        for candidate_index, candidate in group[1:]:
             if max(candidate.source_indices) >= max(kept.source_indices):
-                kept = candidate
-        for draft in group:
-            if draft is kept:
+                kept_index, kept = candidate_index, candidate
+        for draft_index, draft in group:
+            if draft_index == kept_index:
                 continue
-            dropped_names.add(draft.name)
+            dropped_indices.add(draft_index)
+            dropped_final, kept_final = final_names[draft.name], final_names[kept.name]
+            resolves = (
+                f"both resolve to model {kept_final}"
+                if dropped_final == kept_final
+                else (
+                    "resolve to model names differing only in case "
+                    f"({dropped_final} and {kept_final})"
+                )
+            )
             new_decisions.append(
                 _decision(
                     "collision",
                     draft.name,
-                    f"{draft.name} and {kept.name} both resolve to model "
-                    f"{shared_final_name} — kept {kept.name}",
-                    "a dbt model is one file; only one definition can survive under "
-                    "the same final name — resolve this collision in the source SQL",
+                    f"{draft.name} and {kept.name} {resolves} — kept {kept.name}",
+                    "a dbt model is one file, and on a case-insensitive filesystem two "
+                    "names differing only in case are one file too — only one definition "
+                    "can survive; resolve this collision in the source SQL",
                 )
             )
 
@@ -389,36 +755,31 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     # draft's file was never written, so its rename/collision/path/
     # materialization Decisions above are discarded; the "both resolve to"
     # Decision just recorded is the only honest record of it.
-    for draft in drafts:
-        if draft.name in dropped_names:
+    for draft_index in range(len(drafts)):
+        if draft_index in dropped_indices:
             continue
-        new_decisions.extend(placement_decisions[draft.name])
+        new_decisions.extend(placement_decisions[draft_index])
 
     # Step 8: translate dependency names to final names now that every draft has one.
     models: list[AssembledModel] = []
     final_to_draft_name: dict[str, str] = {}
-    for draft in drafts:
-        if draft.name in dropped_names:
+    for draft_index, draft in enumerate(drafts):
+        if draft_index in dropped_indices:
             continue
-        model = placed[draft.name]
+        model = placed[draft_index]
         depends_on = tuple(sorted({final_names[dep] for dep in deps[draft.name]}))
-        models.append(
-            AssembledModel(
-                name=model.name,
-                path=model.path,
-                body=model.body,
-                materialization=model.materialization,
-                grants=model.grants,
-                layer=model.layer,
-                depends_on=depends_on,
-                leading_comments=model.leading_comments,
-                source_indices=model.source_indices,
-            )
-        )
+        models.append(dataclasses.replace(model, depends_on=depends_on))
         final_to_draft_name[model.name] = draft.name
 
     ordered, cycle_decisions = _topological(models)
     new_decisions.extend(cycle_decisions)
+
+    inherited_decisions = state.decisions
+    if unique_key:
+        ordered, inherited_decisions, unique_key_decisions = _apply_unique_key(
+            ordered, inherited_decisions, unique_key, final_to_draft_name, state.dialect
+        )
+        new_decisions.extend(unique_key_decisions)
 
     # From here on, everything above (placement, naming, dependency edges, and
     # source entries) has been computed from the RAW bodies — required, since
@@ -580,19 +941,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
         rewritten_body = rewrite_body(
             model.body, state.dialect, resolutions_by_key, variable_defaults, inline_vars
         )
-        rewritten_models.append(
-            AssembledModel(
-                name=model.name,
-                path=model.path,
-                body=rewritten_body,
-                materialization=model.materialization,
-                grants=model.grants,
-                layer=model.layer,
-                depends_on=model.depends_on,
-                leading_comments=model.leading_comments,
-                source_indices=model.source_indices,
-            )
-        )
+        rewritten_models.append(dataclasses.replace(model, body=rewritten_body))
 
         ref_resolutions = [r for r in resolutions if r.kind == "ref"]
         source_resolutions = [r for r in resolutions if r.kind == "source"]
@@ -646,7 +995,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     return ProjectChange(
         models=tuple(rewritten_models),
         sources=source_entries,
-        decisions=state.decisions + tuple(new_decisions),
+        decisions=inherited_decisions + tuple(new_decisions),
         pending=remaining_pending,
         dialect=state.dialect,
         project_name=ctx.project_name,

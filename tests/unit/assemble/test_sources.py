@@ -11,6 +11,7 @@ def _state(body: str) -> PassState:
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body=body,
         materialization="table",
         grants=(),
@@ -48,6 +49,7 @@ def test_references_to_models_in_this_change_are_not_sources():
         ModelDraft(
             name="a_m",
             qualified_name="a_m",
+            identity=("", "", "a_m"),
             body="SELECT x FROM raw.t",
             materialization="table",
             grants=(),
@@ -57,6 +59,7 @@ def test_references_to_models_in_this_change_are_not_sources():
         ModelDraft(
             name="b_m",
             qualified_name="b_m",
+            identity=("", "", "b_m"),
             body="SELECT x FROM a_m",
             materialization="table",
             grants=(),
@@ -109,6 +112,7 @@ def test_qualified_reference_dedup_decision_survives_a_coexisting_bare_named_dra
         ModelDraft(
             name="orders",
             qualified_name="analytics.orders",
+            identity=("", "analytics", "orders"),
             body="SELECT 1 AS x",
             materialization="table",
             grants=(),
@@ -118,6 +122,7 @@ def test_qualified_reference_dedup_decision_survives_a_coexisting_bare_named_dra
         ModelDraft(
             name="m",
             qualified_name="m",
+            identity=("", "", "m"),
             body="SELECT a FROM raw.orders",
             materialization="table",
             grants=(),

@@ -24,6 +24,7 @@ def test_model_draft_defaults():
     draft = ModelDraft(
         name="dim_customers",
         qualified_name="analytics.dim_customers",
+        identity=("", "analytics", "dim_customers"),
         body="SELECT 1 AS a",
         materialization="table",
         grants=(),

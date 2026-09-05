@@ -6,11 +6,14 @@ always leave a Decision; unhandled statements stay pending for later tiers.
 
 from __future__ import annotations
 
+import dataclasses
+
 import sqlglot
 from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.naming import qualified_name
+from dbtw.core.naming import compare_targets, qualified_name, target_key
+from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
 
@@ -53,33 +56,6 @@ def _decision(
     )
 
 
-def _replace_draft(
-    drafts: tuple[ModelDraft, ...], new: ModelDraft
-) -> tuple[tuple[ModelDraft, ...], str | None, ModelDraft | None]:
-    """Upsert `new` keyed by unqualified name, honestly resolving collisions.
-
-    Compares file order by the highest source index each draft folds in, so
-    whichever definition is later in the file always wins — regardless of
-    which pass or which call built it first.
-
-    Returns (drafts, verdict, existing):
-    - verdict is None when there was no prior draft for this name.
-    - "redefinition": same qualified name defined twice; later statement wins.
-    - "collision": different qualified names map to the same model name; later wins.
-    - "superseded": the existing draft is later in file order; `new` is dropped
-      and `drafts` is returned unchanged.
-    - `existing` is the prior draft when one was found, else None.
-    """
-    existing = next((d for d in drafts if d.name == new.name), None)
-    if existing is None:
-        return (*drafts, new), None, None
-    if max(existing.source_indices) > max(new.source_indices):
-        return drafts, "superseded", existing
-    kept = tuple(d for d in drafts if d.name != new.name)
-    verdict = "redefinition" if existing.qualified_name == new.qualified_name else "collision"
-    return (*kept, new), verdict, existing
-
-
 def build_models_pass(state: PassState) -> PassState:
     pending: list[tuple[int, ClassifiedStatement]] = []
     drafts = state.drafts
@@ -112,13 +88,14 @@ def build_models_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization=materialization,
             grants=(),
             source_indices=(index,),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts, verdict, existing = _replace_draft(drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         if verdict == "superseded":
             decisions.append(
                 _decision(
@@ -130,7 +107,7 @@ def build_models_pass(state: PassState) -> PassState:
                         "by a later full rebuild"
                     ),
                     reason=(
-                        "a later statement in this file fully rebuilds this table; dbt keeps "
+                        "a later statement in this conversion fully rebuilds this table; dbt keeps "
                         "only the final definition"
                     ),
                 )
@@ -183,13 +160,19 @@ def truncate_insert_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
-    truncates: dict[tuple[str, str, str, str], tuple[int, ClassifiedStatement]] = {}
+    # Keyed by naming.target_key, not by the target's raw spelling: unquoted
+    # identifiers fold, so `TRUNCATE TABLE Rebuild_t` pairs with `INSERT INTO
+    # rebuild_t`. A key miss means "no confirmed pair", never "a different
+    # table" — a target qualified to a different degree is ambiguous, and
+    # append_pass refuses to convert an INSERT with an ambiguous truncate
+    # rather than treat the miss as licence.
+    truncates: dict[tuple[str, tuple[str, str, str]], tuple[int, ClassifiedStatement]] = {}
     for index, stmt in pending:
         if stmt.kind == "truncate":
             node = _parse(stmt, state.dialect)
             table = _target_of(node)
             if table is not None:
-                key = (stmt.raw.source_file, table.catalog, table.db, table.name)
+                key = (stmt.raw.source_file, target_key(table))
                 truncates[key] = (index, stmt)
             continue
         if stmt.kind != "insert_select":
@@ -198,7 +181,7 @@ def truncate_insert_pass(state: PassState) -> PassState:
         table = _target_of(node)
         if table is None:
             continue
-        key = (stmt.raw.source_file, table.catalog, table.db, table.name)
+        key = (stmt.raw.source_file, target_key(table))
         pair = truncates.get(key)
         if pair is None or pair[0] > index:
             continue
@@ -222,13 +205,14 @@ def truncate_insert_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization="table",
             grants=(),
             source_indices=(pair[0], index),
             leading_comments=tuple(c.strip() for c in (node.comments or ())),
         )
-        drafts, verdict, existing = _replace_draft(drafts, draft)
+        drafts, verdict, existing = replace_draft(drafts, draft)
         # Statements within a single call are processed in ascending file
         # order, and each table's truncates entry is deleted once paired, so
         # a later pair here can never be superseded by an earlier one.
@@ -308,8 +292,18 @@ def grants_pass(state: PassState) -> PassState:
         table = _target_of(node)
         privileges = tuple(p.sql(dialect=state.dialect) for p in node.args.get("privileges") or ())
         principals = tuple(p.sql(dialect=state.dialect) for p in node.args.get("principals") or ())
+        # Matched on naming.target_key's folded name, not on raw text: a
+        # GRANT spelling its table `orders` names the model `CREATE TABLE
+        # Orders` just built, and dropping it as "an object this conversion
+        # doesn't create" contradicts the model file written in the same run.
+        grant_identity = None if table is None else target_key(table)
         match = next(
-            (i for i, d in enumerate(drafts) if table is not None and d.name == table.name), None
+            (
+                i
+                for i, d in enumerate(drafts)
+                if grant_identity is not None and d.identity[2] == grant_identity[2]
+            ),
+            None,
         )
         if match is None:
             decisions.append(
@@ -330,15 +324,7 @@ def grants_pass(state: PassState) -> PassState:
             continue
         d = drafts[match]
         new_grants = d.grants + tuple((priv, principals) for priv in privileges)
-        drafts[match] = ModelDraft(
-            name=d.name,
-            qualified_name=d.qualified_name,
-            body=d.body,
-            materialization=d.materialization,
-            grants=new_grants,
-            source_indices=d.source_indices,
-            leading_comments=d.leading_comments,
-        )
+        drafts[match] = dataclasses.replace(d, grants=new_grants)
         decisions.append(
             _decision(
                 stmt,
@@ -386,8 +372,34 @@ def drop_session_pass(state: PassState) -> PassState:
 def drop_ddl_pass(state: PassState) -> PassState:
     pending: list[tuple[int, ClassifiedStatement]] = []
     decisions = list(state.decisions)
+    inserts: list[tuple[str, exp.Table]] = []
+    for _, stmt in state.pending:
+        if stmt.kind != "insert_select":
+            continue
+        table = _target_of(_parse(stmt, state.dialect))
+        if table is not None:
+            inserts.append((stmt.raw.source_file, table))
     for index, stmt in state.pending:
         if stmt.kind == "truncate":
+            table = _target_of(_parse(stmt, state.dialect))
+            # Not scoped to one source file: this decides whether to DROP a
+            # TRUNCATE, and an INSERT against the same target means it is not
+            # solo whichever file that INSERT was written in. Claiming "no
+            # surviving INSERT pair" over one is false in the same report the
+            # INSERT's own Decision appears in.
+            paired = table is not None and any(
+                compare_targets(insert_table, table) in ("same", "ambiguous")
+                for _, insert_table in inserts
+            )
+            if paired:
+                # An INSERT against this target is still pending, so a pass
+                # that could have paired them declined to (a column list it
+                # could not map, or a qualification it could not confirm).
+                # Both halves stay pending together: dropping this one with
+                # "no surviving INSERT pair" would contradict the deferral
+                # Decision printed beside it in the same report.
+                pending.append((index, stmt))
+                continue
             decisions.append(
                 _decision(
                     stmt,

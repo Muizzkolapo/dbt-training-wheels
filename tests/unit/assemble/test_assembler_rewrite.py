@@ -49,6 +49,7 @@ def test_unresolved_reference_is_left_as_written_with_a_decision():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM mystery_table",
         materialization="table",
         grants=(),
@@ -76,6 +77,7 @@ def _variable_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM raw.t WHERE d >= @cutoff",
         materialization="table",
         grants=(),
@@ -121,6 +123,7 @@ def _set_variable_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM raw.t WHERE d >= GETVARIABLE('cutoff')",
         materialization="table",
         grants=(),
@@ -158,6 +161,7 @@ def _spark_set_var_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM raw.t WHERE d >= cutoff",
         materialization="table",
         grants=(),
@@ -203,6 +207,7 @@ def _declare_then_set_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM raw.t WHERE d >= @cutoff",
         materialization="table",
         grants=(),
@@ -243,6 +248,7 @@ def _default_less_variable_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM raw.t WHERE r = @region",
         materialization="table",
         grants=(),
@@ -286,6 +292,7 @@ def _target_declared_variable_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT a FROM raw.t WHERE d >= @start_date",
         materialization="table",
         grants=(),
@@ -317,6 +324,7 @@ def _compound_default_state():
     draft = ModelDraft(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT @n * 3 AS result",
         materialization="table",
         grants=(),
