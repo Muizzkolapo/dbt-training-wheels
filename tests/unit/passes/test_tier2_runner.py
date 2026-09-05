@@ -119,6 +119,47 @@ def test_one_script_with_all_four_shapes_converts_each_correctly():
 # model list even though the recorded Decision claims one was kept.
 
 
+# --- grants_pass ran inside TIER1_PASSES, i.e. before TIER2_PASSES. A GRANT
+# on a table that only a tier-2 pass builds (e.g. a MERGE target converted by
+# merge_pass) found no matching draft yet and was dropped with "this
+# conversion doesn't create it" -- a false claim, since the conversion does
+# create it, two passes later.
+
+
+def test_a_grant_on_a_merge_built_model_attaches_instead_of_being_dropped():
+    """Regression: grants_pass ran before tier 2, so it claimed the conversion
+    did not create a table that merge_pass creates two passes later."""
+    stmts = (
+        _stmt(MERGE_SQL, "merge"),
+        _stmt("GRANT SELECT ON dim_c TO reporting", "grant"),
+    )
+    out = run_passes(stmts, dialect=None)
+    assert out.pending == ()
+    # the false claim: grants_pass ran before merge_pass ever built dim_c
+    false_claims = [d.action for d in out.decisions if "doesn't create" in d.action]
+    assert false_claims == [], f"grants_pass falsely claimed: {false_claims}"
+    (draft,) = out.drafts
+    assert draft.name == "dim_c"
+    assert draft.materialization == "incremental"  # still built by merge_pass, tier 2
+    assert ("SELECT", ("reporting",)) in draft.grants
+
+
+def test_a_grant_on_a_genuinely_absent_table_still_gets_the_honest_doesnt_create_decision():
+    """The fix must not make the "doesn't create" Decision disappear
+    entirely -- only stop it from being wrong about tier-2-built tables."""
+    stmts = (
+        _stmt(MERGE_SQL, "merge"),
+        _stmt("GRANT SELECT ON nowhere TO reporting", "grant"),
+    )
+    out = run_passes(stmts, dialect=None)
+    assert out.pending == ()
+    drafts = {d.name: d for d in out.drafts}
+    assert drafts["dim_c"].grants == ()
+    doesnt_create = [d for d in out.decisions if "doesn't create" in d.action]
+    assert len(doesnt_create) == 1
+    assert "nowhere" not in drafts  # never had a draft to begin with
+
+
 def test_tier1_and_tier2_name_collision_keeps_one_draft_with_an_honest_decision():
     # staging.events (tier 1 CTAS) and mart.events (tier 2 bare append
     # insert) share the bare name "events" but are different tables.
