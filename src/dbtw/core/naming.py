@@ -202,6 +202,28 @@ def _table_part(table: exp.Table, part: _TargetPart) -> tuple[str, bool]:
     return text, quoted
 
 
+def target_key(table: exp.Table) -> tuple[str, str, str]:
+    """A hashable identity for a table target, for keying one target against
+    another the way `compare_targets` compares them.
+
+    Each part is casefolded unless it was written quoted, so two keys are
+    equal exactly when `compare_targets` answers `"same"`. It answers a
+    narrower question than `compare_targets` though: equal keys are a
+    confirmed match, but unequal keys are NOT a confirmed non-match, because
+    two targets qualified to different degrees (`events` vs `db.events`) are
+    `"ambiguous"`, not `"different"`. A caller keying a lookup on this must
+    read a miss as "no confirmed pair", never as "a different table".
+    """
+    catalog, catalog_quoted = _table_part(table, "catalog")
+    db, db_quoted = _table_part(table, "db")
+    name, name_quoted = _table_part(table, "name")
+    return (
+        catalog if catalog_quoted else catalog.casefold(),
+        db if db_quoted else db.casefold(),
+        name if name_quoted else name.casefold(),
+    )
+
+
 def compare_targets(a: exp.Table, b: exp.Table) -> TargetComparison:
     """Compare two parsed table targets for identity — see the module
     docstring's "Cross-statement target identity" section for why a plain

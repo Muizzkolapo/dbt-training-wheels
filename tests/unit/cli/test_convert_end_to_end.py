@@ -117,3 +117,92 @@ def test_a_quoted_identifier_that_escapes_out_dir_exits_two_not_a_traceback(tmp_
     code = _run_against(sql_dir, out_dir, "--dialect", "tsql")
     assert code == 2
     assert capsys.readouterr().err
+
+
+# --- a TRUNCATE and the INSERT that repopulates it are one full rebuild, and
+# recognising them as a pair is what keeps the rebuild a rebuild. Both passes
+# that pair them matched the two targets as raw strings, so a case difference
+# between the two spellings -- the same table in every dialect -- broke the
+# pair. What that cost showed up two passes later, in Decisions that
+# contradicted each other in the same report.
+
+
+def _report(tmp_path, sql: str, *extra: str) -> str:
+    sql_file = tmp_path / "in.sql"
+    sql_file.write_text(sql, encoding="utf-8")
+    out = tmp_path / "out"
+    assert _run_against(sql_file, out, *extra) == 0
+    return (out / "CONVERSION_REPORT.md").read_text()
+
+
+def _models(tmp_path) -> dict[str, str]:
+    return {p.name: p.read_text() for p in (tmp_path / "out").rglob("*.sql")}
+
+
+REBUILD_MIXED_CASE = (
+    "TRUNCATE TABLE Rebuild_t;\nINSERT INTO rebuild_t\nSELECT x, y FROM raw.src_t;\n"
+)
+
+
+def test_a_rebuild_pairs_across_a_case_difference_in_the_target(tmp_path):
+    """`TRUNCATE TABLE Rebuild_t` and `INSERT INTO rebuild_t` name one table:
+    unquoted identifiers fold in every dialect sqlglot supports. The pair is a
+    full rebuild, which is dbt's table materialization."""
+    report = _report(tmp_path, REBUILD_MIXED_CASE)
+    (body,) = [b for name, b in _models(tmp_path).items() if "rebuild_t" in name]
+    assert "materialized='table'" in body
+    assert "incremental" not in body
+    assert "**Pending statements**: 0" in report
+
+
+def test_an_unpaired_rebuild_never_becomes_an_append(tmp_path):
+    """The failure this guards: with the pair unrecognised, the TRUNCATE was
+    dropped and its INSERT was swept up as an append incremental -- a script
+    that wipes and repopulates became a table that only ever grows, with
+    nothing in the report saying so. Even if no pair forms, an INSERT whose
+    target a TRUNCATE in the same file names must never be converted to an
+    append."""
+    report = _report(tmp_path, REBUILD_MIXED_CASE)
+    assert "incremental_strategy='append'" not in report
+    for body in _models(tmp_path).values():
+        assert "incremental_strategy='append'" not in body
+
+
+AMBIGUOUS_REBUILD = (
+    "TRUNCATE TABLE analytics.rebuild_t;\nINSERT INTO rebuild_t\nSELECT x, y FROM raw.src_t;\n"
+)
+
+
+def test_a_rebuild_whose_two_halves_qualify_differently_is_deferred_not_appended(tmp_path):
+    """`analytics.rebuild_t` and bare `rebuild_t` may or may not be the same
+    table -- it depends on the session's default schema, which the script does
+    not record. That is not licence to append: the INSERT is left pending with
+    a Decision, the same treatment a DELETE+INSERT pair gets."""
+    report = _report(tmp_path, AMBIGUOUS_REBUILD)
+    assert "incremental_strategy='append'" not in report
+    assert "TRUNCATE" in report
+    assert "**Pending statements**: 0" not in report
+
+
+STAR_REBUILD = "TRUNCATE TABLE rebuild_t;\nINSERT INTO rebuild_t (a, b)\nSELECT * FROM raw.src_t;\n"
+
+
+def test_a_deferred_column_list_rebuild_does_not_also_claim_the_truncate_was_solo(tmp_path):
+    """The pair IS found -- the report says so, twice -- and then cannot be
+    mapped because a star projection hides the column count. Dropping the
+    TRUNCATE at that point with "no surviving INSERT pair" contradicts the
+    Decision printed beside it. Both halves stay pending together."""
+    report = _report(tmp_path, STAR_REBUILD)
+    assert "cannot map columns positionally" in report
+    assert "no surviving INSERT pair" not in report
+    assert "dropped solo TRUNCATE" not in report
+
+
+def test_a_genuinely_solo_truncate_is_still_dropped_and_says_why(tmp_path):
+    """The control. A TRUNCATE with no INSERT against its target anywhere in
+    the file really has no dbt equivalent, and the reason stays true."""
+    report = _report(
+        tmp_path, "TRUNCATE TABLE orphan_t;\nINSERT INTO other_t SELECT x FROM raw.s;\n"
+    )
+    assert "dropped solo TRUNCATE" in report
+    assert "no surviving INSERT pair" in report

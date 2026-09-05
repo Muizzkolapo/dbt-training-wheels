@@ -12,7 +12,7 @@ import sqlglot
 from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.naming import qualified_name
+from dbtw.core.naming import compare_targets, qualified_name, target_key
 from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
@@ -159,13 +159,19 @@ def truncate_insert_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
-    truncates: dict[tuple[str, str, str, str], tuple[int, ClassifiedStatement]] = {}
+    # Keyed by naming.target_key, not by the target's raw spelling: unquoted
+    # identifiers fold, so `TRUNCATE TABLE Rebuild_t` pairs with `INSERT INTO
+    # rebuild_t`. A key miss means "no confirmed pair", never "a different
+    # table" — a target qualified to a different degree is ambiguous, and
+    # append_pass refuses to convert an INSERT with an ambiguous truncate
+    # rather than treat the miss as licence.
+    truncates: dict[tuple[str, tuple[str, str, str]], tuple[int, ClassifiedStatement]] = {}
     for index, stmt in pending:
         if stmt.kind == "truncate":
             node = _parse(stmt, state.dialect)
             table = _target_of(node)
             if table is not None:
-                key = (stmt.raw.source_file, table.catalog, table.db, table.name)
+                key = (stmt.raw.source_file, target_key(table))
                 truncates[key] = (index, stmt)
             continue
         if stmt.kind != "insert_select":
@@ -174,7 +180,7 @@ def truncate_insert_pass(state: PassState) -> PassState:
         table = _target_of(node)
         if table is None:
             continue
-        key = (stmt.raw.source_file, table.catalog, table.db, table.name)
+        key = (stmt.raw.source_file, target_key(table))
         pair = truncates.get(key)
         if pair is None or pair[0] > index:
             continue
@@ -354,8 +360,30 @@ def drop_session_pass(state: PassState) -> PassState:
 def drop_ddl_pass(state: PassState) -> PassState:
     pending: list[tuple[int, ClassifiedStatement]] = []
     decisions = list(state.decisions)
+    inserts: list[tuple[str, exp.Table]] = []
+    for _, stmt in state.pending:
+        if stmt.kind != "insert_select":
+            continue
+        table = _target_of(_parse(stmt, state.dialect))
+        if table is not None:
+            inserts.append((stmt.raw.source_file, table))
     for index, stmt in state.pending:
         if stmt.kind == "truncate":
+            table = _target_of(_parse(stmt, state.dialect))
+            paired = table is not None and any(
+                compare_targets(insert_table, table) in ("same", "ambiguous")
+                for insert_file, insert_table in inserts
+                if insert_file == stmt.raw.source_file
+            )
+            if paired:
+                # An INSERT against this target is still pending, so a pass
+                # that could have paired them declined to (a column list it
+                # could not map, or a qualification it could not confirm).
+                # Both halves stay pending together: dropping this one with
+                # "no surviving INSERT pair" would contradict the deferral
+                # Decision printed beside it in the same report.
+                pending.append((index, stmt))
+                continue
             decisions.append(
                 _decision(
                     stmt,

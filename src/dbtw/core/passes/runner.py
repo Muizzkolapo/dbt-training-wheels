@@ -64,9 +64,11 @@ def run_passes(classified: Sequence[ClassifiedStatement], dialect: str | None) -
     # with no mark distinguishing a deferred TRUNCATE from a genuinely solo
     # one. Dropping "solo" TRUNCATEs before tier 2 gets a chance to claim that
     # pair would strand its INSERT half with no draft and no Decision
-    # explaining why — drop_ddl_pass's own "no surviving INSERT pair"
-    # reasoning is only true once every pass that could still pair a TRUNCATE
-    # has already run. Unlike grants_pass, drop_ddl_pass never reads drafts
+    # explaining why. Running last is necessary but not sufficient: tier 2 can
+    # decline the pair too (a star projection it cannot map positionally), so
+    # drop_ddl_pass re-derives whether an INSERT against the target is still
+    # pending rather than inferring from its own position in the pipeline that
+    # a surviving TRUNCATE must be solo. Unlike grants_pass, drop_ddl_pass never reads drafts
     # at all, so nothing about grants_pass moving earlier changes what it
     # sees; it stays the pipeline's true terminal step, a pending-statement
     # cleanup that depends on everything else — including grants_pass —

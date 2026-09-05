@@ -860,3 +860,43 @@ def test_a_positional_insert_reading_the_source_still_converts():
     out = merge_pass(_state((0, _stmt(sql))))
     assert out.drafts
     assert _caveats(out) == []
+
+
+# --- the ON clause's own qualifier. Every column comparison in this pass goes
+# through naming.same_identifier, but the two lines deciding which side of an
+# equality is the target compared the qualifier as a raw string -- so a MERGE
+# whose ON clause spells its own alias in a different case was refused with
+# "no target-column = source-column equality", of a statement that has one.
+
+
+def test_the_on_clause_qualifier_matches_the_alias_case_insensitively():
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON T.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts, [d.action for d in out.decisions]
+    assert out.drafts[0].unique_key == ("id",)
+
+
+def test_an_unaliased_target_matches_its_own_name_case_insensitively():
+    sql = (
+        "MERGE INTO dim_c USING stg_c AS s ON DIM_C.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET dim_c.* = s.* WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts, [d.action for d in out.decisions]
+    assert out.drafts[0].unique_key == ("id",)
+
+
+def test_a_quoted_alias_still_does_not_fold_into_a_different_case():
+    """The other half of the rule: a quoted identifier's case is significant,
+    so `"T"` and `t` are two different qualifiers and the equality qualifies
+    to neither side of the target."""
+    sql = (
+        'MERGE INTO dim_c AS "T" USING stg_c AS s ON t.id = s.id '
+        "WHEN MATCHED THEN UPDATE SET t.* = s.*"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert any("no unique key" in d.action for d in out.decisions)

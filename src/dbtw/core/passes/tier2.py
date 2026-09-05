@@ -269,7 +269,36 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
     )
 
 
-def _merge_unique_key(node: exp.Merge, target: str) -> tuple[tuple[str, ...], str | None]:
+def _target_alias(table: exp.Table) -> tuple[str, bool]:
+    """The name a MERGE's own clauses qualify the target by — its alias when
+    it has one, its bare name otherwise — and whether that was written quoted,
+    so it can be compared with `naming.same_identifier` like any other
+    identifier rather than as raw text.
+    """
+    alias_node = table.args.get("alias")
+    identifier = alias_node.this if isinstance(alias_node, exp.TableAlias) else table.this
+    text = table.alias if isinstance(alias_node, exp.TableAlias) else table.name
+    return text, bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
+
+
+def _qualifier(column: exp.Column) -> tuple[str, bool]:
+    """A column's table qualifier and whether it was written quoted; `("",
+    False)` when the column is unqualified.
+    """
+    node = column.args.get("table")
+    return column.table, bool(isinstance(node, exp.Identifier) and node.quoted)
+
+
+def _qualifies_to(column: exp.Column, target: tuple[str, bool]) -> bool:
+    """Whether `column` is qualified to `target`, by `same_identifier`."""
+    text, quoted = _qualifier(column)
+    name, name_quoted = target
+    return bool(text) and same_identifier(text, quoted, name, name_quoted)
+
+
+def _merge_unique_key(
+    node: exp.Merge, target: tuple[str, bool]
+) -> tuple[tuple[str, ...], str | None]:
     """Target-side column names from the ON clause; `(keys, refusal_reason)`.
 
     `refusal_reason` is `None` iff `keys` is non-empty; otherwise it names why
@@ -286,7 +315,9 @@ def _merge_unique_key(node: exp.Merge, target: str) -> tuple[tuple[str, ...], st
       yield their keys) found no usable equality. An equality is usable only
       when both sides are `exp.Column` (`ON 1 = 1` has neither) AND exactly
       one side's table qualifier matches `target` (the MERGE target's alias,
-      or its bare name when unaliased) — `s.src_id = t.id` keys on `id`, not
+      or its bare name when unaliased — see `_target_alias`), compared with
+      `naming.same_identifier` so `ON T.id = s.id` against `AS t` still keys
+      on the target — `s.src_id = t.id` keys on `id`, not
       `src_id`, because `unique_key` must name a column on the target model,
       never the source. An equality qualified to neither side of the target
       (`other.x = elsewhere.y`) or ambiguously to both is excluded, same as
@@ -301,8 +332,8 @@ def _merge_unique_key(node: exp.Merge, target: str) -> tuple[tuple[str, ...], st
     for eq in on.find_all(exp.EQ):
         if not (isinstance(eq.this, exp.Column) and isinstance(eq.expression, exp.Column)):
             continue
-        this_is_target = eq.this.table == target
-        expression_is_target = eq.expression.table == target
+        this_is_target = _qualifies_to(eq.this, target)
+        expression_is_target = _qualifies_to(eq.expression, target)
         if this_is_target and not expression_is_target:
             key_column = eq.this
         elif expression_is_target and not this_is_target:
@@ -426,7 +457,7 @@ def _members(node: exp.Expr | None) -> list[exp.Expr] | None:
     return None
 
 
-def _from_source(target: tuple[str, bool], value: exp.Expr, target_alias: str) -> bool:
+def _from_source(target: tuple[str, bool], value: exp.Expr, target_alias: tuple[str, bool]) -> bool:
     """Whether dbt's merge would write `target` with the same value this
     assignment does.
 
@@ -442,7 +473,7 @@ def _from_source(target: tuple[str, bool], value: exp.Expr, target_alias: str) -
     """
     if not isinstance(value, exp.Column) or isinstance(value.this, exp.Star):
         return False
-    if value.table and same_identifier(value.table, False, target_alias, False):
+    if _qualifies_to(value, target_alias):
         return False
     name, quoted = target
     identifier = value.this
@@ -453,7 +484,7 @@ def _from_source(target: tuple[str, bool], value: exp.Expr, target_alias: str) -
 def _pair(
     targets: list[tuple[str, bool]],
     values: list[exp.Expr],
-    target_alias: str,
+    target_alias: tuple[str, bool],
     dialect: str | None,
 ) -> list[tuple[str, str]] | None:
     """The named columns whose value dbt will not reproduce, paired with the
@@ -473,7 +504,7 @@ def _pair(
 
 
 def _branch_write(
-    then: exp.Update | exp.Insert, target_alias: str, dialect: str | None
+    then: exp.Update | exp.Insert, target_alias: tuple[str, bool], dialect: str | None
 ) -> _BranchWrite | Literal["unreadable", "unpairable"]:
     """What a branch writes and where each value comes from, or which of the
     two ways it could not be read: `"unreadable"` for a target that is not a
@@ -544,7 +575,7 @@ def _branch_write(
     )
 
 
-def _reads_source(value: exp.Expr, target_alias: str) -> bool:
+def _reads_source(value: exp.Expr, target_alias: tuple[str, bool]) -> bool:
     """Whether a written value takes anything from the source row at all.
 
     `DEFAULT` parses to a `Var` and a constant to a `Literal` (probed on
@@ -557,7 +588,7 @@ def _reads_source(value: exp.Expr, target_alias: str) -> bool:
     if isinstance(value, exp.Star):
         return True
     for column in value.find_all(exp.Column):
-        if column.table and same_identifier(column.table, False, target_alias, False):
+        if _qualifies_to(column, target_alias):
             continue
         return True
     return False
@@ -647,7 +678,7 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     inserted: list[tuple[str, bool]] = []
     rewritten: list[tuple[str, str]] = []
     conditions: list[str] = []
-    target_alias = node.this.alias or node.this.name
+    target_alias = _target_alias(node.this)
     for when in node.args["whens"].expressions:
         then = when.args["then"]
         if when.args["source"] or not isinstance(then, (exp.Update, exp.Insert)):
@@ -893,7 +924,7 @@ def merge_pass(state: PassState) -> PassState:
         assert isinstance(node, exp.Merge)  # classifier only assigns kind="merge" to this shape
         table = node.this
         assert isinstance(table, exp.Table)  # sqlglot's MERGE grammar always parses `this` as one
-        target = table.alias or table.name
+        target = _target_alias(table)
         branches = _merge_branches(node, state.dialect)
         keys, refusal_reason = _merge_unique_key(node, target)
         refused = False
@@ -1108,11 +1139,18 @@ def append_pass(state: PassState) -> PassState:
 
     An INSERT with an explicit column list is Task 2's pairing target — this
     pass never touches one, exactly like it never touches an INSERT already
-    consumed. What remains here, with no column list, has no truncate to
-    pair with (else `truncate_insert_pass`/`truncate_insert_columns_pass`
-    would already have claimed it) and no MERGE-style match/update logic —
-    it just appends whatever its SELECT returns, which is precisely dbt's
-    `incremental_strategy="append"`.
+    consumed. What remains here, with no column list and no MERGE-style
+    match/update logic, just appends whatever its SELECT returns, which is
+    precisely dbt's `incremental_strategy="append"`.
+
+    Reaching this pass does not by itself prove no TRUNCATE pairs with it.
+    `truncate_insert_pass` pairs on a confirmed-same target, so an INSERT
+    whose TRUNCATE qualifies its target to a different degree arrives here
+    unpaired — and converting it would turn a script that wipes and
+    repopulates into a table that only ever grows, which is the opposite of
+    what it says. A pending TRUNCATE on the same target is checked for here
+    with the same `compare_targets` tri-state the DELETE check below uses,
+    and both a confirmed and an unconfirmable match defer.
 
     Whether that's actually correct — whether the model's own SELECT already
     filters to new rows, or every run will re-insert everything it selects —
@@ -1151,13 +1189,15 @@ def append_pass(state: PassState) -> PassState:
     consumed: set[int] = set()
 
     deletes: list[tuple[str, exp.Table]] = []
+    truncates: list[tuple[str, exp.Table]] = []
     for _, stmt in pending:
-        if stmt.kind != "delete":
+        if stmt.kind not in ("delete", "truncate"):
             continue
         node = _parse(stmt, state.dialect)
         table = _target_of(node)
-        if table is not None:
-            deletes.append((stmt.raw.source_file, table))
+        if table is None:
+            continue
+        (deletes if stmt.kind == "delete" else truncates).append((stmt.raw.source_file, table))
 
     for index, stmt in pending:
         if stmt.kind != "insert_select":
@@ -1167,6 +1207,38 @@ def append_pass(state: PassState) -> PassState:
             continue  # column list: Task 2's pairing target, not this pass's concern
         table = _target_of(node)
         if table is None:
+            continue
+        truncated = {
+            compare_targets(truncate_table, table)
+            for truncate_file, truncate_table in truncates
+            if truncate_file == stmt.raw.source_file
+        }
+        if truncated & {"same", "ambiguous"}:
+            confirmed = "same" in truncated
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "append",
+                    2,
+                    action=(
+                        f"deferred: TRUNCATE + INSERT INTO {table.name} is a full rebuild, "
+                        "not an append"
+                        if confirmed
+                        else f"deferred: TRUNCATE + INSERT INTO {table.name} may be a full "
+                        "rebuild, but their qualification can't confirm it"
+                    ),
+                    reason=(
+                        "a truncate-then-insert pair replaces the table's whole contents on "
+                        "every run, which is dbt's table materialization; an append "
+                        "incremental keeps everything already there and adds to it, so "
+                        "converting this INSERT to an append would turn a rebuild into a "
+                        "table that only ever grows. The pair was not converted here — a "
+                        "pass that could have paired them declined to — so it is left "
+                        "pending rather than converted into the opposite of what it says"
+                    ),
+                )
+            )
             continue
         comparisons = {
             compare_targets(delete_table, table)
