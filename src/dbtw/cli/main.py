@@ -55,18 +55,35 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="replace script variables with their literal values instead of dbt var() calls",
     )
+    convert.add_argument(
+        "--unique-key",
+        metavar="COLUMNS",
+        default=None,
+        help=(
+            "comma-separated column(s) that answer the append-or-merge question for "
+            "models converted from a bare INSERT...SELECT: upgrades every append "
+            "incremental to a merge incremental keyed on these columns"
+        ),
+    )
 
     return parser
 
 
-def _convert(sql_path: str, project: str, out: str, dialect: str | None, inline_vars: bool) -> int:
+def _convert(
+    sql_path: str,
+    project: str,
+    out: str,
+    dialect: str | None,
+    inline_vars: bool,
+    unique_key: tuple[str, ...],
+) -> int:
     ingest_result = ingest(sql_path, dialect)
     for warning in ingest_result.warnings:
         print(f"warning: {warning}", file=sys.stderr)
     classified = classify_statements(ingest_result)
     state = run_passes(classified, ingest_result.dialect)
     ctx = read_project(project)
-    change = assemble(state, ctx, inline_vars=inline_vars)
+    change = assemble(state, ctx, inline_vars=inline_vars, unique_key=unique_key)
 
     out_dir = Path(out)
     emit(change, ctx, out_dir)
@@ -84,8 +101,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    unique_key = (
+        tuple(c.strip() for c in args.unique_key.split(",") if c.strip()) if args.unique_key else ()
+    )
+
     try:
-        return _convert(args.sql_path, args.project, args.out, args.dialect, args.inline_vars)
+        return _convert(
+            args.sql_path, args.project, args.out, args.dialect, args.inline_vars, unique_key
+        )
     except _USAGE_ERRORS as exc:
         print(str(exc), file=sys.stderr)
         return 2
