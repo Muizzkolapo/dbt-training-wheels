@@ -160,7 +160,9 @@ def same_identifier(a: str, a_quoted: bool, b: str, b_quoted: bool) -> bool:
     different names even though bare `Events` and `events` are the same
     one. `is_cte_read` established this rule first, for CTE-alias
     matching; `compare_targets` reuses it for cross-statement target
-    identity — see the module docstring.
+    identity; the assembler reuses it to match a `--unique-key` value
+    against a model's own output columns, and `merge_pass` to match a
+    MERGE's SET/INSERT column lists — see the module docstring.
     """
     if a_quoted or b_quoted:
         return a == b
