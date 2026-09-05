@@ -576,3 +576,40 @@ def test_a_pending_merge_blocks_a_later_insert_the_same_way_a_pending_insert_doe
     )
     assert "several statements" in report
     assert "**Models**: 0" in report
+
+
+def test_a_truncate_in_another_file_still_stops_the_insert_becoming_an_append(tmp_path):
+    """The guards that DECLINE — append_pass's TRUNCATE/DELETE lookahead and
+    drop_ddl_pass's "is an INSERT still pending" check — were scoped to one
+    source file like the checks that PAIR. Pairing is a claim about adjacency;
+    declining is not. Split across two files, the TRUNCATE was dropped as
+    "solo" with a surviving INSERT named two lines below it in the same
+    report, and the wipe-and-rebuild shipped as an append that never
+    truncates."""
+    report = _report_dir(
+        tmp_path,
+        {
+            "a_truncate.sql": "TRUNCATE TABLE orders;\n",
+            "b_insert.sql": "INSERT INTO orders SELECT id, region FROM raw.new_orders;\n",
+        },
+    )
+    for body in _models(tmp_path).values():
+        assert "incremental_strategy='append'" not in body
+    assert "no surviving INSERT pair" not in report
+    assert "full rebuild" in report
+
+
+def test_a_delete_in_another_file_is_not_ignored_either(tmp_path):
+    """append_pass refuses to convert an INSERT beside a same-file DELETE
+    because "converting it anyway would silently change which rows survive a
+    run". Which file the DELETE was written in does not change that."""
+    report = _report_dir(
+        tmp_path,
+        {
+            "a_delete.sql": "DELETE FROM orders WHERE region = 'EU';\n",
+            "b_insert.sql": "INSERT INTO orders SELECT id, region FROM raw.new_orders;\n",
+        },
+    )
+    for body in _models(tmp_path).values():
+        assert "incremental_strategy='append'" not in body
+    assert "delete and insert" in report

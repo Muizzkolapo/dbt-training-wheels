@@ -263,15 +263,20 @@ def _find_append_decision_index(
     statement that actually survived into this model.
 
     Matching on `chosen == "append every row"` alone is not enough: a
-    redefined target (two INSERTs into the same bare table; the later one
-    wins) gets a full `chosen="append every row"` Decision recorded for
-    BOTH statements -- `append_pass` only skips recording it for a
-    "superseded" verdict, never for "redefinition" or "collision". Matching
-    the statement index embedded in the Decision's key against
+    *collision* -- two differently qualified tables sharing a bare name, say
+    `staging.orders` beside `mart.orders` -- gets a full `chosen="append
+    every row"` Decision recorded for BOTH statements, since `append_pass`
+    only skips recording one for a "superseded" verdict. Matching the
+    statement index embedded in the Decision's key against
     `AssembledModel.source_indices` (which always names the *surviving*
     statement) is what tells those two Decisions apart; text-matching the
-    action against the model's name cannot, since a redefinition's two
+    action against the model's name cannot, since a collision's two
     statements share that name by construction.
+
+    Two INSERTs into the *same* target no longer reach here as a
+    redefinition -- `collisions.written_earlier` defers the later one before
+    it is ever drafted -- so a collision between different tables is now the
+    only way two append Decisions can compete for one model.
     """
     wanted = set(source_indices)
     for i, dec in enumerate(decisions):

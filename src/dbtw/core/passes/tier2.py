@@ -138,10 +138,12 @@ def _pending_writers(
     """`(index, identity)` for every pending statement that would build a
     model for a target, for `collisions.written_earlier`.
 
-    Only the kinds that produce a model are listed. A bare `TRUNCATE` is not
-    one — it pairs with an INSERT or is dropped — and `append_pass` checks
-    for a pending truncate separately, with the tri-state its own DELETE
-    check uses.
+    The kinds listed are those that can become a model of their own. Not all
+    of them will — a column-list INSERT with no TRUNCATE before it is
+    refused, not modelled — but each still writes the table when the script
+    runs, which is the question `written_earlier` asks. A bare `TRUNCATE` is
+    not listed: it pairs with an INSERT or is dropped, and `append_pass`
+    checks for one separately with the tri-state its own DELETE check uses.
     """
     writers: list[tuple[int, tuple[str, str, str]]] = []
     for index, stmt in pending:
@@ -1329,11 +1331,12 @@ def append_pass(state: PassState) -> PassState:
         table = _target_of(node)
         if table is None:
             continue
-        truncated = {
-            compare_targets(truncate_table, table)
-            for truncate_file, truncate_table in truncates
-            if truncate_file == stmt.raw.source_file
-        }
+        # Not scoped to one source file, for the same reason `written_earlier`
+        # is not: this check DECLINES to convert, where `truncate_insert_pass`
+        # PAIRS two statements into one model. Pairing is a claim about
+        # adjacency within a script; a TRUNCATE against this target makes the
+        # INSERT part of a rebuild whichever file it was written in.
+        truncated = {compare_targets(truncate_table, table) for _, truncate_table in truncates}
         if truncated & {"same", "ambiguous"}:
             confirmed = "same" in truncated
             decisions.append(
@@ -1361,11 +1364,7 @@ def append_pass(state: PassState) -> PassState:
                 )
             )
             continue
-        comparisons = {
-            compare_targets(delete_table, table)
-            for delete_file, delete_table in deletes
-            if delete_file == stmt.raw.source_file
-        }
+        comparisons = {compare_targets(delete_table, table) for _, delete_table in deletes}
         if "same" in comparisons:
             decisions.append(
                 _decision(

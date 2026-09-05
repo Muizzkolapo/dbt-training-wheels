@@ -86,8 +86,19 @@ def test_a_delete_on_a_different_target_does_not_defer():
     assert out.drafts[0].incremental_strategy == "append"
 
 
-def test_a_delete_in_a_different_file_does_not_defer():
+def test_a_delete_in_a_different_file_defers_just_the_same():
+    """This used to assert the opposite -- that a DELETE in another file was
+    ignored and the INSERT converted to an append anyway.
+
+    The file scoping was borrowed from `truncate_insert_pass`, which PAIRS two
+    statements into one model and so is making a claim about adjacency within
+    one script. This check only DECLINES to convert, and the reason it gives
+    for declining -- that an append re-inserts everything on every run
+    regardless of the DELETE, silently changing which rows survive -- is true
+    whichever file the DELETE was written in. One conversion produces one dbt
+    project, and a DELETE against this target is part of it either way."""
     dele = _stmt("DELETE FROM events WHERE d >= '2024-01-01'", "delete", 0, file="a.sql")
     ins = _stmt("INSERT INTO events SELECT a FROM raw_e", "insert_select", 1, file="b.sql")
     out = append_pass(_state((0, dele), (1, ins)))
-    assert len(out.drafts) == 1
+    assert out.drafts == ()
+    assert any("delete and insert" in d.action for d in out.decisions)

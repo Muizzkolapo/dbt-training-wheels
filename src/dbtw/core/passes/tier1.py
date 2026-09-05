@@ -382,10 +382,14 @@ def drop_ddl_pass(state: PassState) -> PassState:
     for index, stmt in state.pending:
         if stmt.kind == "truncate":
             table = _target_of(_parse(stmt, state.dialect))
+            # Not scoped to one source file: this decides whether to DROP a
+            # TRUNCATE, and an INSERT against the same target means it is not
+            # solo whichever file that INSERT was written in. Claiming "no
+            # surviving INSERT pair" over one is false in the same report the
+            # INSERT's own Decision appears in.
             paired = table is not None and any(
                 compare_targets(insert_table, table) in ("same", "ambiguous")
-                for insert_file, insert_table in inserts
-                if insert_file == stmt.raw.source_file
+                for _, insert_table in inserts
             )
             if paired:
                 # An INSERT against this target is still pending, so a pass
