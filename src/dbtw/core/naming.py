@@ -202,6 +202,32 @@ def _table_part(table: exp.Table, part: _TargetPart) -> tuple[str, bool]:
     return text, quoted
 
 
+def compare_keys(a: tuple[str, str, str], b: tuple[str, str, str]) -> TargetComparison:
+    """`compare_targets`, over two `target_key` triples rather than two parsed
+    targets, for callers holding a stored identity instead of an `exp.Table`.
+
+    The same three outcomes and the same reasons: `"different"` when the
+    names disagree or a part both sides wrote disagrees, `"ambiguous"` when
+    one side leaves a db or catalog unwritten where the other supplies one
+    (`events` vs `db.events` — which one an unqualified name resolves to
+    depends on the session's default schema, not on the SQL), `"same"` when
+    every part agrees or is unwritten on both sides. Quoting is already
+    folded into the triples, so the comparison is plain equality here.
+    """
+    catalog_a, db_a, name_a = a
+    catalog_b, db_b, name_b = b
+    if name_a != name_b:
+        return "different"
+    ambiguous = False
+    for part_a, part_b in ((db_a, db_b), (catalog_a, catalog_b)):
+        if part_a and part_b:
+            if part_a != part_b:
+                return "different"
+        elif part_a or part_b:
+            ambiguous = True
+    return "ambiguous" if ambiguous else "same"
+
+
 def target_key(table: exp.Table) -> tuple[str, str, str]:
     """A hashable identity for a table target, for keying one target against
     another the way `compare_targets` compares them.

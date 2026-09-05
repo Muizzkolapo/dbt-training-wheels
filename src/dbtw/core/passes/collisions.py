@@ -28,7 +28,51 @@ by construction, so the assembler's downstream logic never sees it broken.
 
 from __future__ import annotations
 
+from dbtw.core.naming import compare_keys
 from dbtw.core.passes.types import ModelDraft
+
+
+def rebuild_draft_for(
+    drafts: tuple[ModelDraft, ...], identity: tuple[str, str, str], index: int
+) -> ModelDraft | None:
+    """The full-rebuild draft an *earlier* statement already built for
+    `identity`, if there is one.
+
+    A draft with no `incremental_strategy` was built by a statement that
+    defines the target's whole contents — a `TRUNCATE`+`INSERT` pair, or a
+    `CREATE TABLE ... AS`. An `INSERT` or `MERGE` into that same target
+    *after* it is not a standalone model: the script builds one table across
+    several statements, and dbt has no model that adds to itself part-way
+    through being built. Drafting the later statement on its own would
+    replace the rebuild (`replace_draft` keeps the later definition),
+    inverting a `table` model into an `incremental` one and discarding the
+    rebuild's own SELECT with only a "redefinition" note to show for it.
+    Expressing both at once would mean inventing a combined query the script
+    never wrote, so `append_pass` and `merge_pass` defer instead — catalog
+    2.8.
+
+    File order is the whole point of the `index` check. A rebuild *after* the
+    statement asking is the opposite situation: a TRUNCATE or CREATE wipes
+    whatever came before it, so the earlier statement really is superseded,
+    and `replace_draft`'s existing "superseded" handling is right for it.
+
+    Identity is compared with `naming.compare_keys`, and an `"ambiguous"`
+    match defers exactly like a confirmed one: two spellings qualified to
+    different degrees may or may not be the same table, and guessing wrong
+    reinstates the inversion this exists to prevent. Only a confirmed
+    `"different"` — `staging.events` beside `mart.events` — lets the
+    statement through as the standalone model it is.
+    """
+    return next(
+        (
+            d
+            for d in drafts
+            if d.incremental_strategy is None
+            and max(d.source_indices) < index
+            and compare_keys(d.identity, identity) in ("same", "ambiguous")
+        ),
+        None,
+    )
 
 
 def replace_draft(

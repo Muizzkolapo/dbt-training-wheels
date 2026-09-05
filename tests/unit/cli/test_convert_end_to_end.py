@@ -288,3 +288,94 @@ def test_a_quoted_spelling_is_not_folded_into_an_unquoted_one(tmp_path):
     assert len(_models(tmp_path)) == 1
     assert "differing only in case" in report
     assert "kept" in report
+
+
+# --- a target this script already rebuilds. append_pass's TRUNCATE guard
+# scanned `pending`, but tier 1 consumes the TRUNCATE the moment it pairs with
+# the first INSERT -- so a SECOND insert into the same target saw no pending
+# TRUNCATE, converted to an append, and replaced the rebuild draft outright.
+# The materialization inverted from table to append, the first INSERT's whole
+# SELECT disappeared, and the tier-1 Decision announcing the table model was
+# left standing over a file that no longer matched it.
+
+WIPE_THEN_TWO_INSERTS = (
+    "TRUNCATE TABLE events;\n"
+    "INSERT INTO events SELECT id FROM raw.staging_events_full;\n"
+    "INSERT INTO events SELECT id FROM raw.staging_events_extra;\n"
+)
+
+
+def test_a_second_insert_does_not_replace_the_rebuild_it_adds_to(tmp_path):
+    """Three statements are one rebuild loaded from two sources. dbt has no
+    model that appends to itself mid-build, and combining the two SELECTs into
+    a UNION the script never wrote would be an invention -- so the rebuild
+    stands and the second INSERT is left for a human."""
+    report = _report(tmp_path, WIPE_THEN_TWO_INSERTS)
+    (body,) = [b for name, b in _models(tmp_path).items() if "events" in name]
+    assert "materialized='table'" in body
+    assert "incremental_strategy='append'" not in body
+    assert "staging_events_full" in body
+    assert "**Pending statements**: 0" not in report
+
+
+def test_the_dropped_insert_of_a_rebuild_is_named_not_silently_absorbed(tmp_path):
+    """Whatever happens to the second INSERT, its source table must not vanish
+    from the record -- it disappeared entirely before, appearing in no model,
+    no dependency, no pending entry and no Decision."""
+    report = _report(tmp_path, WIPE_THEN_TWO_INSERTS)
+    assert "staging_events_extra" in report
+    assert "already" in report or "rebuild" in report
+
+
+def test_the_tier_one_rebuild_decision_still_describes_the_file_written(tmp_path):
+    """The Decision saying the pair became a table model has to stay true of
+    what is on disk."""
+    report = _report(tmp_path, WIPE_THEN_TWO_INSERTS)
+    assert "became one model (materialized='table')" in report
+    (body,) = [b for name, b in _models(tmp_path).items() if "events" in name]
+    assert "materialized='table'" in body
+
+
+def test_an_insert_into_a_created_table_does_not_turn_it_into_an_append(tmp_path):
+    """The same shape without a TRUNCATE: `CREATE TABLE t AS ...` then
+    `INSERT INTO t ...` builds one table from two statements. Converting the
+    INSERT alone discards the CREATE's SELECT just the same."""
+    report = _report(
+        tmp_path,
+        "CREATE TABLE totals AS SELECT id FROM raw.a;\nINSERT INTO totals SELECT id FROM raw.b;\n",
+    )
+    (body,) = [b for name, b in _models(tmp_path).items() if "totals" in name]
+    assert "materialized='table'" in body
+    assert "raw" in body or "a" in body
+    assert "incremental" not in body
+    assert "raw.b" in report or "b " in report
+
+
+def test_a_merge_into_a_target_this_script_rebuilds_is_deferred_too(tmp_path):
+    """A MERGE has the same effect on a rebuild draft as an append does, and
+    merge_pass never checked for one at all."""
+    report = _report(
+        tmp_path,
+        "TRUNCATE TABLE dim_c;\n"
+        "INSERT INTO dim_c SELECT id, city FROM raw.src;\n"
+        "MERGE INTO dim_c AS t USING raw.updates AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n",
+    )
+    (body,) = [b for name, b in _models(tmp_path).items() if "dim_c" in name]
+    assert "materialized='table'" in body
+    assert "incremental_strategy='merge'" not in body
+    assert "**Pending statements**: 0" not in report
+
+
+def test_two_bare_inserts_with_no_rebuild_still_redefine(tmp_path):
+    """The control. With nothing rebuilding the target, two INSERTs into it
+    are the redefinition the pipeline already treated them as -- this guard
+    must not swallow that case too."""
+    report = _report(
+        tmp_path,
+        "INSERT INTO rev SELECT id FROM raw.v1;\nINSERT INTO rev SELECT id FROM raw.v2;\n",
+    )
+    (body,) = [b for name, b in _models(tmp_path).items() if "rev" in name]
+    assert "incremental_strategy='append'" in body
+    assert "v2" in body
+    assert "redefinition" in report.lower()

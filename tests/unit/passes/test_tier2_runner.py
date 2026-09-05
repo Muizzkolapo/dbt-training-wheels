@@ -200,21 +200,47 @@ def test_tier1_and_tier2_name_collision_keeps_one_draft_with_an_honest_decision(
     assert "mart.events" in collisions[0].action
 
 
-def test_tier2_redefinition_of_a_tier1_draft_keeps_the_last_definition():
-    # Same qualified table, defined twice: once as a tier-1 CTAS, once as a
-    # later tier-2 bare append insert. One dbt model, one file -- last wins.
+def test_an_insert_after_a_tier1_rebuild_of_the_same_table_is_deferred():
+    """This used to assert the opposite -- that the later INSERT won and
+    became an append, "one dbt model, one file, last wins". That reading is
+    wrong for a target the script builds across two statements: the CTAS
+    creates the table with `SELECT 1 AS a` in it and the INSERT adds `raw_e`
+    to that, so the end state holds both. Converting only the INSERT drops
+    the CTAS's rows and inverts a table into an append incremental, with a
+    "redefinition" note as the only trace -- the same loss a TRUNCATE+INSERT
+    pair suffers when a second INSERT follows it. dbt has no model that adds
+    to itself part-way through being built, and combining the two SELECTs
+    would invent a query the script never wrote, so the rebuild stands and
+    the INSERT is left pending for a human (catalog 2.8)."""
     stmts = (
         _stmt("CREATE TABLE analytics.events AS SELECT 1 AS a", "create_table_as"),
         _stmt("INSERT INTO analytics.events SELECT a FROM raw_e", "insert_select"),
     )
     out = run_passes(stmts, dialect=None)
-    assert out.pending == ()
     assert len(out.drafts) == 1
     (draft,) = out.drafts
-    assert draft.incremental_strategy == "append"  # the later INSERT wins
-    assert "raw_e" in draft.body
-    assert any("redefinition" in d.action for d in out.decisions)
-    assert not any("collision" in d.action for d in out.decisions)
+    assert draft.incremental_strategy is None
+    assert draft.materialization == "table"
+    assert "raw_e" not in draft.body
+    assert len(out.pending) == 1
+    deferrals = [d for d in out.decisions if "already rebuilds" in d.action]
+    assert len(deferrals) == 1, [d.action for d in out.decisions]
+    assert "analytics.events" in deferrals[0].action or "events" in deferrals[0].action
+
+
+def test_a_bare_insert_into_a_differently_qualified_rebuild_is_not_deferred():
+    """The guard above must not fire on a target that only shares a bare
+    name. `staging.events` and `mart.events` both write a schema and disagree
+    on it, so they are different tables and the INSERT is the standalone
+    append it looks like."""
+    stmts = (
+        _stmt("CREATE TABLE staging.events AS SELECT 1 AS a", "create_table_as"),
+        _stmt("INSERT INTO mart.events SELECT a FROM raw_e", "insert_select"),
+    )
+    out = run_passes(stmts, dialect=None)
+    assert not any("already rebuilds" in d.action for d in out.decisions)
+    (draft,) = out.drafts
+    assert draft.incremental_strategy == "append"
 
 
 def test_a_tier1_draft_at_a_later_index_supersedes_an_earlier_tier2_candidate():

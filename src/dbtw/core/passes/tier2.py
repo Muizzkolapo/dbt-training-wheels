@@ -17,7 +17,7 @@ from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.naming import compare_targets, qualified_name, same_identifier, target_key
-from dbtw.core.passes.collisions import replace_draft
+from dbtw.core.passes.collisions import rebuild_draft_for, replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
 
 
@@ -1072,6 +1072,30 @@ def merge_pass(state: PassState) -> PassState:
             decisions.append(_decision(stmt, index, "merge", 2, action=action, reason=reason))
         if refused:
             continue
+        rebuild = rebuild_draft_for(drafts, target_key(table), index)
+        if rebuild is not None:
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "merge.rebuilt_target",
+                    2,
+                    action=(
+                        f"deferred: MERGE INTO {table.name} follows a statement in this "
+                        f"script that rebuilds {table.name} from scratch, so the two "
+                        "together are one multi-statement build (catalog 2.8, deferred "
+                        "to slice 6c)"
+                    ),
+                    reason=(
+                        "the earlier statement defines this target's whole contents and "
+                        "became a table model; converting the MERGE as well would replace "
+                        "that model with an incremental one and discard the rebuild's own "
+                        "SELECT, and expressing both at once would mean inventing a "
+                        "combined query the script never wrote"
+                    ),
+                )
+            )
+            continue
         body = _merge_body(node, state.dialect)
         draft = ModelDraft(
             name=table.name,
@@ -1149,14 +1173,24 @@ def append_pass(state: PassState) -> PassState:
     match/update logic, just appends whatever its SELECT returns, which is
     precisely dbt's `incremental_strategy="append"`.
 
-    Reaching this pass does not by itself prove no TRUNCATE pairs with it.
-    `truncate_insert_pass` pairs on a confirmed-same target, so an INSERT
-    whose TRUNCATE qualifies its target to a different degree arrives here
-    unpaired — and converting it would turn a script that wipes and
-    repopulates into a table that only ever grows, which is the opposite of
-    what it says. A pending TRUNCATE on the same target is checked for here
-    with the same `compare_targets` tri-state the DELETE check below uses,
-    and both a confirmed and an unconfirmable match defer.
+    Reaching this pass does not by itself prove no TRUNCATE pairs with it,
+    and a rebuild is guarded against twice because one check alone misses
+    half the cases:
+
+    - a TRUNCATE still *pending* on the same target means no pass could
+      pair it — `truncate_insert_pass` pairs only on a confirmed-same
+      target, so one qualifying its target to a different degree arrives
+      here unpaired. Checked with the same `compare_targets` tri-state the
+      DELETE check below uses; a confirmed and an unconfirmable match both
+      defer.
+    - a TRUNCATE that *did* pair is gone from `pending` entirely, having
+      been consumed into a table draft. A second INSERT into that same
+      target then sees no pending TRUNCATE at all, so `rebuild_draft_for`
+      looks for the draft instead.
+
+    Either way, converting would turn a script that wipes and repopulates
+    into a table that only ever grows, which is the opposite of what it
+    says.
 
     Whether that's actually correct — whether the model's own SELECT already
     filters to new rows, or every run will re-insert everything it selects —
@@ -1293,6 +1327,29 @@ def append_pass(state: PassState) -> PassState:
             )
             continue
         select = node.expression
+        rebuild = rebuild_draft_for(drafts, target_key(table), index)
+        if rebuild is not None:
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "append",
+                    2,
+                    action=(
+                        f"deferred: INSERT INTO {table.name} adds to a target this script "
+                        f"already rebuilds from scratch, so the two together are one "
+                        "multi-statement build (catalog 2.8, deferred to slice 6c)"
+                    ),
+                    reason=(
+                        "the earlier statement defines this target's whole contents and "
+                        "became a table model; converting this INSERT as well would "
+                        "replace that model with an append incremental and discard the "
+                        "rebuild's own SELECT, and combining the two SELECTs would mean "
+                        "inventing a query the script never wrote"
+                    ),
+                )
+            )
+            continue
         body = select.sql(dialect=state.dialect, pretty=True)
         draft = ModelDraft(
             name=table.name,
