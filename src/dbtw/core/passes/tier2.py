@@ -176,6 +176,33 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
         key = (stmt.raw.source_file, target_key(table))
         pair = truncates.get(key)
         if pair is None or pair[0] > index:
+            # No truncate left to pair with. If an earlier statement already
+            # rebuilt this target, that is why — the truncate was claimed by
+            # the first INSERT of the pair, and this one adds to the result.
+            # `append_pass` says so for the bare-INSERT spelling of the same
+            # situation; a column list is not a reason to say nothing.
+            if pair is None and rebuild_draft_for(drafts, target_key(table), index) is not None:
+                decisions.append(
+                    _decision(
+                        stmt,
+                        index,
+                        "truncate_insert_columns",
+                        2,
+                        action=(
+                            f"deferred: INSERT INTO {table.name} adds to a target this "
+                            "script already rebuilds from scratch, so the two together "
+                            "are one multi-statement build (catalog 2.8, deferred to "
+                            "slice 6c)"
+                        ),
+                        reason=(
+                            "the earlier statement defines this target's whole contents "
+                            "and became a table model; converting this INSERT as well "
+                            "would replace that model and discard the rebuild's own "
+                            "SELECT, and combining the two SELECTs would mean inventing "
+                            "a query the script never wrote"
+                        ),
+                    )
+                )
             continue
         # This is the only place a truncate is matched against a candidate
         # INSERT. Removing it here, before any branch below, means a truncate

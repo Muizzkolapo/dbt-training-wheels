@@ -379,3 +379,22 @@ def test_two_bare_inserts_with_no_rebuild_still_redefine(tmp_path):
     assert "incremental_strategy='append'" in body
     assert "v2" in body
     assert "redefinition" in report.lower()
+
+
+def test_a_second_column_list_insert_into_a_rebuild_says_why_it_was_left(tmp_path):
+    """The bare-INSERT sibling of this explains itself; the column-list path
+    declined the statement and said nothing, leaving it in "Still pending"
+    with no reason beside it. Same shape, same answer, same Decision owed."""
+    report = _report(
+        tmp_path,
+        "TRUNCATE TABLE t;\n"
+        "INSERT INTO t (a, b) SELECT x, y FROM raw.s1;\n"
+        "INSERT INTO t (a, b) SELECT x, y FROM raw.s2;\n",
+    )
+    (body,) = [
+        b for name, b in _models(tmp_path).items() if "_t.sql" in name or name == "stg_t.sql"
+    ]
+    assert "materialized='table'" in body
+    assert "s1" in body
+    assert "already rebuilds" in report
+    assert "raw.s2" in report or "s2" in report
