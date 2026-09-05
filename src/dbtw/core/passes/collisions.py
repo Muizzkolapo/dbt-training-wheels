@@ -51,6 +51,17 @@ def rebuild_draft_for(
     never wrote, so `append_pass` and `merge_pass` defer instead — catalog
     2.8.
 
+    Unlike the checks that *pair* two statements into one model
+    (`truncate_insert_pass`, and `append_pass`'s DELETE and TRUNCATE
+    lookups), this one is deliberately not scoped to a single source file.
+    Those pair, and pairing is a claim about adjacency within one script.
+    This one only declines to replace, and replacing a rebuild destroys its
+    SELECT whether or not the two statements were written in the same file —
+    a dbt project has one model per name, so two files defining one target
+    collide however they were split up. What the caller must not do is
+    describe the relationship as one *within* a script; the Decisions say
+    "another statement in this conversion".
+
     File order is the whole point of the `index` check. A rebuild *after* the
     statement asking is the opposite situation: a TRUNCATE or CREATE wipes
     whatever came before it, so the earlier statement really is superseded,

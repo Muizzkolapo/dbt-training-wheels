@@ -97,7 +97,7 @@ def _collision_decision(
                 "by a later definition"
             ),
             reason=(
-                "a later statement in this file defines this model; dbt keeps "
+                "a later statement in this conversion defines this model; dbt keeps "
                 "only the final definition"
             ),
         )
@@ -189,10 +189,10 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                         "truncate_insert_columns",
                         2,
                         action=(
-                            f"deferred: INSERT INTO {table.name} adds to a target this "
-                            "script already rebuilds from scratch, so the two together "
-                            "are one multi-statement build (catalog 2.8, deferred to "
-                            "slice 6c)"
+                            f"deferred: INSERT INTO {table.name} adds to a target another "
+                            "statement in this conversion rebuilds from scratch, so the "
+                            "two together are one multi-statement build (catalog 2.8, "
+                            "deferred to slice 6c)"
                         ),
                         reason=(
                             "the earlier statement defines this target's whole contents "
@@ -1108,8 +1108,8 @@ def merge_pass(state: PassState) -> PassState:
                     "merge.rebuilt_target",
                     2,
                     action=(
-                        f"deferred: MERGE INTO {table.name} follows a statement in this "
-                        f"script that rebuilds {table.name} from scratch, so the two "
+                        f"deferred: MERGE INTO {table.name} follows another statement in this "
+                        f"conversion that rebuilds {table.name} from scratch, so the two "
                         "together are one multi-statement build (catalog 2.8, deferred "
                         "to slice 6c)"
                     ),
@@ -1363,9 +1363,10 @@ def append_pass(state: PassState) -> PassState:
                     "append",
                     2,
                     action=(
-                        f"deferred: INSERT INTO {table.name} adds to a target this script "
-                        f"already rebuilds from scratch, so the two together are one "
-                        "multi-statement build (catalog 2.8, deferred to slice 6c)"
+                        f"deferred: INSERT INTO {table.name} adds to a target another "
+                        "statement in this conversion rebuilds from scratch, so the two "
+                        "together are one multi-statement build (catalog 2.8, deferred "
+                        "to slice 6c)"
                     ),
                     reason=(
                         "the earlier statement defines this target's whole contents and "

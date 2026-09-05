@@ -107,7 +107,7 @@ def build_models_pass(state: PassState) -> PassState:
                         "by a later full rebuild"
                     ),
                     reason=(
-                        "a later statement in this file fully rebuilds this table; dbt keeps "
+                        "a later statement in this conversion fully rebuilds this table; dbt keeps "
                         "only the final definition"
                     ),
                 )

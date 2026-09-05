@@ -396,5 +396,68 @@ def test_a_second_column_list_insert_into_a_rebuild_says_why_it_was_left(tmp_pat
     ]
     assert "materialized='table'" in body
     assert "s1" in body
-    assert "already rebuilds" in report
+    assert "rebuilds from scratch" in report
     assert "raw.s2" in report or "s2" in report
+
+
+# --- statements spread across several files. The guard that keeps a rebuild
+# from being replaced is deliberately NOT file-scoped, unlike the checks that
+# PAIR two statements into one model: pairing is a claim about adjacency,
+# while replacing a rebuild with an append destroys the rebuild's SELECT
+# whether or not the two statements share a file. What it must not do is
+# describe the relationship as one within a single script when it isn't.
+
+
+def _report_dir(tmp_path, files: dict[str, str], *extra: str) -> str:
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    for name, text in files.items():
+        (sql_dir / name).write_text(text, encoding="utf-8")
+    out = tmp_path / "out"
+    assert _run_against(sql_dir, out, *extra) == 0
+    return (out / "CONVERSION_REPORT.md").read_text()
+
+
+REBUILD_FILE = (
+    "TRUNCATE TABLE orders_summary;\n"
+    "INSERT INTO orders_summary (order_id, total) SELECT order_id, total FROM raw.orders;\n"
+)
+APPEND_FILE = "INSERT INTO orders_summary SELECT order_id, total FROM raw.late_orders;\n"
+
+
+def test_a_rebuild_in_another_file_still_blocks_the_append_that_would_replace_it(tmp_path):
+    """Two files, one target. The append still must not replace the rebuild
+    -- the loss is the same across files as within one."""
+    _report_dir(tmp_path, {"01_rebuild.sql": REBUILD_FILE, "02_append.sql": APPEND_FILE})
+    (body,) = [b for name, b in _models(tmp_path).items() if "orders_summary" in name]
+    assert "materialized='table'" in body
+    assert "incremental_strategy='append'" not in body
+
+
+def test_the_cross_file_deferral_does_not_claim_the_two_share_a_script(tmp_path):
+    """ "this script already rebuilds" is false of a rebuild in a different
+    file. The Decision has to describe the relationship it actually found."""
+    report = _report_dir(tmp_path, {"01_rebuild.sql": REBUILD_FILE, "02_append.sql": APPEND_FILE})
+    deferral = [line for line in report.splitlines() if "rebuilds from scratch" in line]
+    assert len(deferral) == 1, report
+    assert "this script" not in deferral[0]
+    assert "this conversion" in deferral[0]
+
+
+def test_a_cross_file_supersede_does_not_claim_the_two_share_a_file(tmp_path):
+    """The same rule for the collision machinery underneath it: with the
+    append read first and the rebuild second, the append is superseded -- and
+    "a later statement in this file" names a file that isn't the one the
+    superseded statement came from."""
+    report = _report_dir(tmp_path, {"a_append.sql": APPEND_FILE, "b_rebuild.sql": REBUILD_FILE})
+    superseded = [line for line in report.splitlines() if "superseded" in line]
+    assert len(superseded) == 1, report
+    assert "in this file" not in superseded[0]
+
+
+def test_a_same_file_rebuild_deferral_still_reads_correctly(tmp_path):
+    """The control: one file, and the wording still has to fit."""
+    report = _report(tmp_path, REBUILD_FILE + APPEND_FILE)
+    deferral = [line for line in report.splitlines() if "rebuilds from scratch" in line]
+    assert len(deferral) == 1, report
+    assert "orders_summary" in deferral[0]
