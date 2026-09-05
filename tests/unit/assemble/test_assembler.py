@@ -12,6 +12,7 @@ def _draft(name: str, body: str, materialization: str = "table", **kw) -> ModelD
     return ModelDraft(
         name=name,
         qualified_name=kw.get("qualified_name", name),
+        identity=kw.get("identity", ("", "", name.casefold())),
         body=body,
         materialization=materialization,
         grants=kw.get("grants", ()),

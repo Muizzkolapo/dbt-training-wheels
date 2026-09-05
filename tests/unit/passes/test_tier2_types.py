@@ -6,6 +6,7 @@ def _draft(**kw) -> ModelDraft:
     base = dict(
         name="m",
         qualified_name="m",
+        identity=("", "", "m"),
         body="SELECT 1 AS a",
         materialization="table",
         grants=(),

@@ -40,6 +40,18 @@ def replace_draft(
     whichever definition is later in the file always wins — regardless of
     which pass or which call built it first.
 
+    Identity is `ModelDraft.identity` — `naming.target_key`'s folded triple —
+    never `name` or `qualified_name`, which hold the spellings the script
+    used. `MERGE INTO EVENTS` and `INSERT INTO Events` name one unquoted
+    table, and comparing their spellings made them two drafts: the report
+    announced two models, the assembler wrote two files whose names differ
+    only in case, and a case-insensitive filesystem kept whichever was
+    written last — so one whole conversion, incremental config included,
+    disappeared with no Decision recording it. The `identity[2]` name part
+    decides which drafts are the same model; the full triple then separates a
+    redefinition (same table, defined twice) from a collision (two tables
+    whose bare names agree).
+
     Returns (drafts, verdict, existing):
     - verdict is None when there was no prior draft for this name.
     - "redefinition": same qualified name defined twice; later statement wins.
@@ -48,11 +60,11 @@ def replace_draft(
       and `drafts` is returned unchanged.
     - `existing` is the prior draft when one was found, else None.
     """
-    existing = next((d for d in drafts if d.name == new.name), None)
+    existing = next((d for d in drafts if d.identity[2] == new.identity[2]), None)
     if existing is None:
         return (*drafts, new), None, None
     if max(existing.source_indices) > max(new.source_indices):
         return drafts, "superseded", existing
-    kept = tuple(d for d in drafts if d.name != new.name)
-    verdict = "redefinition" if existing.qualified_name == new.qualified_name else "collision"
+    kept = tuple(d for d in drafts if d.identity[2] != new.identity[2])
+    verdict = "redefinition" if existing.identity == new.identity else "collision"
     return (*kept, new), verdict, existing

@@ -698,9 +698,16 @@ def assemble(
     # model list is built — keep only the file-order-later draft (highest
     # max(source_indices), same precedent as tier1's _replace_draft) and
     # record an honest Decision naming both for every draft that's dropped.
+    # Grouped by the folded final name, not the final name as spelled. Two
+    # models whose names differ only in case are two models to dbt but one
+    # file on a case-insensitive filesystem, where the second write silently
+    # replaces the first — so they are resolved here, with the loss recorded,
+    # rather than left for the filesystem to resolve in silence.
     by_final_name: dict[str, list[tuple[int, ModelDraft]]] = {}
     for draft_index, draft in enumerate(drafts):
-        by_final_name.setdefault(final_names[draft.name], []).append((draft_index, draft))
+        by_final_name.setdefault(final_names[draft.name].casefold(), []).append(
+            (draft_index, draft)
+        )
 
     # Indices, not names: two colliding drafts can share a name (see above),
     # and dropping the loser's NAME would blacklist the winner too, since
@@ -708,7 +715,7 @@ def assemble(
     # be filtered out right along with the loser, emitting zero models while
     # the Decision below claims one survived.
     dropped_indices: set[int] = set()
-    for shared_final_name, group in by_final_name.items():
+    for group in by_final_name.values():
         if len(group) == 1:
             continue
         kept_index, kept = group[0]
@@ -719,14 +726,23 @@ def assemble(
             if draft_index == kept_index:
                 continue
             dropped_indices.add(draft_index)
+            dropped_final, kept_final = final_names[draft.name], final_names[kept.name]
+            resolves = (
+                f"both resolve to model {kept_final}"
+                if dropped_final == kept_final
+                else (
+                    "resolve to model names differing only in case "
+                    f"({dropped_final} and {kept_final})"
+                )
+            )
             new_decisions.append(
                 _decision(
                     "collision",
                     draft.name,
-                    f"{draft.name} and {kept.name} both resolve to model "
-                    f"{shared_final_name} — kept {kept.name}",
-                    "a dbt model is one file; only one definition can survive under "
-                    "the same final name — resolve this collision in the source SQL",
+                    f"{draft.name} and {kept.name} {resolves} — kept {kept.name}",
+                    "a dbt model is one file, and on a case-insensitive filesystem two "
+                    "names differing only in case are one file too — only one definition "
+                    "can survive; resolve this collision in the source SQL",
                 )
             )
 

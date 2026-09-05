@@ -88,6 +88,7 @@ def build_models_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization=materialization,
             grants=(),
@@ -204,6 +205,7 @@ def truncate_insert_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization="table",
             grants=(),
@@ -290,8 +292,18 @@ def grants_pass(state: PassState) -> PassState:
         table = _target_of(node)
         privileges = tuple(p.sql(dialect=state.dialect) for p in node.args.get("privileges") or ())
         principals = tuple(p.sql(dialect=state.dialect) for p in node.args.get("principals") or ())
+        # Matched on naming.target_key's folded name, not on raw text: a
+        # GRANT spelling its table `orders` names the model `CREATE TABLE
+        # Orders` just built, and dropping it as "an object this conversion
+        # doesn't create" contradicts the model file written in the same run.
+        grant_identity = None if table is None else target_key(table)
         match = next(
-            (i for i, d in enumerate(drafts) if table is not None and d.name == table.name), None
+            (
+                i
+                for i, d in enumerate(drafts)
+                if grant_identity is not None and d.identity[2] == grant_identity[2]
+            ),
+            None,
         )
         if match is None:
             decisions.append(

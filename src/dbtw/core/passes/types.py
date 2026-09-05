@@ -30,8 +30,15 @@ class Decision:
 class ModelDraft:
     """A dbt model in the making. Naming/layout finalized at assemble (slice 4)."""
 
-    name: str  # target table identifier (unqualified)
+    name: str  # target table identifier (unqualified), as the script spelled it
     qualified_name: str  # dotted catalog.db.name (non-empty parts only); bare name if unqualified
+    # naming.target_key of the target this draft was built from: (catalog, db,
+    # name), each casefolded unless it was written quoted. `name` and
+    # `qualified_name` are the spellings the script used and are what the
+    # report and the model file show; this is what decides whether two drafts
+    # are the same table. Comparing the spellings instead makes `EVENTS` and
+    # `Events` two models, of which the filesystem keeps one.
+    identity: tuple[str, str, str]
     body: str  # the SELECT, regenerated pretty; inner comments preserved
     materialization: str  # "table" | "view"; assemble may omit if layer default
     grants: tuple[tuple[str, tuple[str, ...]], ...]  # (privilege, principals)

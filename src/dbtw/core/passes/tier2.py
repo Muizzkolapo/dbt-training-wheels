@@ -16,7 +16,7 @@ import sqlglot
 from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.naming import compare_targets, qualified_name, same_identifier
+from dbtw.core.naming import compare_targets, qualified_name, same_identifier, target_key
 from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
 
@@ -152,13 +152,17 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
-    truncates: dict[tuple[str, str], tuple[int, ClassifiedStatement]] = {}
+    # Keyed by naming.target_key like tier 1's own pairing, not by the
+    # target's raw spelling: tier 1 hands this pass a pair it already found
+    # and told the report it was leaving here, so failing to re-find it
+    # strands both statements under a promise the report has made.
+    truncates: dict[tuple[str, tuple[str, str, str]], tuple[int, ClassifiedStatement]] = {}
     for index, stmt in pending:
         if stmt.kind == "truncate":
             node = _parse(stmt, state.dialect)
             table = _target_of(node)
             if table is not None:
-                key = (stmt.raw.source_file, qualified_name(table))
+                key = (stmt.raw.source_file, target_key(table))
                 truncates[key] = (index, stmt)
             continue
         if stmt.kind != "insert_select":
@@ -169,7 +173,7 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
         table = _target_of(node)
         if table is None:
             continue
-        key = (stmt.raw.source_file, qualified_name(table))
+        key = (stmt.raw.source_file, target_key(table))
         pair = truncates.get(key)
         if pair is None or pair[0] > index:
             continue
@@ -228,6 +232,7 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization="table",
             grants=(),
@@ -1071,6 +1076,7 @@ def merge_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization="incremental",
             grants=(),
@@ -1291,6 +1297,7 @@ def append_pass(state: PassState) -> PassState:
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
+            identity=target_key(table),
             body=body,
             materialization="incremental",
             grants=(),

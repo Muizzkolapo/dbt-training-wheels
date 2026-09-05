@@ -14,6 +14,7 @@ def _draft(name: str) -> ModelDraft:
     return ModelDraft(
         name=name,
         qualified_name=name,
+        identity=("", "", name.casefold()),
         body="SELECT 1 AS a",
         materialization="table",
         grants=(),
@@ -78,6 +79,7 @@ def test_grants_pass_changes_only_the_grants_field():
     draft = ModelDraft(
         name="dim_c",
         qualified_name="db.schema.dim_c",
+        identity=("db", "schema", "dim_c"),
         body="SELECT 1 AS id",
         materialization="incremental",
         grants=(("UPDATE", ("someone",)),),

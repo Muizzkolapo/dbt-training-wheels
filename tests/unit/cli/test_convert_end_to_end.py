@@ -206,3 +206,85 @@ def test_a_genuinely_solo_truncate_is_still_dropped_and_says_why(tmp_path):
     )
     assert "dropped solo TRUNCATE" in report
     assert "no surviving INSERT pair" in report
+
+
+# --- one table, two spellings. Every pass that compares a target now goes
+# through naming.py, but the places a *draft* is matched -- the collision
+# upsert, the grant attach, and the assembler's final-name dedup -- still
+# compared draft.name as raw text. So two spellings of one table became two
+# drafts, the report announced both, and the second file overwrote the first
+# on any case-insensitive filesystem.
+
+CASE_DUP_SQL = (
+    "MERGE INTO EVENTS AS t USING raw.events_corrections AS s ON t.event_id = s.event_id "
+    "WHEN MATCHED THEN UPDATE SET t.event_date = s.event_date "
+    "WHEN NOT MATCHED THEN INSERT (event_id, event_date) VALUES (s.event_id, s.event_date);\n"
+    "INSERT INTO Events SELECT event_id, event_date FROM raw.events_stage;\n"
+)
+
+
+def test_two_spellings_of_one_target_become_one_model(tmp_path):
+    """`EVENTS` and `Events` are one unquoted table in every dialect. Two
+    drafts meant the report claimed two models while the filesystem held one
+    -- and the one it held was the second definition, so the MERGE's whole
+    conversion, unique_key included, vanished with nothing recorded."""
+    report = _report(tmp_path, CASE_DUP_SQL)
+    written = list(_models(tmp_path))
+    assert len(written) == 1, written
+    assert report.count("| stg_") == 1, report
+    assert "**Models**: 1" in report
+
+
+def test_the_surviving_definition_of_a_two_spelling_target_is_recorded(tmp_path):
+    """Whichever definition wins, the report has to say the other one existed
+    and was dropped. Silence here is how the merge config disappeared."""
+    report = _report(tmp_path, CASE_DUP_SQL)
+    assert "redefinition" in report.lower() or "kept" in report.lower()
+    assert "EVENTS" in report
+    assert "Events" in report
+
+
+def test_a_grant_matches_its_model_across_a_case_difference(tmp_path):
+    """`GRANT SELECT ON orders` names the table `CREATE TABLE Orders` just
+    built. Dropping it with "references an object this conversion doesn't
+    create" contradicts the model file written in the same run."""
+    report = _report(
+        tmp_path,
+        "CREATE TABLE Orders AS SELECT id, amount FROM raw.orders;\n"
+        "GRANT SELECT ON orders TO analyst;\n",
+    )
+    assert "this conversion doesn't create" not in report
+    (body,) = [b for name, b in _models(tmp_path).items() if "rders" in name]
+    assert "grants" in body
+    assert "analyst" in body
+
+
+def test_a_column_list_rebuild_pairs_across_a_case_difference_too(tmp_path):
+    """Tier 1 finds this pair, records "left for that pass", and hands it to
+    tier 2 -- which keyed on the target's raw text and so never re-found it,
+    leaving both statements pending under a promise the report had already
+    made. The bare-INSERT pairing was fixed without its column-list sibling."""
+    report = _report(
+        tmp_path,
+        "TRUNCATE TABLE Rebuild_t;\nINSERT INTO rebuild_t (a, b)\nSELECT x, y FROM raw.src_t;\n",
+    )
+    (body,) = [b for name, b in _models(tmp_path).items() if "rebuild_t" in name]
+    assert "materialized='table'" in body
+    assert "x AS a" in body
+    assert "y AS b" in body
+    assert "**Pending statements**: 0" in report
+
+
+def test_a_quoted_spelling_is_not_folded_into_an_unquoted_one(tmp_path):
+    """The control, and the other half of the rule: a quoted identifier's case
+    is significant, so `"Events"` and `events` are two different tables. They
+    are two drafts -- but a dbt model is one file and these two want names that
+    differ only in case, so the collision is recorded rather than left to the
+    filesystem to resolve."""
+    report = _report(
+        tmp_path,
+        'INSERT INTO "Events" SELECT id FROM raw.a;\nINSERT INTO events SELECT id FROM raw.b;\n',
+    )
+    assert len(_models(tmp_path)) == 1
+    assert "differing only in case" in report
+    assert "kept" in report
