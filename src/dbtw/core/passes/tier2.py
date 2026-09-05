@@ -13,7 +13,7 @@ import sqlglot
 from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.naming import qualified_name
+from dbtw.core.naming import compare_targets, qualified_name
 from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
 
 
@@ -34,6 +34,8 @@ def _target_of(node: exp.Expr) -> exp.Table | None:
         return _as_table(node.this)
     if isinstance(node, exp.TruncateTable):
         return _as_table(node.expressions[0]) if node.expressions else None
+    if isinstance(node, exp.Delete):
+        return _as_table(node.this)
     return None
 
 
@@ -349,6 +351,169 @@ def merge_pass(state: PassState) -> PassState:
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
                 chosen=f"merge on {key_list}",
                 alternatives=("append every row",),
+            )
+        )
+    return PassState(
+        pending=tuple((i, s) for i, s in pending if i not in consumed),
+        drafts=drafts,
+        decisions=tuple(decisions),
+        dialect=state.dialect,
+    )
+
+
+def append_pass(state: PassState) -> PassState:
+    """Convert a pending bare INSERT...SELECT (no column list) into an
+    append incremental model.
+
+    An INSERT with an explicit column list is Task 2's pairing target — this
+    pass never touches one, exactly like it never touches an INSERT already
+    consumed. What remains here, with no column list, has no truncate to
+    pair with (else `truncate_insert_pass`/`truncate_insert_columns_pass`
+    would already have claimed it) and no MERGE-style match/update logic —
+    it just appends whatever its SELECT returns, which is precisely dbt's
+    `incremental_strategy="append"`.
+
+    Whether that's actually correct — whether the model's own SELECT already
+    filters to new rows, or every run will re-insert everything it selects —
+    isn't decidable from the SQL alone, so this is a tier-2 Decision offering
+    "merge on a unique key" as the alternative. If the SELECT carries a
+    WHERE, honesty forbids guessing that it's the incremental filter (a
+    dbt `{% if is_incremental() %}` guard is never synthesized around it):
+    the WHERE is named verbatim in the reason as evidence for a human to
+    confirm, nothing more.
+
+    A pending DELETE on the same target, in the same file, means this INSERT
+    isn't a bare append at all — it's one half of a delete+insert pair
+    (catalog 2.3), which only replaces the deleted rows' slice. That is not
+    what an append incremental does: an append re-inserts everything the
+    model selects on every run, keeping rows outside the deleted slice too.
+    Converting it anyway would silently change which rows survive a run, so
+    a confirmed-same target is left pending — deferred to slice 6c — with a
+    tier-2 Decision recording the deferral instead of a draft.
+
+    "Same target" is decided by `naming.compare_targets`, never a bare
+    `qualified_name` string match: two spellings that only differ by case
+    (`DELETE FROM Events` / `INSERT INTO events`) are still the same table,
+    and — the failure mode that actually matters — two spellings that
+    qualify their target to different *degrees* (`DELETE FROM db.events` /
+    `INSERT INTO events`) are not safely "different" either, since whether
+    the unqualified one resolves to the same object depends on the
+    session's default schema, not on the SQL text. `compare_targets`'s
+    `"ambiguous"` outcome for that case is treated exactly like a confirmed
+    match here — deferred, never append-converted — because guessing wrong
+    ships an incremental with silently different semantics from the
+    script; only a confirmed `"different"` lets the INSERT proceed.
+    """
+    pending = list(state.pending)
+    drafts = state.drafts
+    decisions = list(state.decisions)
+    consumed: set[int] = set()
+
+    deletes: list[tuple[str, exp.Table]] = []
+    for _, stmt in pending:
+        if stmt.kind != "delete":
+            continue
+        node = _parse(stmt, state.dialect)
+        table = _target_of(node)
+        if table is not None:
+            deletes.append((stmt.raw.source_file, table))
+
+    for index, stmt in pending:
+        if stmt.kind != "insert_select":
+            continue
+        node = _parse(stmt, state.dialect)
+        if isinstance(node.this, exp.Schema):
+            continue  # column list: Task 2's pairing target, not this pass's concern
+        table = _target_of(node)
+        if table is None:
+            continue
+        comparisons = {
+            compare_targets(delete_table, table)
+            for delete_file, delete_table in deletes
+            if delete_file == stmt.raw.source_file
+        }
+        if "same" in comparisons:
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "append",
+                    2,
+                    action=(
+                        f"deferred: DELETE + INSERT INTO {table.name} is a delete and insert "
+                        "pair, not converted (catalog 2.3, deferred to slice 6c)"
+                    ),
+                    reason=(
+                        "a delete-then-insert pair only replaces the rows the DELETE removed; "
+                        "an append incremental re-inserts everything the model selects on every "
+                        "run regardless of the DELETE, which would silently change which rows "
+                        "survive a run"
+                    ),
+                )
+            )
+            continue
+        if "ambiguous" in comparisons:
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "append",
+                    2,
+                    action=(
+                        f"deferred: DELETE + INSERT INTO {table.name} may be a delete and "
+                        "insert pair, but their qualification can't confirm it (catalog 2.3)"
+                    ),
+                    reason=(
+                        "a DELETE and this INSERT name the same bare table but qualification "
+                        "differs enough that they can't be confirmed as the same target from "
+                        "the SQL alone — which schema an unqualified name resolves to depends "
+                        "on the session's default, not on the script — so this is left pending "
+                        "for a human to confirm rather than guessed either way"
+                    ),
+                )
+            )
+            continue
+        select = node.expression
+        body = select.sql(dialect=state.dialect, pretty=True)
+        draft = ModelDraft(
+            name=table.name,
+            qualified_name=qualified_name(table),
+            body=body,
+            materialization="incremental",
+            grants=(),
+            source_indices=(index,),
+            leading_comments=tuple(c.strip() for c in (node.comments or ())),
+            incremental_strategy="append",
+            unique_key=(),
+        )
+        drafts = (*drafts, draft)
+        consumed.add(index)
+        reason = (
+            "an append incremental re-inserts everything the model selects on every run "
+            "unless the model's own SELECT filters to new rows; supply --unique-key to "
+            "switch it to a merge incremental instead"
+        )
+        where = select.args.get("where") if isinstance(select, exp.Select) else None
+        if where is not None:
+            where_sql = where.this.sql(dialect=state.dialect)
+            reason += (
+                f" — the SELECT already carries a WHERE ({where_sql}), named here as the "
+                "likely incremental filter for a human to confirm, not applied as one"
+            )
+        decisions.append(
+            _decision(
+                stmt,
+                index,
+                "append",
+                2,
+                action=(
+                    f"INSERT INTO {table.name} became an incremental model "
+                    "(incremental_strategy='append')"
+                ),
+                reason=reason,
+                question=("Should rows be appended on every run, or deduplicated on a unique key?"),
+                chosen="append every row",
+                alternatives=("merge on a unique key",),
             )
         )
     return PassState(

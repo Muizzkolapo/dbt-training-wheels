@@ -55,12 +55,35 @@ different names, and casefolding silently swallowed the read as if it were
 the CTE (FINDING 9). `is_cte_read` casefolds only when *neither* side was
 written quoted; if either was, the comparison is exact. One definition,
 so the two call sites can never drift apart on this rule either.
+
+## Cross-statement target identity
+
+`passes.tier2`'s `append_pass` decides whether a pending DELETE and a
+pending INSERT name the *same* table, to defer converting the INSERT into
+an append incremental when they do — that pairing is catalog 2.3, a
+delete-then-insert rebuild of one slice, and appending instead would
+silently keep rows outside that slice that the DELETE removed. A naive
+`qualified_name` string-equality check gets this wrong two ways: it misses
+differently-cased spellings (`DELETE FROM Events` / `INSERT INTO events`
+are the same table on every dialect that folds unquoted identifiers), and,
+worse, it calls two statements "different" whenever they merely *qualify*
+their target to different degrees (`DELETE FROM db.events` / `INSERT INTO
+events`) — but whether an unqualified name resolves to the same object as a
+qualified one depends on the session's default schema/catalog, which the
+SQL text never reveals. Confidently converting on a wrong "different" is
+the failure mode that matters here: it ships an incremental whose semantics
+silently diverge from the script. `same_identifier` generalizes the
+casefold-unless-quoted rule `is_cte_read` established (both now share it,
+so it's defined once); `compare_targets` builds on it to return `"same"`,
+`"different"`, or `"ambiguous"` for two parsed targets — the third outcome
+exists precisely so a caller can refuse to guess instead of silently
+picking a side.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol
+from typing import Literal, Protocol
 
 from sqlglot import exp
 
@@ -128,20 +151,84 @@ def _cte_alias_and_quoted(cte: exp.CTE) -> tuple[str, bool]:
     return cte.alias, quoted
 
 
+def same_identifier(a: str, a_quoted: bool, b: str, b_quoted: bool) -> bool:
+    """True when two identifier spellings denote the same name.
+
+    Casefolded unless either was written quoted — quoted identifiers are
+    case-sensitive in every dialect that respects quoting (Postgres,
+    Snowflake, ...), so a quoted `"Events"` and a bare `events` are two
+    different names even though bare `Events` and `events` are the same
+    one. `is_cte_read` established this rule first, for CTE-alias
+    matching; `compare_targets` reuses it for cross-statement target
+    identity — see the module docstring.
+    """
+    if a_quoted or b_quoted:
+        return a == b
+    return a.casefold() == b.casefold()
+
+
 def is_cte_read(table: exp.Table, ctes: Iterable[exp.CTE]) -> bool:
     """True when `table`'s bare name reads one of `ctes` by its own alias.
 
-    Comparison is casefolded unless either the CTE's own alias or this
-    table's identifier was written quoted — see the module docstring.
+    Comparison follows `same_identifier`'s rule: casefolded unless either
+    the CTE's own alias or this table's identifier was written quoted.
     """
     identifier = table.this
     table_quoted = bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
     table_name = table.name
     for cte in ctes:
         alias, alias_quoted = _cte_alias_and_quoted(cte)
-        if table_quoted or alias_quoted:
-            if table_name == alias:
-                return True
-        elif table_name.casefold() == alias.casefold():
+        if same_identifier(table_name, table_quoted, alias, alias_quoted):
             return True
     return False
+
+
+TargetComparison = Literal["same", "different", "ambiguous"]
+
+_TargetPart = Literal["name", "db", "catalog"]
+
+
+def _table_part(table: exp.Table, part: _TargetPart) -> tuple[str, bool]:
+    """`table`'s name/db/catalog text and whether it was written quoted."""
+    if part == "name":
+        text, node = table.name, table.this
+    elif part == "db":
+        text, node = table.db, table.args.get("db")
+    else:
+        text, node = table.catalog, table.args.get("catalog")
+    quoted = bool(isinstance(node, exp.Identifier) and node.quoted)
+    return text, quoted
+
+
+def compare_targets(a: exp.Table, b: exp.Table) -> TargetComparison:
+    """Compare two parsed table targets for identity — see the module
+    docstring's "Cross-statement target identity" section for why a plain
+    same/different split isn't safe here.
+
+    - `"different"`: the names disagree (by `same_identifier`), or both
+      sides wrote a db and/or catalog and one of those disagrees. Two
+      targets that both spell out their schema/catalog and disagree on it
+      are unambiguously different, whatever their bare names look like.
+    - `"ambiguous"`: the names agree, and no part both sides wrote
+      disagrees, but one side leaves a db and/or catalog unwritten where
+      the other supplies one (`events` vs. `db.events`, `events` vs.
+      `mydb..events`). Whether they're the same table then depends on the
+      session's default schema/catalog, which the SQL text never reveals
+      — callers must not treat this as either a confirmed match or a
+      confirmed non-match.
+    - `"same"`: every part agrees, or is unwritten on both sides.
+    """
+    name_a, name_a_quoted = _table_part(a, "name")
+    name_b, name_b_quoted = _table_part(b, "name")
+    if not same_identifier(name_a, name_a_quoted, name_b, name_b_quoted):
+        return "different"
+    ambiguous = False
+    for part in ("db", "catalog"):
+        text_a, quoted_a = _table_part(a, part)
+        text_b, quoted_b = _table_part(b, part)
+        if text_a and text_b:
+            if not same_identifier(text_a, quoted_a, text_b, quoted_b):
+                return "different"
+        elif text_a or text_b:
+            ambiguous = True
+    return "ambiguous" if ambiguous else "same"
