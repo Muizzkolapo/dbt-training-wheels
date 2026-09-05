@@ -404,3 +404,157 @@ def test_a_where_attached_to_a_branch_action_is_named_like_a_branch_condition():
     assert out.drafts
     assert len(_caveats(out)) == 1, _caveats(out)
     assert "t.region = 'EU'" in _caveats(out)[0]
+
+
+# --- how a branch spells its target. `_named_column` asserted that every
+# target sqlglot produces is a `Column`, on the strength of nothing: a
+# row-value `SET (a, b) = (x, y)` gives a `Tuple` and a path assignment gives
+# a `Bracket`, and both aborted the whole conversion with a raw AssertionError
+# -- no model, no Decision, nothing on the record at all.
+
+MERGE_ROW_VALUE_UPDATE = (
+    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET (city, email) = (s.city, s.email) "
+    "WHEN NOT MATCHED THEN INSERT *"
+)
+
+
+def test_a_row_value_update_set_names_every_column_it_assigns():
+    """`SET (city, email) = (s.city, s.email)` is the standard's row-value
+    spelling of `SET city = s.city, email = s.email`, and restricts the update
+    to the same two columns. sqlglot puts one `Tuple` of columns in the
+    assignment's target rather than one column per assignment (probed on
+    30.18.0), so reading it needs the Tuple, but the caveat it earns is the
+    same one the repeated spelling earns."""
+    out = merge_pass(_state((0, _stmt(MERGE_ROW_VALUE_UPDATE))))
+    assert out.drafts
+    matching = [c for c in _caveats(out) if "merge_update_columns" in c]
+    assert len(matching) == 1, _caveats(out)
+    assert "city, email" in matching[0]
+
+
+def test_a_row_value_target_dedupes_against_a_plain_assignment_of_the_same_column():
+    """The two spellings name the same columns, so a column assigned by each
+    is one column -- reported once, in the order it was first written."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED AND s.hot THEN UPDATE SET (city, email) = (s.city, s.email) "
+        "WHEN MATCHED THEN UPDATE SET t.CITY = s.city "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts
+    matching = [c for c in _caveats(out) if "merge_update_columns" in c]
+    assert len(matching) == 1, _caveats(out)
+    assert "city, email" in matching[0]
+    assert "CITY" not in matching[0]
+
+
+def test_a_quoted_column_inside_a_row_value_target_keeps_its_case():
+    """The Tuple's members are ordinary columns, so the quoting rule that
+    keeps `"City"` distinct from `city` applies inside one too."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        'WHEN MATCHED THEN UPDATE SET ("City", city) = (s.a, s.b) '
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts
+    matching = [c for c in _caveats(out) if "merge_update_columns" in c]
+    assert len(matching) == 1, _caveats(out)
+    assert "City, city" in matching[0]
+
+
+MERGE_PATH_ASSIGNMENT = (
+    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET t.data['city'] = s.city "
+    "WHEN NOT MATCHED THEN INSERT *"
+)
+
+
+def test_an_assignment_to_a_path_inside_a_column_is_refused_not_read_as_the_column():
+    """`SET t.data['city'] = s.city` writes one key of a semi-structured
+    column and leaves the rest of it alone; sqlglot parses that target as a
+    `Bracket`, not a `Column` (probed on 30.18.0). dbt's merge assigns whole
+    columns only, so calling this an assignment to `data` would overstate what
+    the script does while the converted model quietly overwrote the whole
+    column on every run. Refused, with the branch quoted verbatim."""
+    out = merge_pass(_state((0, _stmt(MERGE_PATH_ASSIGNMENT))))
+    assert len(out.pending) == 1
+    assert out.drafts == ()
+    assert len(out.decisions) == 1, out.decisions
+    dec = out.decisions[0]
+    assert dec.tier == 2
+    assert dec.action.startswith("deferred:")
+    assert "t.data['city']" in dec.action
+    assert "whole column" in dec.reason
+
+
+def test_a_path_assignment_and_an_unusable_on_clause_are_both_recorded():
+    """Two independent reasons, two Decisions, two distinct keys -- the same
+    rule the delete-branch refusal follows."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON 1 = 1 "
+        "WHEN MATCHED THEN UPDATE SET t.data['city'] = s.city"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert len(out.decisions) == 2, out.decisions
+    assert any("no unique key" in d.action for d in out.decisions)
+    assert any("whole column" in d.reason for d in out.decisions)
+    assert len({d.key for d in out.decisions}) == 2
+
+
+def test_a_path_assignment_beside_a_convertible_branch_still_refuses():
+    """The unreadable branch must not be lost among siblings dbt can perform,
+    exactly as a delete branch is not."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED AND s.hot THEN UPDATE SET t.data['city'] = s.city "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.city "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert len(out.pending) == 1
+    assert out.drafts == ()
+    assert len(out.decisions) == 1, out.decisions
+    assert out.decisions[0].action.startswith("deferred:")
+
+
+# --- how many branches the caveat is talking about. Both column caveats said
+# "branch", singular, however many branches contributed a column, so a MERGE
+# whose two matched branches assign a column each was described as one branch
+# assigning both.
+
+MERGE_TWO_UNMATCHED_BRANCHES = (
+    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+    "WHEN NOT MATCHED AND s.hot THEN INSERT (id, city) VALUES (s.id, s.city) "
+    "WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id)"
+)
+
+
+def test_the_update_caveat_counts_the_matched_branches_it_describes():
+    one = [
+        c
+        for c in _caveats(merge_pass(_state((0, _stmt(MERGE_BOTH_BRANCHES)))))
+        if "merge_update_columns" in c
+    ]
+    two = [
+        c
+        for c in _caveats(merge_pass(_state((0, _stmt(MERGE_TWO_MATCHED_BRANCHES)))))
+        if "merge_update_columns" in c
+    ]
+    assert "WHEN MATCHED branch assigns only" in one[0]
+    assert "WHEN MATCHED branches assign only" in two[0]
+
+
+def test_the_insert_caveat_counts_the_unmatched_branches_it_describes():
+    one = [c for c in _caveats(merge_pass(_state((0, _stmt(MERGE_RESTRICTED_INSERT)))))]
+    two = [
+        c
+        for c in _caveats(merge_pass(_state((0, _stmt(MERGE_TWO_UNMATCHED_BRANCHES)))))
+        if "id, city" in c
+    ]
+    assert "WHEN NOT MATCHED branch inserts only" in one[0]
+    assert "WHEN NOT MATCHED branches insert only" in two[0]
