@@ -276,18 +276,22 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     existing_by_name = {m.name: m for m in ctx.existing_models}
 
     final_names: dict[str, str] = {}
-    placed: dict[str, AssembledModel] = {}
-    # Keyed by draft.name — unique per tier-1's upsert invariant, unlike
-    # final_name, which two drafts can share (one gets prefixed into the
-    # other's own name; see the dedup loop below). Collecting each draft's
+    # Keyed by the draft's own position in `drafts`, not by draft.name: two
+    # drafts can legitimately share a name (e.g. two same-named drafts that
+    # also collide on final name below), and a name-keyed dict would let the
+    # second draft processed silently overwrite the first's own placement —
+    # surfacing the wrong draft's body/path/materialization for whichever
+    # draft is looked up by that shared name, even for the survivor.
+    placed: dict[int, AssembledModel] = {}
+    # Also keyed by position, for the same reason. Collecting each draft's
     # own placement Decisions here, instead of appending them to
     # new_decisions immediately, lets a dropped draft's Decisions be
-    # discarded wholesale once dropped_names is known — a decision keyed and
-    # worded around a model that was never written is not a fix, it's a
+    # discarded wholesale once dropped_indices is known — a decision keyed
+    # and worded around a model that was never written is not a fix, it's a
     # different bug.
-    placement_decisions: dict[str, list[Decision]] = {}
+    placement_decisions: dict[int, list[Decision]] = {}
 
-    for draft in drafts:
+    for draft_index, draft in enumerate(drafts):
         local_decisions: list[Decision] = []
         role = role_for(draft.name, deps, dependents_frozen)
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
@@ -340,7 +344,7 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
         else:
             materialization = draft.materialization
 
-        placed[draft.name] = AssembledModel(
+        placed[draft_index] = AssembledModel(
             name=final_name,
             path=path,
             body=draft.body,
@@ -351,29 +355,34 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
             leading_comments=draft.leading_comments,
             source_indices=draft.source_indices,
         )
-        placement_decisions[draft.name] = local_decisions
+        placement_decisions[draft_index] = local_decisions
 
     # Two drafts can resolve to the same final name (e.g. one gets prefixed
     # into the other's own name). A dbt model is one file, so — before the
     # model list is built — keep only the file-order-later draft (highest
     # max(source_indices), same precedent as tier1's _replace_draft) and
     # record an honest Decision naming both for every draft that's dropped.
-    by_final_name: dict[str, list[ModelDraft]] = {}
-    for draft in drafts:
-        by_final_name.setdefault(final_names[draft.name], []).append(draft)
+    by_final_name: dict[str, list[tuple[int, ModelDraft]]] = {}
+    for draft_index, draft in enumerate(drafts):
+        by_final_name.setdefault(final_names[draft.name], []).append((draft_index, draft))
 
-    dropped_names: set[str] = set()
+    # Indices, not names: two colliding drafts can share a name (see above),
+    # and dropping the loser's NAME would blacklist the winner too, since
+    # `draft.name in dropped_names` can't tell them apart — the winner would
+    # be filtered out right along with the loser, emitting zero models while
+    # the Decision below claims one survived.
+    dropped_indices: set[int] = set()
     for shared_final_name, group in by_final_name.items():
         if len(group) == 1:
             continue
-        kept = group[0]
-        for candidate in group[1:]:
+        kept_index, kept = group[0]
+        for candidate_index, candidate in group[1:]:
             if max(candidate.source_indices) >= max(kept.source_indices):
-                kept = candidate
-        for draft in group:
-            if draft is kept:
+                kept_index, kept = candidate_index, candidate
+        for draft_index, draft in group:
+            if draft_index == kept_index:
                 continue
-            dropped_names.add(draft.name)
+            dropped_indices.add(draft_index)
             new_decisions.append(
                 _decision(
                     "collision",
@@ -389,18 +398,18 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
     # draft's file was never written, so its rename/collision/path/
     # materialization Decisions above are discarded; the "both resolve to"
     # Decision just recorded is the only honest record of it.
-    for draft in drafts:
-        if draft.name in dropped_names:
+    for draft_index in range(len(drafts)):
+        if draft_index in dropped_indices:
             continue
-        new_decisions.extend(placement_decisions[draft.name])
+        new_decisions.extend(placement_decisions[draft_index])
 
     # Step 8: translate dependency names to final names now that every draft has one.
     models: list[AssembledModel] = []
     final_to_draft_name: dict[str, str] = {}
-    for draft in drafts:
-        if draft.name in dropped_names:
+    for draft_index, draft in enumerate(drafts):
+        if draft_index in dropped_indices:
             continue
-        model = placed[draft.name]
+        model = placed[draft_index]
         depends_on = tuple(sorted({final_names[dep] for dep in deps[draft.name]}))
         models.append(
             AssembledModel(
