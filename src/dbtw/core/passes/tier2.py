@@ -9,11 +9,13 @@ statements always leave a Decision; refusals this pass is responsible for
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import sqlglot
 from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.naming import compare_targets, qualified_name
+from dbtw.core.naming import compare_targets, qualified_name, same_identifier
 from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
 
@@ -313,6 +315,210 @@ def _merge_unique_key(node: exp.Merge, target: str) -> tuple[tuple[str, ...], st
     return tuple(keys), None
 
 
+@dataclass(frozen=True, slots=True)
+class _MergeBranches:
+    """What a MERGE's WHEN branches actually do — see `_merge_branches`."""
+
+    unsupported: tuple[str, ...]  # branches dbt's merge cannot perform, verbatim
+    updates_matched: bool
+    inserts_unmatched: bool
+    updated_columns: tuple[str, ...]  # named UPDATE SET targets; () means "all"
+    inserted_columns: tuple[str, ...]  # named INSERT target columns; () means "all"
+    conditions: tuple[str, ...]  # per-branch conditions dbt's merge has no place for
+
+
+def _named_column(node: exp.Expr) -> tuple[str, bool] | None:
+    """A branch target's column name and whether it was written quoted, or
+    `None` when it names no particular column.
+
+    A bare `*` (`UPDATE SET *`, `INSERT *`) and a `t.*` — which parses to a
+    `Column` wrapping an `exp.Star`, probed on sqlglot 30.18.0 — both mean
+    every column, which is not a restriction and so contributes no name.
+    """
+    if isinstance(node, exp.Star):
+        return None
+    # Every other branch target sqlglot produces is a Column: `t.n`, bare
+    # `n`, `t.a.b`, `t.*` and an INSERT list's `(id, city)` alike (probed).
+    assert isinstance(node, exp.Column)
+    identifier = node.this
+    if isinstance(identifier, exp.Star):
+        return None
+    return node.name, bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
+
+
+def _add_unique(columns: list[tuple[str, bool]], column: tuple[str, bool]) -> None:
+    """Append `column` unless `columns` already names it.
+
+    Deduped by `naming.same_identifier`, so two unquoted spellings fold
+    case-insensitively (`t.CITY` after `t.city` adds nothing) while a quoted
+    spelling never folds into an unquoted one — a quoted identifier's case is
+    significant in every dialect that respects quoting.
+    """
+    name, quoted = column
+    if not any(same_identifier(name, quoted, seen, seen_quoted) for seen, seen_quoted in columns):
+        columns.append(column)
+
+
+def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
+    """Read the MERGE's WHEN branches — the half of the statement that says
+    what it does to a row, and the half `merge_pass` used to ignore entirely.
+
+    dbt's merge incremental strategy performs exactly two actions, always:
+    update a row matching `unique_key` with every column the model selects,
+    and insert a row matching none. There is no third branch and no
+    per-branch condition. So each WHEN branch is one of:
+
+    - a matched `UPDATE` (`then` is `exp.Update`) — which dbt does too,
+      except dbt updates *every* selected column, so a SET list naming
+      particular columns is a restriction dbt will not honour and is
+      collected into `updated_columns` (see `_named_column` for the `SET *`
+      and `SET t.* = s.*` spellings, which restrict nothing).
+    - an unmatched `INSERT` (`then` is `exp.Insert`) — which dbt does too,
+      and again over every selected column, so an explicit target column
+      list is the same kind of restriction and is collected into
+      `inserted_columns`. Only `INSERT (id, city) VALUES ...` writes one:
+      probed on 30.18.0, that puts a `Tuple` of columns in `Insert.this`,
+      while `INSERT VALUES ...` leaves it `None`, `INSERT *` a `Star` and
+      Snowflake's `INSERT ROW` a `Var` — none of which names a column.
+    - anything else, collected verbatim into `unsupported`. `THEN DELETE`
+      and `THEN DO NOTHING` both parse to an `exp.Var` holding the source
+      text as written (so lowercase SQL gives `Var(this='delete')` —
+      probed), and a `NOT MATCHED BY SOURCE` branch sets `When.source`
+      (probed), whatever its action. dbt's merge can perform none of
+      these, so `merge_pass` refuses a MERGE carrying one rather than
+      emitting a model that silently drops it.
+
+    `conditions` collects each surviving branch's `WHEN ... AND <cond>`
+    and any `WHERE` sqlglot attached to its action, because dbt applies its
+    two actions to every row regardless of them.
+
+    A target column named more than once (`SET t.city = s.a, t.CITY = s.b`,
+    or once in each of two matched branches) is reported once, in the order
+    it was written — see `_add_unique`.
+    """
+    unsupported: list[str] = []
+    updates_matched = False
+    inserts_unmatched = False
+    updated: list[tuple[str, bool]] = []
+    inserted: list[tuple[str, bool]] = []
+    conditions: list[str] = []
+    for when in node.args["whens"].expressions:
+        then = when.args["then"]
+        if when.args["source"] or not isinstance(then, (exp.Update, exp.Insert)):
+            unsupported.append(when.sql(dialect=dialect))
+            continue
+        condition = when.args["condition"]
+        if condition is not None:
+            conditions.append(condition.sql(dialect=dialect))
+        where = then.args.get("where")
+        if where is not None:
+            conditions.append(where.this.sql(dialect=dialect))
+        if isinstance(then, exp.Insert):
+            inserts_unmatched = True
+            target_columns = then.this
+            if isinstance(target_columns, exp.Tuple):
+                for column in target_columns.expressions:
+                    named = _named_column(column)
+                    if named is not None:
+                        _add_unique(inserted, named)
+            continue
+        updates_matched = True
+        for assignment in then.args["expressions"]:
+            target = assignment.this if isinstance(assignment, exp.EQ) else assignment
+            named = _named_column(target)
+            if named is not None:
+                _add_unique(updated, named)
+    return _MergeBranches(
+        unsupported=tuple(unsupported),
+        updates_matched=updates_matched,
+        inserts_unmatched=inserts_unmatched,
+        updated_columns=tuple(name for name, _ in updated),
+        inserted_columns=tuple(name for name, _ in inserted),
+        conditions=tuple(conditions),
+    )
+
+
+def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str, str, str]]:
+    """Every way dbt's merge strategy will act differently from the branches
+    this MERGE actually wrote, as `(decision name, action, reason)` triples.
+
+    These are caveats, not refusals: the conversion still happens (the model
+    body is the USING source either way), and what changes is that its
+    consequences are on the record instead of being discovered in
+    production. Each names the difference in dbt's own terms so the reader
+    can decide whether the converted model is still the job they meant.
+
+    No `merge_update_columns` config is emitted for the restricted-SET case:
+    adapter support for it varies and the adapter isn't known at convert
+    time, so emitting it would be a guess. It is named in prose as the
+    user's option instead.
+    """
+    caveats: list[tuple[str, str, str]] = []
+    if not branches.inserts_unmatched:
+        caveats.append(
+            (
+                "merge.no_insert_branch",
+                f"caveat: {table_name} has no WHEN NOT MATCHED branch, but the converted "
+                "model will insert rows that match nothing",
+                "dbt's merge incremental strategy always inserts a row that matches no "
+                "unique_key; this MERGE only acts on rows that already exist, so the "
+                "converted model inserts rows the script never did",
+            )
+        )
+    if not branches.updates_matched:
+        caveats.append(
+            (
+                "merge.no_update_branch",
+                f"caveat: {table_name} has no WHEN MATCHED THEN UPDATE branch, but the "
+                "converted model will update every row matching its unique_key",
+                "dbt's merge incremental strategy always updates a row matching unique_key "
+                "with every column the model selects; this MERGE only inserts rows that "
+                "match nothing, so the converted model overwrites rows the script left alone",
+            )
+        )
+    if branches.updated_columns:
+        named = ", ".join(branches.updated_columns)
+        caveats.append(
+            (
+                "merge.update_columns",
+                f"caveat: {table_name}'s WHEN MATCHED branch assigns only {named}, but the "
+                "converted model updates every column it selects",
+                "dbt's merge incremental strategy updates a matched row with every column "
+                "the model selects, not a chosen subset, so the columns this MERGE leaves "
+                "alone are overwritten on every run. The adapter-specific "
+                "merge_update_columns config restores the restriction where the adapter "
+                "supports it; it is not emitted here because the adapter is not known at "
+                "convert time",
+            )
+        )
+    if branches.inserted_columns:
+        named = ", ".join(branches.inserted_columns)
+        caveats.append(
+            (
+                "merge.insert_columns",
+                f"caveat: {table_name}'s WHEN NOT MATCHED branch inserts only {named}, but "
+                "the converted model inserts every column it selects",
+                "dbt's merge incremental strategy builds an inserted row from every column "
+                "the model selects, not a chosen subset, so a column this MERGE's INSERT "
+                "left to the target's default is written from the model's own SELECT instead",
+            )
+        )
+    if branches.conditions:
+        stated = "; ".join(branches.conditions)
+        caveats.append(
+            (
+                "merge.branch_condition",
+                f"caveat: {table_name} restricts a WHEN branch with a condition ({stated}), "
+                "but the converted model applies dbt's merge to every row",
+                "dbt's merge incremental strategy has no per-branch condition: every row "
+                "matching unique_key is updated and every row matching none is inserted, "
+                "whatever a branch condition says. The condition is named here as evidence "
+                "for a human to re-express in the model's own SELECT, never applied as one",
+            )
+        )
+    return caveats
+
+
 def _merge_body(node: exp.Merge, dialect: str | None) -> str:
     """The MERGE's USING source, rendered as a standalone SELECT.
 
@@ -331,15 +537,29 @@ def _merge_body(node: exp.Merge, dialect: str | None) -> str:
 def merge_pass(state: PassState) -> PassState:
     """Convert a pending MERGE into an incremental model keyed on its ON clause.
 
-    A MERGE's matched/not-matched branches are exactly what dbt's `merge`
-    incremental strategy performs against `unique_key` — so the ON clause's
-    equality columns become the draft's `unique_key`, and the USING source
-    becomes the model body (see `_merge_body`). Whether that key actually
-    identifies a row uniquely isn't decidable from the SQL alone (a MERGE
-    still runs correctly even if `ON` picks out more than one existing row,
-    just non-deterministically), so this is a tier-2 Decision: the user is
-    asked to confirm the key, with "append every row" offered as the
-    alternative to keeping the match/update semantics at all.
+    The ON clause's equality columns become the draft's `unique_key` (see
+    `_merge_unique_key`) and the USING source becomes the model body (see
+    `_merge_body`). Whether that key actually identifies a row uniquely
+    isn't decidable from the SQL alone (a MERGE still runs correctly even if
+    `ON` picks out more than one existing row, just non-deterministically),
+    so this is a tier-2 Decision: the user is asked to confirm the key, with
+    "append every row" offered as the alternative to keeping the
+    match/update semantics at all.
+
+    What the MERGE's WHEN branches do is a separate question from what its
+    ON clause keys on, and `_merge_branches` answers it. dbt's merge
+    strategy performs its own two fixed actions — update a matched row with
+    every column the model selects, insert a row that matches nothing — so a
+    MERGE is only equivalent to it when it writes exactly those two
+    branches, unconditionally, over every column. Every other shape either
+    refuses or converts with the difference on the record:
+
+    - a branch dbt cannot perform at all (`THEN DELETE`, `THEN DO NOTHING`,
+      `WHEN NOT MATCHED BY SOURCE`) refuses the whole statement, since
+      converting would drop what that branch does with nothing written down;
+    - a missing branch, a SET or INSERT column list naming particular
+      columns, or a branch condition converts, each with its own caveat
+      Decision naming what dbt will do differently (see `_merge_caveats`).
 
     A MERGE whose ON clause yields no extractable key can't be mapped to
     `unique_key` at all — dbt's merge strategy requires one. Two shapes
@@ -347,8 +567,12 @@ def merge_pass(state: PassState) -> PassState:
     1`, or every equality qualified to neither side of the target), and a
     disjunctive (OR-joined) ON clause, which has no `unique_key`
     representation regardless of what its equalities look like — see
-    `_merge_unique_key`. Either way the MERGE is left pending, with a
-    tier-2 Decision recording the refusal so it's never silently dropped.
+    `_merge_unique_key`.
+
+    A refused MERGE is left pending with a tier-2 Decision recording the
+    refusal so it's never silently dropped. A statement that trips both
+    refusals gets both Decisions: one reason recorded is not a licence to
+    leave the other silent.
     """
     pending = list(state.pending)
     drafts = state.drafts
@@ -362,8 +586,34 @@ def merge_pass(state: PassState) -> PassState:
         table = node.this
         assert isinstance(table, exp.Table)  # sqlglot's MERGE grammar always parses `this` as one
         target = table.alias or table.name
+        branches = _merge_branches(node, state.dialect)
         keys, refusal_reason = _merge_unique_key(node, target)
+        refused = False
+        if branches.unsupported:
+            refused = True
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "merge.unsupported_branch",
+                    2,
+                    action=(
+                        f"deferred: MERGE INTO {table.name} has a WHEN branch dbt's merge "
+                        "incremental strategy cannot perform "
+                        f"({'; '.join(branches.unsupported)})"
+                    ),
+                    reason=(
+                        "dbt's merge incremental strategy performs exactly two actions: "
+                        "update a row matching unique_key with every column the model "
+                        "selects, and insert a row matching none. It has no delete branch, "
+                        "no NOT MATCHED BY SOURCE branch and no way to leave a matched row "
+                        "alone, so converting this MERGE would silently drop what that "
+                        "branch does"
+                    ),
+                )
+            )
         if refusal_reason is not None:
+            refused = True
             if refusal_reason == "disjunctive":
                 action = (
                     f"deferred: MERGE INTO {table.name} has no unique key extractable "
@@ -387,6 +637,7 @@ def merge_pass(state: PassState) -> PassState:
                     "column to use as one"
                 )
             decisions.append(_decision(stmt, index, "merge", 2, action=action, reason=reason))
+        if refused:
             continue
         body = _merge_body(node, state.dialect)
         draft = ModelDraft(
@@ -410,6 +661,18 @@ def merge_pass(state: PassState) -> PassState:
         if verdict == "superseded":
             continue
         key_list = ", ".join(keys)
+        performed = " and ".join(
+            phrase
+            for phrase, present in (
+                ("updates matched rows", branches.updates_matched),
+                ("inserts unmatched rows", branches.inserts_unmatched),
+            )
+            if present
+        )
+        # Every branch is an update, an insert, or unsupported (which refused
+        # above), and sqlglot's grammar requires at least one branch for a
+        # MERGE to parse at all — so at least one phrase always survives.
+        assert performed
         decisions.append(
             _decision(
                 stmt,
@@ -421,14 +684,19 @@ def merge_pass(state: PassState) -> PassState:
                     f"(incremental_strategy='merge', unique_key={list(keys)!r})"
                 ),
                 reason=(
-                    "MERGE's matched/not-matched branches are what dbt's merge "
-                    "incremental strategy performs against unique_key"
+                    "dbt's merge incremental strategy updates a row matching unique_key "
+                    "with every column the model selects, and inserts a row matching "
+                    f"none; this MERGE {performed}"
                 ),
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
                 chosen=f"merge on {key_list}",
                 alternatives=("append every row",),
             )
         )
+        for caveat_name, caveat_action, caveat_reason in _merge_caveats(branches, table.name):
+            decisions.append(
+                _decision(stmt, index, caveat_name, 2, action=caveat_action, reason=caveat_reason)
+            )
     return PassState(
         pending=tuple((i, s) for i, s in pending if i not in consumed),
         drafts=drafts,
