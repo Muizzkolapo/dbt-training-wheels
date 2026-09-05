@@ -147,49 +147,52 @@ REDEFINED_APPEND_SQL = (
 )
 
 
-def test_redefinition_without_the_flag_keeps_the_surviving_statements_own_decision(tmp_path):
-    """Baseline, no --unique-key: two INSERTs into the same bare target, the
-    later one wins (dbt keeps one file per model). This must already hold
-    with no flag involved at all -- it pins down which statement "the
-    surviving one" means for the flagged case right below.
+def test_two_inserts_into_one_target_leave_the_first_as_the_model(tmp_path):
+    """Baseline, no --unique-key. Both INSERTs run and both land rows, so
+    neither is a redefinition of the other: the first becomes the model and
+    the second is deferred rather than silently taking its place. This pins
+    down which statement "the model" means for the flagged case below.
+
+    It used to assert the opposite -- that the later INSERT won and the
+    earlier one's source vanished from the output with a "redefinition" note.
+    That reading dropped everything the first statement inserted.
     """
     assert _run(tmp_path, tmp_path / "sql", REDEFINED_APPEND_SQL) == 0
     body = _find(tmp_path, "revenue_events")
-    assert "stg_orders_v2" in body
-    assert "stg_orders_v1" not in body
+    assert "stg_orders_v1" in body
+    assert "stg_orders_v2" not in body
 
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "Chose: append every row" in _decision_block(report, 2)
+    assert "Chose: append every row" in _decision_block(report, 1)
+    deferrals = [line for line in report.splitlines() if "several statements" in line]
+    assert len(deferrals) == 1, report
+    assert "in.sql:2" in deferrals[0]
 
 
-def test_redefinition_upgrades_the_surviving_statement_not_the_discarded_one(tmp_path):
-    """Two INSERTs into the same bare target: append_pass records a full
-    "became an incremental model" Decision for BOTH statements (only a
-    "superseded" verdict skips that -- a "redefinition" does not), even
-    though only the later one survives into the rendered model. The
-    Decision that gets upgraded to merge must be the surviving statement's,
-    never the discarded one's -- otherwise the report credits a statement
-    that was overwritten while the Decision for the model that's actually
-    on disk still claims "append", flatly contradicting the rendered
-    config.
+def test_the_flag_upgrades_the_statement_that_became_the_model(tmp_path):
+    """--unique-key answers the question the surviving statement asked. The
+    deferred statement never became a model, so nothing about it may be
+    upgraded -- a Decision claiming a merge conversion for a statement that
+    produced no file would contradict the output twice over.
     """
     assert _run(tmp_path, tmp_path / "sql", REDEFINED_APPEND_SQL, "--unique-key", "order_id") == 0
 
     body = _find(tmp_path, "revenue_events")
-    assert "stg_orders_v2" in body  # confirms which statement actually survived
+    assert "stg_orders_v1" in body  # confirms which statement became the model
     assert "incremental_strategy='merge'" in body
+    assert "unique_key='order_id'" in body
 
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    surviving = _decision_block(report, 2)  # the v2 statement -- this IS the model
-    discarded = _decision_block(report, 1)  # the v1 statement -- overwritten, not a model
-
+    surviving = _decision_block(report, 1)
     assert "incremental_strategy='merge'" in surviving
     assert "Chose: merge on order_id" in surviving
 
-    # the discarded statement's Decision must stay exactly as append_pass
-    # left it -- it was never this model, so it must never claim the upgrade
-    assert "incremental_strategy='append'" in discarded
-    assert "Chose: append every row" in discarded
+    # The deferred statement's only Decision is its deferral: no conversion
+    # claim, no question, and no upgrade.
+    deferred = [line for line in report.splitlines() if "in.sql:2)" in line]
+    assert len(deferred) == 1, report
+    assert "several statements" in deferred[0]
+    assert "became an incremental model" not in deferred[0]
 
 
 NOT_SELECTED_SQL = (

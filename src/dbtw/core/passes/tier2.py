@@ -17,7 +17,7 @@ from sqlglot import exp
 
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.naming import compare_targets, qualified_name, same_identifier, target_key
-from dbtw.core.passes.collisions import rebuild_draft_for, replace_draft
+from dbtw.core.passes.collisions import replace_draft, written_earlier
 from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
 
 
@@ -127,6 +127,27 @@ def _collision_decision(
     )
 
 
+def _pending_writers(
+    pending: list[tuple[int, ClassifiedStatement]], dialect: str | None
+) -> list[tuple[int, tuple[str, str, str]]]:
+    """`(index, identity)` for every pending statement that would build a
+    model for a target, for `collisions.written_earlier`.
+
+    Only the kinds that produce a model are listed. A bare `TRUNCATE` is not
+    one — it pairs with an INSERT or is dropped — and `append_pass` checks
+    for a pending truncate separately, with the tri-state its own DELETE
+    check uses.
+    """
+    writers: list[tuple[int, tuple[str, str, str]]] = []
+    for index, stmt in pending:
+        if stmt.kind not in ("insert_select", "merge", "create_table_as"):
+            continue
+        table = _target_of(_parse(stmt, dialect))
+        if table is not None:
+            writers.append((index, target_key(table)))
+    return writers
+
+
 def truncate_insert_columns_pass(state: PassState) -> PassState:
     """Pair a pending TRUNCATE with a later column-list INSERT on the same
     target, mapping the INSERT's column list positionally onto its SELECT.
@@ -152,6 +173,7 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
+    writers = _pending_writers(pending, state.dialect)
     # Keyed by naming.target_key like tier 1's own pairing, not by the
     # target's raw spelling: tier 1 hands this pass a pair it already found
     # and told the report it was leaving here, so failing to re-find it
@@ -181,7 +203,7 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
             # the first INSERT of the pair, and this one adds to the result.
             # `append_pass` says so for the bare-INSERT spelling of the same
             # situation; a column list is not a reason to say nothing.
-            if pair is None and rebuild_draft_for(drafts, target_key(table), index) is not None:
+            if pair is None and written_earlier(drafts, writers, target_key(table), index):
                 decisions.append(
                     _decision(
                         stmt,
@@ -189,17 +211,18 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                         "truncate_insert_columns",
                         2,
                         action=(
-                            f"deferred: INSERT INTO {table.name} adds to a target another "
-                            "statement in this conversion rebuilds from scratch, so the "
-                            "two together are one multi-statement build (catalog 2.8, "
-                            "deferred to slice 6c)"
+                            f"deferred: INSERT INTO {table.name} is one of several statements in "
+                            f"this conversion that write {table.name}, so together they "
+                            "are one multi-statement build (catalog 2.8, deferred to "
+                            "slice 6c)"
                         ),
                         reason=(
-                            "the earlier statement defines this target's whole contents "
-                            "and became a table model; converting this INSERT as well "
-                            "would replace that model and discard the rebuild's own "
-                            "SELECT, and combining the two SELECTs would mean inventing "
-                            "a query the script never wrote"
+                            "an earlier statement already became the model for this "
+                            "target; both statements run and both leave rows behind, so "
+                            "converting this one as well would replace that model and "
+                            "discard what the other writes. A dbt model is one SELECT, "
+                            "and combining them would mean inventing a query the script "
+                            "never wrote"
                         ),
                     )
                 )
@@ -949,6 +972,7 @@ def merge_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
+    writers = _pending_writers(pending, state.dialect)
     for index, stmt in pending:
         if stmt.kind != "merge":
             continue
@@ -1099,8 +1123,7 @@ def merge_pass(state: PassState) -> PassState:
             decisions.append(_decision(stmt, index, "merge", 2, action=action, reason=reason))
         if refused:
             continue
-        rebuild = rebuild_draft_for(drafts, target_key(table), index)
-        if rebuild is not None:
+        if written_earlier(drafts, writers, target_key(table), index):
             decisions.append(
                 _decision(
                     stmt,
@@ -1108,17 +1131,16 @@ def merge_pass(state: PassState) -> PassState:
                     "merge.rebuilt_target",
                     2,
                     action=(
-                        f"deferred: MERGE INTO {table.name} follows another statement in this "
-                        f"conversion that rebuilds {table.name} from scratch, so the two "
-                        "together are one multi-statement build (catalog 2.8, deferred "
-                        "to slice 6c)"
+                        f"deferred: MERGE INTO {table.name} is one of several statements in "
+                        f"this conversion that write {table.name}, so together they are "
+                        "one multi-statement build (catalog 2.8, deferred to slice 6c)"
                     ),
                     reason=(
-                        "the earlier statement defines this target's whole contents and "
-                        "became a table model; converting the MERGE as well would replace "
-                        "that model with an incremental one and discard the rebuild's own "
-                        "SELECT, and expressing both at once would mean inventing a "
-                        "combined query the script never wrote"
+                        "an earlier statement already became the model for this target; "
+                        "both statements run and both leave rows behind, so converting "
+                        "the MERGE as well would replace that model and discard what the "
+                        "other writes. A dbt model is one SELECT, and expressing both at "
+                        "once would mean inventing a query the script never wrote"
                     ),
                 )
             )
@@ -1212,7 +1234,7 @@ def append_pass(state: PassState) -> PassState:
       defer.
     - a TRUNCATE that *did* pair is gone from `pending` entirely, having
       been consumed into a table draft. A second INSERT into that same
-      target then sees no pending TRUNCATE at all, so `rebuild_draft_for`
+      target then sees no pending TRUNCATE at all, so `written_earlier`
       looks for the draft instead.
 
     Either way, converting would turn a script that wipes and repopulates
@@ -1254,6 +1276,7 @@ def append_pass(state: PassState) -> PassState:
     drafts = state.drafts
     decisions = list(state.decisions)
     consumed: set[int] = set()
+    writers = _pending_writers(pending, state.dialect)
 
     deletes: list[tuple[str, exp.Table]] = []
     truncates: list[tuple[str, exp.Table]] = []
@@ -1354,8 +1377,7 @@ def append_pass(state: PassState) -> PassState:
             )
             continue
         select = node.expression
-        rebuild = rebuild_draft_for(drafts, target_key(table), index)
-        if rebuild is not None:
+        if written_earlier(drafts, writers, target_key(table), index):
             decisions.append(
                 _decision(
                     stmt,
@@ -1363,17 +1385,16 @@ def append_pass(state: PassState) -> PassState:
                     "append",
                     2,
                     action=(
-                        f"deferred: INSERT INTO {table.name} adds to a target another "
-                        "statement in this conversion rebuilds from scratch, so the two "
-                        "together are one multi-statement build (catalog 2.8, deferred "
-                        "to slice 6c)"
+                        f"deferred: INSERT INTO {table.name} is one of several statements in "
+                        f"this conversion that write {table.name}, so together they are "
+                        "one multi-statement build (catalog 2.8, deferred to slice 6c)"
                     ),
                     reason=(
-                        "the earlier statement defines this target's whole contents and "
-                        "became a table model; converting this INSERT as well would "
-                        "replace that model with an append incremental and discard the "
-                        "rebuild's own SELECT, and combining the two SELECTs would mean "
-                        "inventing a query the script never wrote"
+                        "an earlier statement already became the model for this target; "
+                        "both statements run and both leave rows behind, so converting "
+                        "this one as well would replace that model and discard what the "
+                        "other writes. A dbt model is one SELECT, and combining them "
+                        "would mean inventing a query the script never wrote"
                     ),
                 )
             )

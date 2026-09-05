@@ -235,11 +235,12 @@ def test_two_spellings_of_one_target_become_one_model(tmp_path):
     assert "**Models**: 1" in report
 
 
-def test_the_surviving_definition_of_a_two_spelling_target_is_recorded(tmp_path):
-    """Whichever definition wins, the report has to say the other one existed
-    and was dropped. Silence here is how the merge config disappeared."""
+def test_the_second_definition_of_a_two_spelling_target_is_recorded(tmp_path):
+    """Whichever statement becomes the model, the report has to say the other
+    one existed and was not converted. Silence here is how the merge config
+    disappeared. Both spellings appear, because both were written."""
     report = _report(tmp_path, CASE_DUP_SQL)
-    assert "redefinition" in report.lower() or "kept" in report.lower()
+    assert "several statements" in report
     assert "EVENTS" in report
     assert "Events" in report
 
@@ -367,20 +368,6 @@ def test_a_merge_into_a_target_this_script_rebuilds_is_deferred_too(tmp_path):
     assert "**Pending statements**: 0" not in report
 
 
-def test_two_bare_inserts_with_no_rebuild_still_redefine(tmp_path):
-    """The control. With nothing rebuilding the target, two INSERTs into it
-    are the redefinition the pipeline already treated them as -- this guard
-    must not swallow that case too."""
-    report = _report(
-        tmp_path,
-        "INSERT INTO rev SELECT id FROM raw.v1;\nINSERT INTO rev SELECT id FROM raw.v2;\n",
-    )
-    (body,) = [b for name, b in _models(tmp_path).items() if "rev" in name]
-    assert "incremental_strategy='append'" in body
-    assert "v2" in body
-    assert "redefinition" in report.lower()
-
-
 def test_a_second_column_list_insert_into_a_rebuild_says_why_it_was_left(tmp_path):
     """The bare-INSERT sibling of this explains itself; the column-list path
     declined the statement and said nothing, leaving it in "Still pending"
@@ -396,7 +383,7 @@ def test_a_second_column_list_insert_into_a_rebuild_says_why_it_was_left(tmp_pat
     ]
     assert "materialized='table'" in body
     assert "s1" in body
-    assert "rebuilds from scratch" in report
+    assert "several statements" in report
     assert "raw.s2" in report or "s2" in report
 
 
@@ -438,7 +425,7 @@ def test_the_cross_file_deferral_does_not_claim_the_two_share_a_script(tmp_path)
     """ "this script already rebuilds" is false of a rebuild in a different
     file. The Decision has to describe the relationship it actually found."""
     report = _report_dir(tmp_path, {"01_rebuild.sql": REBUILD_FILE, "02_append.sql": APPEND_FILE})
-    deferral = [line for line in report.splitlines() if "rebuilds from scratch" in line]
+    deferral = [line for line in report.splitlines() if "several statements" in line]
     assert len(deferral) == 1, report
     assert "this script" not in deferral[0]
     assert "this conversion" in deferral[0]
@@ -458,6 +445,72 @@ def test_a_cross_file_supersede_does_not_claim_the_two_share_a_file(tmp_path):
 def test_a_same_file_rebuild_deferral_still_reads_correctly(tmp_path):
     """The control: one file, and the wording still has to fit."""
     report = _report(tmp_path, REBUILD_FILE + APPEND_FILE)
-    deferral = [line for line in report.splitlines() if "rebuilds from scratch" in line]
+    deferral = [line for line in report.splitlines() if "several statements" in line]
     assert len(deferral) == 1, report
     assert "orders_summary" in deferral[0]
+
+
+# --- more than one statement writing one target, in any combination. The
+# rebuild guard covered only the case where the FIRST statement was a full
+# rebuild. A MERGE followed by an INSERT, an INSERT followed by a MERGE, and
+# two plain INSERTs all lose one statement's whole operation the same way:
+# `replace_draft`'s "later definition wins" is built for two competing
+# definitions of a table, and none of these are that. Only a statement that
+# defines the target's whole contents -- CREATE TABLE AS, or a TRUNCATE+INSERT
+# pair -- genuinely replaces what came before it.
+
+MERGE_STMT = (
+    "MERGE INTO orders AS t USING raw.orders AS s ON t.order_id = s.order_id "
+    "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
+)
+APPEND_STMT = "INSERT INTO orders SELECT order_id, status FROM raw.orders_backfill;\n"
+
+
+def test_an_insert_after_a_merge_does_not_discard_the_merge(tmp_path):
+    """The MERGE's ON-clause key, its match semantics and its whole source
+    vanished, leaving an append model reading only the backfill."""
+    report = _report(tmp_path, MERGE_STMT + APPEND_STMT)
+    (body,) = [b for name, b in _models(tmp_path).items() if "orders" in name]
+    assert "incremental_strategy='merge'" in body
+    assert "unique_key='order_id'" in body
+    assert "orders_backfill" not in body
+    assert "several statements" in report
+    assert "orders_backfill" in report
+
+
+def test_a_merge_after_an_insert_does_not_discard_the_insert(tmp_path):
+    """The mirror: reversed, the backfill was the half that disappeared."""
+    report = _report(tmp_path, APPEND_STMT + MERGE_STMT)
+    (body,) = [b for name, b in _models(tmp_path).items() if "orders" in name]
+    assert "incremental_strategy='append'" in body
+    assert "orders_backfill" in body
+    assert "several statements" in report
+
+
+def test_two_inserts_into_one_target_do_not_discard_the_first(tmp_path):
+    """Two INSERTs both run and both land rows; calling the second a
+    "redefinition" of the first is not what the SQL says, and the model built
+    from the second alone drops everything the first inserted."""
+    report = _report(
+        tmp_path,
+        "INSERT INTO rev SELECT id FROM raw.v1;\nINSERT INTO rev SELECT id FROM raw.v2;\n",
+    )
+    (body,) = [b for name, b in _models(tmp_path).items() if "rev" in name]
+    assert "v1" in body
+    assert "v2" not in body
+    assert "several statements" in report
+    assert "v2" in report
+
+
+def test_a_later_full_rebuild_still_replaces_what_came_before_it(tmp_path):
+    """The control, and the boundary: a CREATE TABLE AS does define the
+    target's whole contents, so it genuinely replaces the earlier statement
+    rather than adding to it."""
+    report = _report(
+        tmp_path,
+        "INSERT INTO rev SELECT id FROM raw.v1;\nCREATE TABLE rev AS SELECT id FROM raw.v2;\n",
+    )
+    (body,) = [b for name, b in _models(tmp_path).items() if "rev" in name]
+    assert "materialized='table'" in body
+    assert "v2" in body
+    assert "superseded" in report.lower()

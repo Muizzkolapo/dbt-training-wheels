@@ -28,61 +28,82 @@ by construction, so the assembler's downstream logic never sees it broken.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from dbtw.core.naming import compare_keys
 from dbtw.core.passes.types import ModelDraft
 
 
-def rebuild_draft_for(
-    drafts: tuple[ModelDraft, ...], identity: tuple[str, str, str], index: int
-) -> ModelDraft | None:
-    """The full-rebuild draft an *earlier* statement already built for
-    `identity`, if there is one.
+def written_earlier(
+    drafts: tuple[ModelDraft, ...],
+    pending_writers: Sequence[tuple[int, tuple[str, str, str]]],
+    identity: tuple[str, str, str],
+    index: int,
+) -> bool:
+    """Whether an *earlier* statement in this conversion already writes
+    `identity` — in which case a statement that does not define the target's
+    whole contents must not draft over it.
 
-    A draft with no `incremental_strategy` was built by a statement that
-    defines the target's whole contents — a `TRUNCATE`+`INSERT` pair, or a
-    `CREATE TABLE ... AS`. An `INSERT` or `MERGE` into that same target
-    *after* it is not a standalone model: the script builds one table across
-    several statements, and dbt has no model that adds to itself part-way
-    through being built. Drafting the later statement on its own would
-    replace the rebuild (`replace_draft` keeps the later definition),
-    inverting a `table` model into an `incremental` one and discarding the
-    rebuild's own SELECT with only a "redefinition" note to show for it.
-    Expressing both at once would mean inventing a combined query the script
-    never wrote, so `append_pass` and `merge_pass` defer instead — catalog
-    2.8.
+    `replace_draft`'s "later definition wins" is the right rule for two
+    competing *definitions* of a table — a second `CREATE TABLE ... AS`, or a
+    `TRUNCATE`+`INSERT` pair, really does discard whatever preceded it. It is
+    the wrong rule for every other pair of statements against one target. A
+    `MERGE` followed by an `INSERT`, an `INSERT` followed by a `MERGE`, two
+    plain `INSERT`s, an `INSERT` after a rebuild: in each of these both
+    statements run and both leave rows behind, so drafting the later one
+    alone silently discards the earlier one's whole operation — its key, its
+    semantics, its source — under a "redefinition" note that says none of it.
+
+    A dbt model is one SELECT, and combining several statements into one
+    would mean inventing a query the script never wrote, so the passes that
+    build non-rebuild drafts (`merge_pass`, `append_pass`, and
+    `truncate_insert_columns_pass` when its INSERT has no truncate left to
+    pair with) defer instead — catalog 2.8. The passes that build a full
+    rebuild do not consult this at all, which is what keeps a later
+    `CREATE TABLE ... AS` free to supersede.
+
+    Both an already-built draft and a still-pending statement count, because
+    pass order is not file order: `merge_pass` runs before `append_pass`, so
+    for `INSERT INTO t ...; MERGE INTO t ...` the MERGE is drafted while the
+    earlier INSERT is still pending and no draft for it exists yet. Checking
+    drafts alone would let the later statement take the model and leave the
+    earlier one superseded — the same loss, arrived at through the pipeline's
+    own ordering rather than the script's. `pending_writers` is the caller's
+    list of `(index, identity)` for every pending statement that would build
+    a model for a target.
+
+    File order is the whole point of the `index` comparison. A statement
+    *after* the one asking is the opposite situation, and `replace_draft`'s
+    existing "superseded" handling is right for it — which is what keeps a
+    later `CREATE TABLE ... AS` free to replace everything before it.
 
     Unlike the checks that *pair* two statements into one model
     (`truncate_insert_pass`, and `append_pass`'s DELETE and TRUNCATE
     lookups), this one is deliberately not scoped to a single source file.
     Those pair, and pairing is a claim about adjacency within one script.
-    This one only declines to replace, and replacing a rebuild destroys its
-    SELECT whether or not the two statements were written in the same file —
-    a dbt project has one model per name, so two files defining one target
-    collide however they were split up. What the caller must not do is
-    describe the relationship as one *within* a script; the Decisions say
-    "another statement in this conversion".
-
-    File order is the whole point of the `index` check. A rebuild *after* the
-    statement asking is the opposite situation: a TRUNCATE or CREATE wipes
-    whatever came before it, so the earlier statement really is superseded,
-    and `replace_draft`'s existing "superseded" handling is right for it.
+    This one only declines to replace, and replacing a draft destroys what
+    the earlier statement wrote whether or not the two share a file — a dbt
+    project has one model per name, so two files writing one target collide
+    however they were split up. What the caller must not do is describe the
+    relationship as one *within* a script; the Decisions say "another
+    statement in this conversion".
 
     Identity is compared with `naming.compare_keys`, and an `"ambiguous"`
     match defers exactly like a confirmed one: two spellings qualified to
     different degrees may or may not be the same table, and guessing wrong
-    reinstates the inversion this exists to prevent. Only a confirmed
+    reinstates the loss this exists to prevent. Only a confirmed
     `"different"` — `staging.events` beside `mart.events` — lets the
     statement through as the standalone model it is.
     """
-    return next(
-        (
-            d
-            for d in drafts
-            if d.incremental_strategy is None
-            and max(d.source_indices) < index
-            and compare_keys(d.identity, identity) in ("same", "ambiguous")
-        ),
-        None,
+    if any(
+        max(d.source_indices) < index
+        and compare_keys(d.identity, identity) in ("same", "ambiguous")
+        for d in drafts
+    ):
+        return True
+    return any(
+        other < index and compare_keys(other_identity, identity) in ("same", "ambiguous")
+        for other, other_identity in pending_writers
     )
 
 

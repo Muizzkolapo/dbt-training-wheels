@@ -223,7 +223,7 @@ def test_an_insert_after_a_tier1_rebuild_of_the_same_table_is_deferred():
     assert draft.materialization == "table"
     assert "raw_e" not in draft.body
     assert len(out.pending) == 1
-    deferrals = [d for d in out.decisions if "rebuilds from scratch" in d.action]
+    deferrals = [d for d in out.decisions if "several statements" in d.action]
     assert len(deferrals) == 1, [d.action for d in out.decisions]
     assert "analytics.events" in deferrals[0].action or "events" in deferrals[0].action
 
@@ -238,7 +238,7 @@ def test_a_bare_insert_into_a_differently_qualified_rebuild_is_not_deferred():
         _stmt("INSERT INTO mart.events SELECT a FROM raw_e", "insert_select"),
     )
     out = run_passes(stmts, dialect=None)
-    assert not any("rebuilds from scratch" in d.action for d in out.decisions)
+    assert not any("several statements" in d.action for d in out.decisions)
     (draft,) = out.drafts
     assert draft.incremental_strategy == "append"
 
