@@ -534,27 +534,163 @@ MERGE_TWO_UNMATCHED_BRANCHES = (
 )
 
 
+def _update_caveat(sql: str) -> str:
+    (caveat,) = [
+        c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "assigns" in c or "assign" in c
+    ]
+    return caveat
+
+
+def _insert_caveat(sql: str) -> str:
+    (caveat,) = [
+        c
+        for c in _caveats(merge_pass(_state((0, _stmt(sql)))))
+        if "inserts only" in c or "insert only" in c
+    ]
+    return caveat
+
+
 def test_the_update_caveat_counts_the_matched_branches_it_describes():
-    one = [
-        c
-        for c in _caveats(merge_pass(_state((0, _stmt(MERGE_BOTH_BRANCHES)))))
-        if "merge_update_columns" in c
-    ]
-    two = [
-        c
-        for c in _caveats(merge_pass(_state((0, _stmt(MERGE_TWO_MATCHED_BRANCHES)))))
-        if "merge_update_columns" in c
-    ]
-    assert "WHEN MATCHED branch assigns only" in one[0]
-    assert "WHEN MATCHED branches assign only" in two[0]
+    assert "a WHEN MATCHED branch of dim_c assigns only city, email" in _update_caveat(
+        MERGE_BOTH_BRANCHES
+    )
+    assert (
+        "2 WHEN MATCHED branches of dim_c assign only city, email between them"
+        in _update_caveat(MERGE_TWO_MATCHED_BRANCHES)
+    )
 
 
 def test_the_insert_caveat_counts_the_unmatched_branches_it_describes():
-    one = [c for c in _caveats(merge_pass(_state((0, _stmt(MERGE_RESTRICTED_INSERT)))))]
-    two = [
-        c
-        for c in _caveats(merge_pass(_state((0, _stmt(MERGE_TWO_UNMATCHED_BRANCHES)))))
-        if "id, city" in c
-    ]
-    assert "WHEN NOT MATCHED branch inserts only" in one[0]
-    assert "WHEN NOT MATCHED branches insert only" in two[0]
+    assert "a WHEN NOT MATCHED branch of dim_c inserts only id, city" in _insert_caveat(
+        MERGE_RESTRICTED_INSERT
+    )
+    assert (
+        "2 WHEN NOT MATCHED branches of dim_c insert only id, city between them"
+        in _insert_caveat(MERGE_TWO_UNMATCHED_BRANCHES)
+    )
+
+
+# --- which branches the count is counting. A MERGE can carry several branches
+# of the same kind, and only some of them need restrict anything. Counting the
+# ones that do not says two false things at once: that there are more
+# restricted branches than there are, and that the columns named are all the
+# statement ever assigns.
+
+MERGE_STAR_BESIDE_RESTRICTED_UPDATE = (
+    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+    "WHEN MATCHED AND s.hot THEN UPDATE SET t.* = s.* "
+    "WHEN MATCHED THEN UPDATE SET t.city = s.city "
+    "WHEN NOT MATCHED THEN INSERT *"
+)
+
+
+def test_a_matched_branch_that_assigns_every_column_is_not_counted_as_restricting():
+    """One of the two matched branches assigns `t.* = s.*` — every column,
+    which is exactly what dbt's merge does and so restricts nothing. Saying
+    "2 WHEN MATCHED branches assign only city" would be false twice over."""
+    caveat = _update_caveat(MERGE_STAR_BESIDE_RESTRICTED_UPDATE)
+    assert "a WHEN MATCHED branch of dim_c assigns only city" in caveat
+    assert "2 WHEN MATCHED" not in caveat
+
+
+MERGE_STAR_BESIDE_RESTRICTED_INSERT = (
+    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+    "WHEN NOT MATCHED AND s.hot THEN INSERT * "
+    "WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id)"
+)
+
+
+def test_an_unmatched_branch_that_inserts_every_column_is_not_counted_as_restricting():
+    """The insert side has the same rule and had the same defect."""
+    caveat = _insert_caveat(MERGE_STAR_BESIDE_RESTRICTED_INSERT)
+    assert "a WHEN NOT MATCHED branch of dim_c inserts only id" in caveat
+    assert "2 WHEN NOT MATCHED" not in caveat
+
+
+def test_two_restricted_branches_beside_an_unrestricted_one_count_only_the_two():
+    """The count is of restricted branches, not of matched branches, and it
+    still has to reach two when two of the three restrict."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED AND s.hot THEN UPDATE SET t.* = s.* "
+        "WHEN MATCHED AND s.warm THEN UPDATE SET t.city = s.city "
+        "WHEN MATCHED THEN UPDATE SET t.email = s.email "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    assert (
+        "2 WHEN MATCHED branches of dim_c assign only city, email between them"
+        in _update_caveat(sql)
+    )
+
+
+# --- a row value naming exactly one column. `SET (city) = (s.city)` is the
+# same restriction as `SET city = s.city`, but sqlglot parses its target as a
+# `Paren` rather than a one-member `Tuple` (probed on 30.18.0) -- so the Tuple
+# handling alone refused it, and said it was a path assignment while doing so.
+
+
+def test_a_single_column_row_value_update_names_that_column():
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET (city) = (s.city) "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts
+    assert "a WHEN MATCHED branch of dim_c assigns only city" in _update_caveat(sql)
+
+
+def test_a_single_column_row_value_keeps_its_qualification_and_quoting_rules():
+    """The Paren wraps an ordinary column, so the quoted/unquoted rule and the
+    `t.` qualification both behave as they do outside one."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        'WHEN MATCHED AND s.hot THEN UPDATE SET (t."City") = (s.a) '
+        "WHEN MATCHED THEN UPDATE SET t.city = s.b "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    caveat = _update_caveat(sql)
+    assert "City, city" in caveat
+
+
+# --- an INSERT that supplies no values. sqlglot parses `INSERT DEFAULT
+# VALUES` into a target column list holding the DEFAULT keyword (probed on
+# 30.18.0), so it was read as a restriction to a column named DEFAULT and the
+# report claimed the branch "inserts only DEFAULT" -- a column that does not
+# exist, on a model that was written anyway.
+
+
+def test_an_insert_of_column_defaults_is_refused_not_read_as_a_column_named_default():
+    """`INSERT DEFAULT VALUES` writes a row of the target's own column
+    defaults and takes nothing from the source. dbt's merge builds an inserted
+    row from the model's SELECT, so there is nothing for it to stand in for."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT DEFAULT VALUES"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert len(out.pending) == 1
+    assert out.drafts == ()
+    assert len(out.decisions) == 1, out.decisions
+    dec = out.decisions[0]
+    assert dec.action.startswith("deferred:")
+    assert "inserts only DEFAULT" not in dec.action
+    assert "no values" in dec.action.lower()
+
+
+def test_an_insert_naming_columns_with_no_values_at_all_is_refused_too():
+    """sqlglot accepts `INSERT (id, city)` with no VALUES clause, which is not
+    a statement any warehouse would run. It reaches the same place as DEFAULT
+    VALUES -- a column list with nothing to put in it -- and is refused rather
+    than reported as a restriction to id and city."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.* = s.* "
+        "WHEN NOT MATCHED THEN INSERT (id, city)"
+    )
+    out = merge_pass(_state((0, _stmt(sql))))
+    assert out.drafts == ()
+    assert len(out.decisions) == 1, out.decisions
+    assert out.decisions[0].action.startswith("deferred:")

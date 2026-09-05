@@ -321,8 +321,11 @@ class _MergeBranches:
 
     unsupported: tuple[str, ...]  # branches dbt's merge cannot perform, verbatim
     unreadable: tuple[str, ...]  # branches assigning something other than a column, verbatim
-    matched_updates: int  # WHEN MATCHED THEN UPDATE branches
-    unmatched_inserts: int  # WHEN NOT MATCHED THEN INSERT branches
+    valueless_inserts: int  # INSERT branches naming columns but supplying no values
+    updates_matched: bool  # any WHEN MATCHED THEN UPDATE branch at all
+    inserts_unmatched: bool  # any WHEN NOT MATCHED THEN INSERT branch at all
+    restricted_updates: int  # of those, how many named particular columns
+    restricted_inserts: int  # of those, how many named particular columns
     updated_columns: tuple[str, ...]  # named UPDATE SET targets; () means "all"
     inserted_columns: tuple[str, ...]  # named INSERT target columns; () means "all"
     conditions: tuple[str, ...]  # per-branch conditions dbt's merge has no place for
@@ -350,12 +353,17 @@ def _named_columns(node: exp.Expr) -> list[tuple[str, bool]] | None:
       row-value assignment `SET (city, email) = (s.city, s.email)`, which is
       the standard's spelling of `SET city = s.city, email = s.email` and
       restricts the update to exactly the same columns.
+    - `exp.Paren` — a row value naming exactly one column, `SET (city) =
+      (s.city)`, which sqlglot does not make a one-member Tuple of. Same
+      restriction, one bracket shallower.
     - anything else — `SET t.data['city'] = s.city` puts a `Bracket` here,
       assigning one path inside a column rather than the column. dbt's merge
       assigns whole columns only, so there is nothing to convert it into.
     """
     if isinstance(node, exp.Star):
         return []
+    if isinstance(node, exp.Paren):
+        return _named_columns(node.this)
     if isinstance(node, exp.Tuple):
         columns: list[tuple[str, bool]] = []
         for member in node.expressions:
@@ -370,6 +378,25 @@ def _named_columns(node: exp.Expr) -> list[tuple[str, bool]] | None:
     if isinstance(identifier, exp.Star):
         return []
     return [(node.name, bool(isinstance(identifier, exp.Identifier) and identifier.quoted))]
+
+
+def _insert_without_values(then: exp.Insert) -> bool:
+    """Whether an INSERT branch names target columns but supplies nothing to
+    put in them, which is not a restriction to those columns at all.
+
+    `INSERT DEFAULT VALUES` writes a row of the target's own column defaults
+    and reads nothing from the source. sqlglot parses it into a target column
+    list holding the DEFAULT keyword rather than a shape of its own (probed on
+    30.18.0), so it arrives looking exactly like `INSERT (DEFAULT)` — read as
+    a column list it would invent a column named DEFAULT that no target has.
+    sqlglot also accepts `INSERT (id, city)` with no VALUES clause, which no
+    warehouse would run; both are a column list with nothing to fill it.
+
+    `INSERT *`, `INSERT VALUES (...)` and Snowflake's `INSERT ROW` each leave
+    something other than a Tuple in `this` (probed), so none of them reach
+    here and none is refused for it.
+    """
+    return isinstance(then.this, exp.Tuple) and not then.args.get("expression")
 
 
 def _branch_columns(then: exp.Update | exp.Insert) -> list[tuple[str, bool]] | None:
@@ -429,6 +456,11 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     - a branch whose target is not a column at all (`SET t.data['city'] =
       s.city`), collected verbatim into `unreadable`. What it assigns cannot
       be stated in dbt's terms — see `_named_columns`.
+    - an INSERT that names columns but supplies no values (`INSERT DEFAULT
+      VALUES`), counted into `valueless_inserts`. It is counted rather than
+      quoted because sqlglot re-renders it as `INSERT (DEFAULT)`, and a
+      refusal that quotes SQL the user never wrote is its own small lie —
+      see `_insert_without_values`.
     - anything else, collected verbatim into `unsupported`. `THEN DELETE`
       and `THEN DO NOTHING` both parse to an `exp.Var` holding the source
       text as written (so lowercase SQL gives `Var(this='delete')` —
@@ -446,14 +478,20 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
 
     A target column named more than once (`SET t.city = s.a, t.CITY = s.b`,
     or once in each of two matched branches) is reported once, in the order
-    it was written — see `_add_unique`. `matched_updates` and
-    `unmatched_inserts` count the branches that contributed, so a caveat can
-    say whether it is describing one branch or several.
+    it was written — see `_add_unique`. `restricted_updates` and
+    `restricted_inserts` count the branches that named any column at all, so
+    a caveat can say how many branches it is describing. A branch assigning
+    every column (`SET t.* = s.*`) restricts nothing and is not counted: it
+    is what dbt's merge does anyway, and counting it would claim the columns
+    named are all the statement ever assigns.
     """
     unsupported: list[str] = []
     unreadable: list[str] = []
-    matched_updates = 0
-    unmatched_inserts = 0
+    valueless_inserts = 0
+    updates_matched = False
+    inserts_unmatched = False
+    restricted_updates = 0
+    restricted_inserts = 0
     updated: list[tuple[str, bool]] = []
     inserted: list[tuple[str, bool]] = []
     conditions: list[str] = []
@@ -461,6 +499,9 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
         then = when.args["then"]
         if when.args["source"] or not isinstance(then, (exp.Update, exp.Insert)):
             unsupported.append(when.sql(dialect=dialect))
+            continue
+        if isinstance(then, exp.Insert) and _insert_without_values(then):
+            valueless_inserts += 1
             continue
         named = _branch_columns(then)
         if named is None:
@@ -473,34 +514,44 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
         if where is not None:
             conditions.append(where.this.sql(dialect=dialect))
         if isinstance(then, exp.Insert):
-            unmatched_inserts += 1
+            inserts_unmatched = True
             collected = inserted
+            if named:
+                restricted_inserts += 1
         else:
-            matched_updates += 1
+            updates_matched = True
             collected = updated
+            if named:
+                restricted_updates += 1
         for column in named:
             _add_unique(collected, column)
     return _MergeBranches(
         unsupported=tuple(unsupported),
         unreadable=tuple(unreadable),
-        matched_updates=matched_updates,
-        unmatched_inserts=unmatched_inserts,
+        valueless_inserts=valueless_inserts,
+        updates_matched=updates_matched,
+        inserts_unmatched=inserts_unmatched,
+        restricted_updates=restricted_updates,
+        restricted_inserts=restricted_inserts,
         updated_columns=tuple(name for name, _ in updated),
         inserted_columns=tuple(name for name, _ in inserted),
         conditions=tuple(conditions),
     )
 
 
-def _plural(count: int, verb: str) -> tuple[str, str]:
-    """`("branch", "assigns")` or `("branches", "assign")`, so a caveat says
-    how many branches it is describing instead of always saying one. A MERGE
-    can carry several matched branches and several unmatched ones, and calling
-    two of them "the WHEN MATCHED branch" would attribute to one branch what
-    the two do between them.
+def _restriction_phrase(count: int, table_name: str, clause: str, verb: str, named: str) -> str:
+    """How many branches restrict themselves to which columns, worded so it
+    stays true when the MERGE has other branches of the same kind.
+
+    A MERGE can carry several matched branches and several unmatched ones, and
+    only some of them need name columns. "dim_c's WHEN MATCHED branch assigns
+    only city" is false twice over for a MERGE whose other matched branch
+    assigns `t.* = s.*`: it is not *the* branch, and city is not all the
+    statement assigns. The indefinite article and the count fix both.
     """
     if count == 1:
-        return "branch", f"{verb}s"
-    return "branches", verb
+        return f"a {clause} branch of {table_name} {verb}s only {named}"
+    return f"{count} {clause} branches of {table_name} {verb} only {named} between them"
 
 
 def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str, str, str]]:
@@ -519,7 +570,7 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
     user's option instead.
     """
     caveats: list[tuple[str, str, str]] = []
-    if not branches.unmatched_inserts:
+    if not branches.inserts_unmatched:
         caveats.append(
             (
                 "merge.no_insert_branch",
@@ -530,7 +581,7 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
                 "converted model inserts rows the script never did",
             )
         )
-    if not branches.matched_updates:
+    if not branches.updates_matched:
         caveats.append(
             (
                 "merge.no_update_branch",
@@ -543,12 +594,13 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
         )
     if branches.updated_columns:
         named = ", ".join(branches.updated_columns)
-        branch, assigns = _plural(branches.matched_updates, "assign")
+        phrase = _restriction_phrase(
+            branches.restricted_updates, table_name, "WHEN MATCHED", "assign", named
+        )
         caveats.append(
             (
                 "merge.update_columns",
-                f"caveat: {table_name}'s WHEN MATCHED {branch} {assigns} only {named}, but "
-                "the converted model updates every column it selects",
+                f"caveat: {phrase}, but the converted model updates every column it selects",
                 "dbt's merge incremental strategy updates a matched row with every column "
                 "the model selects, not a chosen subset, so the columns this MERGE leaves "
                 "alone are overwritten on every run. The adapter-specific "
@@ -559,12 +611,13 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
         )
     if branches.inserted_columns:
         named = ", ".join(branches.inserted_columns)
-        branch, inserts = _plural(branches.unmatched_inserts, "insert")
+        phrase = _restriction_phrase(
+            branches.restricted_inserts, table_name, "WHEN NOT MATCHED", "insert", named
+        )
         caveats.append(
             (
                 "merge.insert_columns",
-                f"caveat: {table_name}'s WHEN NOT MATCHED {branch} {inserts} only {named}, "
-                "but the converted model inserts every column it selects",
+                f"caveat: {phrase}, but the converted model inserts every column it selects",
                 "dbt's merge incremental strategy builds an inserted row from every column "
                 "the model selects, not a chosen subset, so a column this MERGE's INSERT "
                 "left to the target's default is written from the model's own SELECT instead",
@@ -628,6 +681,9 @@ def merge_pass(state: PassState) -> PassState:
       t.data['city'] = s.city`) refuses for its own reason, recorded
       separately: dbt assigns whole columns, so the branch is not
       convertible and naming the column it touches would overstate it;
+    - an `INSERT DEFAULT VALUES` branch refuses for a third reason of its
+      own: it takes nothing from the source, so dbt's insert-from-SELECT has
+      nothing to stand in for it;
     - a missing branch, a SET or INSERT column list naming particular
       columns, or a branch condition converts, each with its own caveat
       Decision naming what dbt will do differently (see `_merge_caveats`).
@@ -705,6 +761,29 @@ def merge_pass(state: PassState) -> PassState:
                     ),
                 )
             )
+        if branches.valueless_inserts:
+            refused = True
+            decisions.append(
+                _decision(
+                    stmt,
+                    index,
+                    "merge.valueless_insert_branch",
+                    2,
+                    action=(
+                        f"deferred: MERGE INTO {table.name} has a WHEN NOT MATCHED branch "
+                        "whose INSERT names target columns but supplies no values for them "
+                        "(INSERT DEFAULT VALUES writes a row of the target's own column "
+                        "defaults)"
+                    ),
+                    reason=(
+                        "dbt's merge incremental strategy builds an inserted row from every "
+                        "column the model selects. This branch takes nothing from the source "
+                        "at all, so there is no source row for the model's SELECT to stand "
+                        "in for, and a converted model would write selected rows where the "
+                        "script wrote defaults"
+                    ),
+                )
+            )
         if refusal_reason is not None:
             refused = True
             if refusal_reason == "disjunctive":
@@ -757,8 +836,8 @@ def merge_pass(state: PassState) -> PassState:
         performed = " and ".join(
             phrase
             for phrase, present in (
-                ("updates matched rows", branches.matched_updates),
-                ("inserts unmatched rows", branches.unmatched_inserts),
+                ("updates matched rows", branches.updates_matched),
+                ("inserts unmatched rows", branches.inserts_unmatched),
             )
             if present
         )
