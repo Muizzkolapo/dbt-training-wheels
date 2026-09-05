@@ -330,7 +330,11 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
                 )
             )
 
-        if layer is not None and draft.materialization == layer.materialization:
+        if (
+            layer is not None
+            and draft.materialization == layer.materialization
+            and draft.incremental_strategy is None
+        ):
             materialization = None
             local_decisions.append(
                 _decision(
@@ -355,6 +359,8 @@ def assemble(state: PassState, ctx: ProjectContext, *, inline_vars: bool = False
             depends_on=(),  # filled in below, once every draft has a final name
             leading_comments=draft.leading_comments,
             source_indices=draft.source_indices,
+            incremental_strategy=draft.incremental_strategy,
+            unique_key=draft.unique_key,
         )
         placement_decisions[draft_index] = local_decisions
 
