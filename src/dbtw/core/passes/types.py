@@ -73,9 +73,11 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
             # option that needs columns supplied with the answer.
             columns_prompt="the column(s) that identify a row uniquely",
             plain=(
-                "Each run updates the rows it has seen before and adds the ones it "
-                "has not, so nothing is duplicated. It needs a column whose value "
-                "is different on every row -- an id."
+                "Each run compares that column's value against what is already in "
+                "the table -- a match updates the existing row, and everything "
+                "else gets added, so nothing is duplicated. It needs a column "
+                "whose value is different on every row -- an id -- and without "
+                "one, this step fails every time you try to run it."
             ),
         )
     named = ", ".join(keys)
