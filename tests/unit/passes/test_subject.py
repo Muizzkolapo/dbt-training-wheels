@@ -67,3 +67,28 @@ def test_every_question_in_a_real_conversion_carries_a_subject():
     for d in questions:
         assert d.subject is not None, f"{d.key} asks a question with no subject"
         assert d.subject.table, f"{d.key} has a subject with no table"
+
+
+def test_a_variable_question_in_a_real_conversion_carries_a_subject_too():
+    """The invariant above never asks a variable question -- its fixture
+    (incremental_etl.sql) has no DECLARE, so it only ever exercises the merge
+    and append sites. This exercises the third: assembler.py's variable
+    question. Reuses test_answers.py's VARIABLE_AND_APPEND script (the one
+    fixture in the suite that raises both a variable and an incremental
+    question) rather than inventing a new one."""
+    from tests.unit.assemble.helpers import convert
+
+    variable_and_append = (
+        "DECLARE @cutoff DATE = '2024-01-01';\n"
+        "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders "
+        "WHERE order_date >= @cutoff;\n"
+    )
+    change = convert(variable_and_append, dialect="tsql")
+    questions = [d for d in change.decisions if d.question]
+    assert questions, "fixture stopped producing questions; pick another"
+    for d in questions:
+        assert d.subject is not None, f"{d.key} asks a question with no subject"
+        assert d.subject.table, f"{d.key} has a subject with no table"
+    (variable_q,) = [d for d in questions if d.question.startswith("Is ")]
+    assert variable_q.subject is not None
+    assert variable_q.subject.table == "cutoff"
