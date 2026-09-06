@@ -1443,7 +1443,36 @@ def assemble(
         answerable = {d.key: {o.label: o for o in d.options} for d in answerable_decisions}
         for key, answer in answers.items():
             if key not in answerable:
-                raise UnknownAnswerError(f"no question with key {key} in this conversion")
+                # Three different mistakes land here and the key alone cannot
+                # tell them apart: a key nobody ever issued, a key issued for
+                # the same script at a different path (the failure this
+                # class's docstring warns about), and a question this
+                # conversion genuinely carries -- `question` and `options`
+                # populated -- whose statement never became a model this run.
+                # Only the third can be identified from here, so it is named
+                # as itself; the other two are left to the list of keys this
+                # run does accept, which is what makes them diagnosable.
+                answerable_now = ", ".join(sorted(answerable))
+                carried = next(
+                    (d for d in all_decisions if d.key == key and d.question and d.options),
+                    None,
+                )
+                accepts = (
+                    f"answerable keys: {answerable_now}"
+                    if answerable_now
+                    else "this run has no answerable questions"
+                )
+                if carried is not None:
+                    raise UnknownAnswerError(
+                        f"{key} is a question this conversion carries ({carried.action}), but "
+                        "the statement it describes produced no model in this change, so "
+                        f"there is nothing for an answer to it to change; {accepts}"
+                    )
+                raise UnknownAnswerError(
+                    f"no question with key {key} in this conversion; {accepts}. A key is "
+                    "only valid for a run that read the same SQL at the same path -- see "
+                    "UnknownAnswerError"
+                )
             chosen_option = answerable[key].get(answer.label)
             if chosen_option is None:
                 offered = ", ".join(sorted(answerable[key]))

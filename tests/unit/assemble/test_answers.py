@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from tests.unit.assemble.helpers import context_for, convert, state_with_variable
 
@@ -153,14 +155,41 @@ def test_an_answer_to_a_decision_this_run_cannot_apply_is_refused():
     )
     state = PassState(pending=(), drafts=(), decisions=(inherited,), dialect=None)
     ctx = context_for()
-    # Matched on the message, and load-bearing: this input -- a keyless merge
-    # with no columns -- has a second, independent refusal waiting behind the
-    # unknown-key one. A bare `raises` would go green on the very regression
-    # this test names, an implementation that registered the Decision as
-    # answerable off its question/options shape rather than off a model
-    # actually carrying it.
-    with pytest.raises(UnknownAnswerError, match="no question with key"):
+    # Matched on the message, and load-bearing twice over. This input -- a
+    # keyless merge with no columns -- has a second, independent refusal
+    # waiting behind the unknown-key one, so a bare `raises` would go green
+    # on the very regression this test names: an implementation that
+    # registered the Decision as answerable off its question/options shape
+    # rather than off a model actually carrying it. And the refusal has to
+    # say which of the three unanswerable cases this is -- a question the
+    # conversion really does carry, not a key nobody ever issued -- since a
+    # caller cannot tell them apart from the key alone.
+    with pytest.raises(UnknownAnswerError, match="produced no model in this change"):
         assemble(state, ctx, answers={inherited.key: Answer(merge_option().label)})
+    with pytest.raises(UnknownAnswerError, match=re.escape(inherited.action)):
+        assemble(state, ctx, answers={inherited.key: Answer(merge_option().label)})
+
+
+def test_a_refused_answer_names_the_keys_this_run_will_accept():
+    """The refusal is the only place a caller learns its answer went nowhere,
+    and "no question with key X" alone cannot tell an invented key from a
+    real key issued when the script sat at a different path -- the failure
+    this class's docstring warns about at length. Naming the keys this run
+    does accept is what makes the difference diagnosable from the message.
+    """
+    state, ctx = state_with_variable(), context_for()
+    answerable = _variable_decision(assemble(state, ctx)).key
+
+    with pytest.raises(UnknownAnswerError) as refused:
+        assemble(state, ctx, answers={"assemble.variable.nope": Answer("keep as a dbt var")})
+    message = str(refused.value)
+    assert "no question with key assemble.variable.nope" in message
+    assert answerable in message
+
+    # A run with nothing to answer says so, rather than naming an empty list.
+    empty = PassState(pending=(), drafts=(), decisions=(), dialect=None)
+    with pytest.raises(UnknownAnswerError, match="this run has no answerable questions"):
+        assemble(empty, ctx, answers={"assemble.variable.nope": Answer("keep as a dbt var")})
 
 
 def test_a_merge_answer_upgrades_only_the_model_it_names():
