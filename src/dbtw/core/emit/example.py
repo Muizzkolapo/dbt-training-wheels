@@ -38,6 +38,23 @@ _JINJA_TAG = re.compile(r"\{\{.*?\}\}", re.DOTALL)
 _STAND_IN = "_dbtw_jinja_stand_in"
 
 
+# The claim every Example is rendered under, owned here rather than by a
+# renderer. It is not a caption a consumer invents for its own layout (the
+# labels its two row blocks get are exactly that, and belong to the
+# renderer); it is an assertion about where these values came from, and the
+# only thing that makes it true lives in this module: `worked_example` is
+# handed a Decision and an AssembledModel, and neither of them contains a
+# row. A consumer cannot vouch for that, so a consumer must not be the one
+# saying it -- a second one would reinvent the wording with no guarantee it
+# says the same thing, which is how `Option.effect` came to be produced at
+# five sites and read at none, told from the other end.
+#
+# Worded without reference to where it sits on a page, so a renderer that
+# puts it beside or after its rows rather than above them can still use it
+# verbatim.
+PLACEHOLDER_NOTICE = "The values are placeholders -- this conversion has not read your data."
+
+
 @dataclass(frozen=True, slots=True)
 class Example:
     """One row, rendered two ways.

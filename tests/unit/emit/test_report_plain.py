@@ -13,6 +13,7 @@ import pytest
 from dbtw.core.assemble import assemble
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import read_project
+from dbtw.core.emit.example import PLACEHOLDER_NOTICE
 from dbtw.core.emit.report import render_report
 from dbtw.core.ingest import classify_statements, ingest
 from dbtw.core.passes import run_passes
@@ -55,6 +56,7 @@ def _has_no_example(block: str) -> None:
     """No heading without a table, no table without rows, no blank line left
     where a block used to be. A refusal must be invisible, not a gap."""
     assert "Worked example" not in block, block
+    assert PLACEHOLDER_NOTICE not in block, block
     assert "matched on" not in block, block
     assert not [line for line in block.splitlines() if line.strip().startswith("|")], block
     assert "" not in block.splitlines(), block
@@ -117,6 +119,32 @@ def test_the_example_is_rendered_only_for_the_decision_it_belongs_to():
     paired with a model it did not come from."""
     out, _ = _report()
     assert out.count("Worked example") == 1
+
+
+def test_the_example_carries_the_notice_the_producing_module_owns():
+    """The sentence saying these values were not read from anywhere is a
+    claim, not a caption -- it is true because of what `worked_example` is
+    given, so `emit.example` owns the wording and the report imports it.
+    A renderer authoring its own leaves a second consumer (the web layer
+    this plan exists to unblock) with nothing to import and no guarantee it
+    would say the same thing.
+
+    Both directions are asserted: every rendered example carries the notice
+    (a heading without it fails the count), and a Decision that could not be
+    illustrated carries neither -- `_has_no_example` checks the second for
+    all six refusal shapes.
+    """
+    out, _ = _report()
+    assert PLACEHOLDER_NOTICE in out
+    assert out.count(PLACEHOLDER_NOTICE) == out.count("Worked example")
+
+
+def test_the_notice_says_nothing_about_where_it_sits_on_the_page():
+    """It is engine-owned data, so it has to survive a consumer that puts it
+    beside or after its rows. A word like "below" would make it wrong for
+    every renderer but this one."""
+    for positional in ("below", "above", "following", "shown here"):
+        assert positional not in PLACEHOLDER_NOTICE.lower(), positional
 
 
 def test_the_example_labels_a_supposed_row_and_what_the_model_leaves():

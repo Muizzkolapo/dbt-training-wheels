@@ -7,7 +7,7 @@ from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble import ProjectChange
 from dbtw.core.context import ProjectContext
-from dbtw.core.emit.example import Example, worked_example
+from dbtw.core.emit.example import PLACEHOLDER_NOTICE, Example, worked_example
 from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision, statement_index
 
@@ -213,11 +213,11 @@ def _render_example(example: Example) -> list[str]:
     blank on the rest, which is the table convention for "same as above" --
     repeating "after this model runs" three times says nothing more.
     """
-    intro = (
-        "  - Worked example. The values below are placeholders -- this "
-        "conversion has not read your data."
-    )
-    lines = [intro]
+    # "Worked example." is this renderer's caption, the same kind of thing as
+    # the two row-block labels. The sentence after it is not: it is a claim
+    # about where these values came from, and `example.py` owns it because
+    # `worked_example` is the only thing that can vouch for it.
+    lines = [f"  - Worked example. {PLACEHOLDER_NOTICE}"]
     if example.key:
         lines.append(f"    Rows are matched on {example.key}.")
     lines.extend(
