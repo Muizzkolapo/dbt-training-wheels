@@ -82,14 +82,17 @@ def test_an_answer_naming_an_option_that_was_not_offered_is_refused():
     would leave the screen showing an answer the run did not take."""
     state, ctx = state_with_variable(), context_for()
     key = _variable_decision(assemble(state, ctx)).key
-    with pytest.raises(UnknownAnswerError):
+    # Matched on the message so a regression that stopped registering variable
+    # questions as answerable at all cannot keep this green: it would still
+    # raise here, just from the unknown-key check instead.
+    with pytest.raises(UnknownAnswerError, match="does not offer"):
         assemble(state, ctx, answers={key: Answer("delete the variable")})
 
 
 def test_an_answer_for_an_unknown_decision_is_refused():
     """A stale key -- from an edited script, say -- must not pass silently."""
     state, ctx = state_with_variable(), context_for()
-    with pytest.raises(UnknownAnswerError):
+    with pytest.raises(UnknownAnswerError, match="no question with key"):
         assemble(state, ctx, answers={"assemble.variable.nope": Answer("keep as a dbt var")})
 
 
@@ -114,7 +117,13 @@ def test_an_answer_to_a_decision_this_run_cannot_apply_is_refused():
     )
     state = PassState(pending=(), drafts=(), decisions=(inherited,), dialect=None)
     ctx = context_for()
-    with pytest.raises(UnknownAnswerError):
+    # Matched on the message, and load-bearing: this input -- a keyless merge
+    # with no columns -- has a second, independent refusal waiting behind the
+    # unknown-key one. A bare `raises` would go green on the very regression
+    # this test names, an implementation that registered the Decision as
+    # answerable off its question/options shape rather than off a model
+    # actually carrying it.
+    with pytest.raises(UnknownAnswerError, match="no question with key"):
         assemble(state, ctx, answers={inherited.key: Answer(merge_option().label)})
 
 
@@ -237,7 +246,60 @@ def test_an_answer_wins_over_the_blanket_flag_and_says_the_flag_was_dropped():
         d for d in both.decisions if d.key == "assemble.unique_key_overridden.page_views"
     ]
     assert "--unique-key order_id" in overridden.action
-    assert "append every row" in overridden.action
+    assert "'append every row' instead" in overridden.action
+    # The answer was applied, so the Decision must not hedge as though it
+    # had been declined.
+    assert "not applied either" not in overridden.action
+
+
+def test_a_displaced_flag_and_a_declined_answer_are_both_reported_honestly():
+    """An answer can displace the blanket flag and then be declined itself --
+    the body check refuses a key the model does not select whoever asked for
+    it. The dropped flag is still owed a Decision, but that Decision cannot
+    read "was answered 'merge on customer_id' instead" beside a model that
+    came out a keyless append. A Decision that contradicts the file written
+    next to it is the one thing this project does not ship."""
+    key = _question_for(convert(ONE_APPEND), "revenue_events").key
+
+    both = convert(
+        ONE_APPEND,
+        unique_key=("order_id",),
+        answers={key: Answer("merge on a unique key", ("customer_id",))},
+    )
+    (model,) = both.models
+    assert (model.incremental_strategy, model.unique_key) == ("append", ())
+    (overridden,) = [
+        d for d in both.decisions if d.key == "assemble.unique_key_overridden.revenue_events"
+    ]
+    assert "--unique-key order_id" in overridden.action
+    assert "not applied either" in overridden.action
+    assert (
+        "left as this conversion built it (incremental_strategy='append', no unique_key)"
+        in overridden.action
+    )
+    # The label the caller actually sent, carrying the key it named -- not a
+    # label re-derived from the resolved key tuple, which would report
+    # "merge on customer_id", an option nobody was offered and nobody chose.
+    assert "'merge on a unique key' with customer_id" in overridden.action
+    # And the decline itself is still recorded separately, so the two
+    # Decisions together account for both inputs.
+    assert "assemble.unique_key_not_selected.revenue_events" in {d.key for d in both.decisions}
+
+
+def test_the_flag_override_is_reported_on_the_merge_branch_too():
+    """Both incremental branches route through one emission point, so a
+    downgrade that also drops a flag reports the drop the same way -- and the
+    flag's usual "kept its script-derived key" Decision gives way to it,
+    rather than the two contradicting each other."""
+    key = _question_for(convert(ONE_MERGE), "dim_c").key
+
+    both = convert(ONE_MERGE, unique_key=("order_id",), answers={key: Answer("append every row")})
+    (model,) = both.models
+    assert (model.incremental_strategy, model.unique_key) == ("append", ())
+    (overridden,) = [d for d in both.decisions if d.key == "assemble.unique_key_overridden.dim_c"]
+    assert "--unique-key order_id" in overridden.action
+    assert "'append every row' instead" in overridden.action
+    assert "assemble.unique_key_ignored.dim_c" not in {d.key for d in both.decisions}
 
 
 def test_an_answer_and_the_equivalent_flag_produce_the_same_models():
