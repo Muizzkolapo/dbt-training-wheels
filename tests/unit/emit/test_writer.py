@@ -39,18 +39,22 @@ def test_writes_model_report_and_creates_directories(tmp_path):
     assert model_file.is_file()
     assert "materialized='table'" in model_file.read_text()
     assert (tmp_path / "CONVERSION_REPORT.md").is_file()
-    assert model_file in written and (tmp_path / "CONVERSION_REPORT.md") in written
+    assert model_file in written.paths and (tmp_path / "CONVERSION_REPORT.md") in written.paths
 
 
 def test_sources_go_beside_the_projects_existing_source_file(tmp_path):
-    """with_sources declares sources at models/staging/sources.yml, so ours land there."""
+    """with_sources declares sources at models/staging/sources.yml, so ours land
+    in that directory — under our own filename, since the project's own file
+    already holds that name."""
     ctx = read_project(FIXTURES / "with_sources")
+    # A table the project does not already declare: assemble._source_entries
+    # never proposes one it does, and _sources_placement asserts that.
     emit(
-        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="orders"),)),
+        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="events"),)),
         ctx,
         tmp_path,
     )
-    sources_file = tmp_path / "models" / "staging" / "sources.yml"
+    sources_file = tmp_path / "models" / "staging" / "sources_dbtw.yml"
     assert sources_file.is_file()
     assert "name: raw" in sources_file.read_text()
 
@@ -74,7 +78,7 @@ def test_no_sources_file_when_there_are_no_sources(tmp_path):
 def test_nothing_is_written_outside_out_dir(tmp_path):
     ctx = read_project(FIXTURES / "jaffle_shop")
     written = emit(_change(), ctx, tmp_path)
-    assert all(tmp_path in p.parents for p in written)
+    assert all(tmp_path in p.parents for p in written.paths)
 
 
 def test_emit_refuses_to_write_outside_out_dir(tmp_path):
@@ -127,7 +131,8 @@ def test_emit_creates_out_dir_when_it_does_not_exist(tmp_path):
     written = emit(empty_change, ctx, out_dir)
     report_file = out_dir / "CONVERSION_REPORT.md"
     assert report_file.is_file()
-    assert written == (report_file,)
+    assert written.paths == (report_file,)
+    assert written.decisions == ()
 
 
 def test_sources_at_project_root_land_at_the_root_not_in_staging(tmp_path):
@@ -140,12 +145,14 @@ def test_sources_at_project_root_land_at_the_root_not_in_staging(tmp_path):
     """
     ctx = read_project(FIXTURES / "sources_at_root")
     emit(
-        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="orders"),)),
+        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
         ctx,
         tmp_path,
     )
-    assert (tmp_path / "models" / "sources.yml").is_file()
-    assert not (tmp_path / "models" / "staging" / "sources.yml").exists()
+    assert (tmp_path / "models" / "sources_dbtw.yml").is_file()
+    staging = tmp_path / "models" / "staging"
+    assert not (staging / "sources.yml").exists()
+    assert not (staging / "sources_dbtw.yml").exists()
 
 
 def _context_declaring(*declarations: tuple[str, str, str]) -> ProjectContext:
@@ -169,11 +176,12 @@ def _context_declaring(*declarations: tuple[str, str, str]) -> ProjectContext:
     )
 
 
-def test_report_names_the_source_file_our_sources_yml_would_replace(tmp_path):
+def test_our_sources_file_never_lands_on_the_projects_own(tmp_path):
     """sources_at_root declares raw.orders at models/sources.yml, which is
-    exactly where emit puts ours. Copying the output over the project
-    replaces that file and raw.orders stops being declared, so the report
-    must name both the file and the declaration that goes with it.
+    where emit would otherwise put ours. Nothing this tool writes may destroy
+    a declaration, so ours goes under its own name and out_dir carries no file
+    at the project's path at all — copy the whole thing across and raw.orders
+    survives.
     """
     ctx = read_project(FIXTURES / "sources_at_root")
     emit(
@@ -181,15 +189,19 @@ def test_report_names_the_source_file_our_sources_yml_would_replace(tmp_path):
         ctx,
         tmp_path,
     )
+    assert (tmp_path / "models" / "sources_dbtw.yml").is_file()
+    assert not (tmp_path / "models" / "sources.yml").exists()
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "models/sources.yml" in report
+    assert "models/sources_dbtw.yml" in report
     assert "raw.orders" in report
 
 
-def test_the_collision_decision_says_what_to_do_about_it(tmp_path):
-    """Naming the clash is not enough on its own — a reader has to be able to
-    act on it without reading dbtw's source. The Decision has to say what
-    replacing the file costs, and that keeping both declares one source twice.
+def test_the_placement_decision_says_both_files_stand(tmp_path):
+    """dbt's duplicate check is per (source, table), not per source name: two
+    files declaring source raw with different tables parse clean. The Decision
+    has to say that, and offer merging as a preference — claiming dbt rejects
+    the pair would send a reader hand-editing YAML to fix nothing.
     """
     ctx = read_project(FIXTURES / "sources_at_root")
     emit(
@@ -198,8 +210,10 @@ def test_the_collision_decision_says_what_to_do_about_it(tmp_path):
         tmp_path,
     )
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "replaces that file" in report
-    assert "declared twice" in report
+    assert "dbt reads both" in report
+    assert "if you would rather keep one file" in report
+    assert "declared twice" not in report
+    assert "dbt rejects" not in report
 
 
 def test_no_collision_is_claimed_when_the_project_declares_no_sources(tmp_path):
@@ -213,8 +227,8 @@ def test_no_collision_is_claimed_when_the_project_declares_no_sources(tmp_path):
         tmp_path,
     )
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "already declares sources" not in report
-    assert "declared twice" not in report
+    assert "sources_dbtw" not in report
+    assert (tmp_path / "models" / "staging" / "sources.yml").is_file()
 
 
 def test_no_collision_is_claimed_when_no_sources_file_is_written(tmp_path):
@@ -224,16 +238,15 @@ def test_no_collision_is_claimed_when_no_sources_file_is_written(tmp_path):
     ctx = read_project(FIXTURES / "sources_at_root")
     emit(_change(), ctx, tmp_path)
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "already declares sources" not in report
-    assert "declared twice" not in report
+    assert "sources_dbtw" not in report
 
 
-def test_report_names_a_source_the_project_declares_in_another_file(tmp_path):
-    """The sibling of the overwrite: the project declares source raw in
-    models/schema.yml, so our sources.yml lands beside it rather than on it.
-    Nothing is overwritten and nothing is lost — but source raw is now
-    declared in two files of one project, which dbt rejects, and that is just
-    as silent as the overwrite was.
+def test_a_source_name_declared_in_another_file_is_not_a_collision(tmp_path):
+    """The project declares source raw in models/schema.yml, so our file lands
+    beside it under the ordinary name. Two files declaring source raw with
+    different tables is what dbt accepts, and `_source_entries` has already
+    skipped every table the project declares — so there is nothing here to
+    report, and a Decision would be a warning about a non-problem.
     """
     ctx = _context_declaring(("raw", "orders", "models/schema.yml"))
     emit(
@@ -243,28 +256,14 @@ def test_report_names_a_source_the_project_declares_in_another_file(tmp_path):
     )
     assert (tmp_path / "models" / "sources.yml").is_file()
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "models/schema.yml" in report
-    assert "declared twice" in report
+    assert "models/schema.yml" not in report
+    assert "sources_dbtw" not in report
 
 
-def test_a_source_the_project_declares_nowhere_is_not_called_a_duplicate(tmp_path):
-    """Only a shared source *name* duplicates. The project declares source
-    `legacy`; we declare `raw`, in a different file — two names, no clash.
-    """
-    ctx = _context_declaring(("legacy", "orders", "models/schema.yml"))
-    emit(
-        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
-        ctx,
-        tmp_path,
-    )
-    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "declared twice" not in report
-
-
-def test_every_declaration_the_replacement_would_remove_is_named(tmp_path):
+def test_every_declaration_the_projects_file_holds_is_named(tmp_path):
     """with_sources declares raw.customers and raw.orders in the file ours
-    lands on, and this change declares neither. Naming one of them and
-    stopping would leave a reader thinking the other survived.
+    would have landed on. A reader deciding whether to merge the two files by
+    hand needs both, not one of them.
     """
     ctx = read_project(FIXTURES / "with_sources")
     emit(
@@ -276,11 +275,11 @@ def test_every_declaration_the_replacement_would_remove_is_named(tmp_path):
     assert "raw.customers and raw.orders" in report
 
 
-def test_a_file_at_our_path_sharing_no_source_name_is_a_rename_not_a_duplicate(tmp_path):
-    """The project declares source `legacy` in the file ours lands on, and we
-    declare `raw`. Replacing it still costs legacy.orders — but the two
-    declare no source in common, so keeping both is a rename, not the
-    duplicate dbt rejects, and the Decision must not say otherwise.
+def test_the_landing_name_turns_on_the_path_not_on_the_source_names(tmp_path):
+    """The project declares source `legacy` in the file ours would land on,
+    and we declare `raw` — no source name in common at all. The file is still
+    the project's, so ours still goes under its own name: what must not be
+    replaced is the file, whatever it happens to declare.
     """
     ctx = _context_declaring(("legacy", "orders", "models/sources.yml"))
     emit(
@@ -288,7 +287,24 @@ def test_a_file_at_our_path_sharing_no_source_name_is_a_rename_not_a_duplicate(t
         ctx,
         tmp_path,
     )
-    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
-    assert "legacy.orders" in report
-    assert "different filename" in report
-    assert "declared twice" not in report
+    assert (tmp_path / "models" / "sources_dbtw.yml").is_file()
+    assert not (tmp_path / "models" / "sources.yml").exists()
+    assert "legacy.orders" in (tmp_path / "CONVERSION_REPORT.md").read_text()
+
+
+def test_emit_returns_the_placement_decision_it_recorded(tmp_path):
+    """The terminal has to be able to say a Decision exists before the user
+    runs `cp -r`, and it has to say it in the words the report uses. Returning
+    the record itself is what keeps the two from drifting into two different
+    explanations of one choice.
+    """
+    ctx = read_project(FIXTURES / "sources_at_root")
+    result = emit(
+        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
+        ctx,
+        tmp_path,
+    )
+    (decision,) = result.decisions
+    assert "models/sources_dbtw.yml" in decision.action
+    assert "models/sources.yml" in decision.action
+    assert decision.action in (tmp_path / "CONVERSION_REPORT.md").read_text()

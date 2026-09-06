@@ -258,8 +258,14 @@ def _convert(
     _refuse_output_inside_project(out_dir, project_root, out, ctx)
     change = assemble(state, ctx, inline_vars=inline_vars, unique_key=unique_key)
 
-    emit(change, ctx, out_dir)
+    result = emit(change, ctx, out_dir)
     report_path = out_dir / _REPORT_NAME
+
+    # emit's own Decisions, in emit's own words. A user who reads the terminal
+    # and then runs `cp -r` never opens the report, and where the sources file
+    # landed is the one thing they need before they do.
+    for decision in result.decisions:
+        print(f"note: {decision.action}", file=sys.stderr)
 
     print(
         f"Read {len(ingest_result.statements)} statements from {sql_path}. "

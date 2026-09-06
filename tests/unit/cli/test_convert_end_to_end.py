@@ -627,12 +627,13 @@ def test_report_names_the_source_file_the_output_lands_on(tmp_path):
     project = ROOT / "projects" / "sources_at_root"
     sql = ROOT / "sql" / "incremental_etl.sql"
     assert main(["convert", str(sql), "--project", str(project), "--out", str(tmp_path)]) == 0
-    ours = (tmp_path / "models" / "sources.yml").read_text()
+    assert not (tmp_path / "models" / "sources.yml").exists()
+    ours = (tmp_path / "models" / "sources_dbtw.yml").read_text()
     assert "name: orders" not in ours  # ours really does leave theirs out
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "models/sources.yml" in report
+    assert "models/sources_dbtw.yml" in report
     assert "raw.orders" in report
-    assert "replaces that file" in report
 
 
 def _victim(tmp_path):
@@ -735,7 +736,7 @@ def test_a_directory_beside_the_project_is_still_a_valid_out(tmp_path):
     before = _snapshot(project)
     assert _convert_into(project, tmp_path / "out") == 0
     assert _snapshot(project) == before
-    assert (tmp_path / "out" / "models" / "sources.yml").is_file()
+    assert (tmp_path / "out" / "models" / "sources_dbtw.yml").is_file()
 
 
 def test_the_projects_own_parent_is_still_a_valid_out(tmp_path):
@@ -810,3 +811,16 @@ def test_an_unexpandable_project_path_is_a_usage_error_too(tmp_path, capsys):
     )
     assert code == 2
     assert "--project" in capsys.readouterr().err
+
+
+def test_the_terminal_says_a_placement_decision_exists(tmp_path, capsys):
+    """A user who reads only the terminal and then runs `cp -r` never opens
+    the report. One line on stderr, in the Decision's own words, is what tells
+    them there is something in there to read.
+    """
+    project = ROOT / "projects" / "sources_at_root"
+    sql = ROOT / "sql" / "incremental_etl.sql"
+    assert main(["convert", str(sql), "--project", str(project), "--out", str(tmp_path)]) == 0
+    err = capsys.readouterr().err
+    assert "models/sources_dbtw.yml" in err
+    assert "models/sources.yml" in err

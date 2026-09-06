@@ -11,13 +11,38 @@ from pathlib import Path
 
 from dbtw.core.assemble import ProjectChange
 from dbtw.core.assemble.layers import layer_roles
-from dbtw.core.context import ProjectContext, SourceInfo
+from dbtw.core.context import ProjectContext
 from dbtw.core.emit.render import render_model, render_sources_yaml
 from dbtw.core.emit.report import render_report
 from dbtw.core.passes.types import Decision
 
 _REPORT_NAME = "CONVERSION_REPORT.md"
 _SOURCES_NAME = "sources.yml"
+
+# The name our sources file takes when the target project already uses
+# sources.yml in the directory ours belongs in. It keeps the "sources" stem, so
+# anyone scanning the directory reads it as a source file and it sorts
+# immediately beside the project's own; the suffix names the tool that wrote
+# it, so a reader can tell at a glance which of the two is theirs. dbt's own
+# style guide prefixes source files with an underscore (_project__sources.yml),
+# which sorts them to the top of the directory -- away from the file this one
+# exists to sit next to.
+_ALT_SOURCES_NAME = "sources_dbtw.yml"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EmitResult:
+    """What emit() wrote, and what it recorded about writing it.
+
+    `decisions` are emit's own -- the ones no earlier stage could make,
+    because they are about where a file landed on disk. They are already in
+    the report; they are returned as well so a caller with a terminal can say
+    one exists in the Decision's own words, rather than composing a second
+    sentence about the same choice that can drift from the first.
+    """
+
+    paths: tuple[Path, ...]
+    decisions: tuple[Decision, ...]
 
 
 class UnsafeOutputPathError(ValueError):
@@ -30,7 +55,7 @@ class UnsafeOutputPathError(ValueError):
     """
 
 
-def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> tuple[Path, ...]:
+def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResult:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
@@ -40,21 +65,20 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> tuple[Pat
         model_path.write_text(render_model(model), encoding="utf-8")
         written.append(model_path)
 
-    collisions: tuple[Decision, ...] = ()
+    placement: tuple[Decision, ...] = ()
     if change.sources:
-        sources_rel = (_sources_dir(ctx) / _SOURCES_NAME).as_posix()
+        sources_rel, placement = _sources_placement(change, ctx)
         sources_path = _safe_join(out_dir, sources_rel)
         sources_path.parent.mkdir(parents=True, exist_ok=True)
         sources_path.write_text(render_sources_yaml(change.sources), encoding="utf-8")
         written.append(sources_path)
-        collisions = _sources_collisions(change, ctx, sources_rel)
 
-    # The report has to answer for every file emit wrote, and the sources file
-    # is one the target project may already have its own copy of. The clash is
-    # only knowable here, because only here is the path it lands on decided.
+    # The report has to answer for every file emit wrote, and where the
+    # sources file landed is only knowable here, because only here is the
+    # path it lands on decided.
     reported = (
-        dataclasses.replace(change, decisions=(*change.decisions, *collisions))
-        if collisions
+        dataclasses.replace(change, decisions=(*change.decisions, *placement))
+        if placement
         else change
     )
 
@@ -62,7 +86,7 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> tuple[Pat
     report_path.write_text(render_report(reported, ctx), encoding="utf-8")
     written.append(report_path)
 
-    return tuple(written)
+    return EmitResult(paths=tuple(written), decisions=placement)
 
 
 def _safe_join(out_dir: Path, relative: str | Path) -> Path:
@@ -117,7 +141,7 @@ def _decision(kind: str, name: str, action: str, reason: str) -> Decision:
     The key carries no trailing ":<index>", because these answer for a file
     rather than for a statement in the source SQL — the same reason
     `source_file` and the line numbers are empty, so the report prints no
-    location instead of pointing at SQL that has nothing to do with the clash.
+    location instead of pointing at SQL that has nothing to do with placement.
     """
     return Decision(
         key=f"emit.{kind}.{name}",
@@ -137,109 +161,82 @@ def _listed(items: list[str]) -> str:
     return f"{', '.join(items[:-1])} and {items[-1]}"
 
 
-def _sources_collisions(
-    change: ProjectChange, ctx: ProjectContext, sources_rel: str
-) -> tuple[Decision, ...]:
-    """What the sources.yml just written lands on in the target project.
+def _sources_placement(
+    change: ProjectChange, ctx: ProjectContext
+) -> tuple[str, tuple[Decision, ...]]:
+    """The project-relative path this change's sources file lands at, and the
+    Decision recording it when that is not the ordinary name.
 
-    `_sources_dir` puts our file beside the project's own declaration rather
-    than in a rival file, which is the right placement and is exactly why the
-    two can meet. They meet in two ways, and both are silent without this:
+    `_sources_dir` puts our sources in the directory the project declares its
+    own in, so our entries sit beside theirs rather than in a rival file at
+    the far end of the tree. That is the right directory and it is exactly why
+    the two files can meet: in a project that declares sources in
+    `<dir>/sources.yml`, our `<dir>/sources.yml` has their file's name, and a
+    user copying out_dir over the project replaces it — every declaration in
+    it gone, and the models that referenced them stop resolving.
 
-    (1) Same path. Copying out_dir over the project replaces that file
-        outright, so every declaration in it that ours does not repeat stops
-        existing, and the project's own models that referenced it stop
-        resolving.
-    (2) A different file, a shared source name. Nothing is overwritten, but
-        the project then declares one source in two files, which dbt rejects
-        as a duplicate.
+    So we don't take that name. Ours lands as `sources_dbtw.yml` in the same
+    directory, and copying the whole of out_dir across adds a file instead of
+    replacing one. dbt reads both: its duplicate check is per (source, table),
+    not per source name, so two files may declare source `raw` as long as they
+    declare different tables — which is guaranteed here, since
+    `assemble._source_entries` skips every (source, table) the project already
+    declares before any of them reach `change.sources`. The user may still
+    merge the two by hand, and the Decision says so; it is a preference about
+    how many files they want, not something dbt requires.
 
-    Reporting, not merging. A merge would mean rewriting a file dbtw was
-    never asked to touch, out of a ProjectContext that keeps source names and
-    table names only — descriptions, tests, freshness and columns never
-    reached it (`context.reader._collect_sources`), so a merged file built
-    from what we know would hand back strictly less than it was given, and
-    would do it to the user's own file. Naming the clash cannot damage
-    anything, and the report is where the tool already answers for what it
-    wrote.
+    Reporting rather than merging for them. `ProjectContext` keeps source and
+    table names only — descriptions, tests, freshness and columns never reach
+    it (`context.reader._collect_sources`) — so a merged file built from what
+    we know would hand back strictly less than it was given, and would do it
+    to the user's own file. A separate file cannot damage anything.
+
+    The alternate name is bumped if the project declares sources under it too
+    (a previous run's output, copied in): a fixed second name that is already
+    taken is the same overwrite one step along.
     """
+    directory = _sources_dir(ctx)
+    preferred = (directory / _SOURCES_NAME).as_posix()
+    declared_at = {existing.declared_in for existing in ctx.existing_sources}
+    if preferred not in declared_at:
+        return preferred, ()
+
+    landing = (directory / _ALT_SOURCES_NAME).as_posix()
+    bump = 1
+    while landing in declared_at:
+        bump += 1
+        landing = (directory / f"sources_dbtw_{bump}.yml").as_posix()
+
+    at_preferred = [s for s in ctx.existing_sources if s.declared_in == preferred]
+    theirs = {(s.source_name, s.table) for s in at_preferred}
     ours = {(entry.source_name, entry.table) for entry in change.sources}
-    our_names = {entry.source_name for entry in change.sources}
+    # Not a defensive check — the disjointness is what makes the two files
+    # legal side by side, and it is `_source_entries`' guarantee, not ours. If
+    # it ever stops holding, the Decision below starts telling users a pair of
+    # files is fine when dbt would reject it, which is the failure this whole
+    # rewrite exists to remove.
+    assert not (theirs & ours), (
+        "assemble._source_entries skips every (source, table) the target project "
+        "already declares, so a proposed entry can never repeat one of theirs; "
+        f"{sorted(theirs & ours)} did"
+    )
 
-    by_file: dict[str, list[SourceInfo]] = {}
-    for existing in ctx.existing_sources:
-        by_file.setdefault(existing.declared_in, []).append(existing)
-
-    decisions: list[Decision] = []
-
-    at_our_path = by_file.get(sources_rel)
-    if at_our_path is not None:
-        theirs = sorted({f"{s.source_name}.{s.table}" for s in at_our_path})
-        lost = sorted(
-            {
-                f"{s.source_name}.{s.table}"
-                for s in at_our_path
-                if (s.source_name, s.table) not in ours
-            }
-        )
-        shared = sorted({s.source_name for s in at_our_path} & our_names)
-        if lost:
-            replacement = (
-                f"{sources_rel} in the target project declares {_listed(lost)}, which this "
-                "file does not; copying this output over the project replaces that file, and "
-                "those declarations go with it."
-            )
-        else:
-            replacement = (
-                f"{sources_rel} in the target project declares {_listed(theirs)}, all of "
-                "which this file declares too; copying this output over the project still "
-                "replaces that file."
-            )
-        if shared:
-            subject = "the source" if len(shared) == 1 else "the sources"
-            verb = "is" if len(shared) == 1 else "are"
-            keeping = (
-                f"Keeping both means renaming one of them, and {subject} {_listed(shared)} "
-                f"{verb} then declared twice in one project, which dbt rejects — put the "
-                "entries you need in one file before running dbt."
-            )
-        else:
-            keeping = (
-                "The two files declare no source in common, so keeping both is only a matter "
-                "of giving one of them a different filename — do that, or put the entries you "
-                "need in one file, before running dbt."
-            )
-        decisions.append(
-            _decision(
-                "sources_replace",
-                sources_rel,
-                f"sources.yml lands at {sources_rel}, where this project already declares sources",
-                f"{replacement} This file carries source names, schemas and table names only, "
-                "so any descriptions, tests or freshness on the project's entries do not "
-                f"survive the replacement either. {keeping}",
-            )
-        )
-
-    for other_file in sorted(by_file):
-        if other_file == sources_rel:
-            continue
-        shared = sorted({s.source_name for s in by_file[other_file]} & our_names)
-        if not shared:
-            continue
-        subject = "the source" if len(shared) == 1 else "the sources"
-        verb = "is" if len(shared) == 1 else "are"
-        decisions.append(
-            _decision(
-                "sources_duplicate",
-                other_file,
-                f"sources.yml lands at {sources_rel}, declaring {subject} {_listed(shared)}, "
-                f"which {other_file} already declares",
-                f"{other_file} in the target project already declares {subject} "
-                f"{_listed(shared)}. With both files in place {subject} {_listed(shared)} "
-                f"{verb} declared twice in one project, which dbt rejects — move these "
-                f"entries into {other_file}, or move that file's into this one, before "
-                "running dbt.",
-            )
-        )
-
-    return tuple(decisions)
+    named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
+    named_ours = _listed(sorted(f"{name}.{table}" for name, table in ours))
+    return landing, (
+        _decision(
+            "sources_placed",
+            landing,
+            f"wrote this conversion's sources as {landing}, not {preferred}, "
+            "which the target project already uses",
+            f"{preferred} in the target project declares {named_theirs}; this "
+            f"conversion declares {named_ours}. Writing ours at that path would "
+            "replace their file and take their declarations with it, so ours is a "
+            "separate file and nothing of the project's is touched. dbt reads both — "
+            "its duplicate check is per source and table, so two files may declare "
+            "the same source name as long as the tables differ, and this conversion "
+            "skips every table the project already declares. Copy both across as they "
+            f"are, or merge our entries into {preferred} by hand if you would rather "
+            "keep one file.",
+        ),
+    )
