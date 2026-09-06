@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import pytest
@@ -613,3 +614,283 @@ def test_a_delete_in_another_file_is_not_ignored_either(tmp_path):
     for body in _models(tmp_path).values():
         assert "incremental_strategy='append'" not in body
     assert "delete and insert" in report
+
+
+def test_report_names_the_source_file_the_output_lands_on(tmp_path):
+    """The whole reproduction, through the CLI: sources_at_root declares
+    raw.orders at models/sources.yml, and the conversion writes its own
+    models/sources.yml declaring raw.customers and raw.events. Copying the
+    output over that project deletes a declaration its models depend on, so
+    the report has to name the file, name raw.orders, and say what happens
+    either way.
+    """
+    project = ROOT / "projects" / "sources_at_root"
+    sql = ROOT / "sql" / "incremental_etl.sql"
+    assert main(["convert", str(sql), "--project", str(project), "--out", str(tmp_path)]) == 0
+    assert not (tmp_path / "models" / "sources.yml").exists()
+    ours = (tmp_path / "models" / "sources_dbtw.yml").read_text()
+    assert "name: orders" not in ours  # ours really does leave theirs out
+    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
+    assert "models/sources.yml" in report
+    assert "models/sources_dbtw.yml" in report
+    assert "raw.orders" in report
+
+
+def _victim(tmp_path):
+    """A throwaway copy of a real dbt project — one that declares a source, so
+    a destroyed declaration is visible in the bytes. Copied rather than used
+    in place so that a broken guard damages the copy, never the fixture.
+    """
+    project = tmp_path / "project"
+    shutil.copytree(ROOT / "projects" / "sources_at_root", project)
+    return project
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(root).as_posix(): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _convert_into(project, out, sql=None):
+    return main(
+        [
+            "convert",
+            str(sql if sql is not None else ROOT / "sql" / "incremental_etl.sql"),
+            "--project",
+            str(project),
+            "--out",
+            str(out),
+        ]
+    )
+
+
+def test_refuses_to_convert_into_the_target_project_itself(tmp_path, capsys):
+    """--out <the project> reads as "put the output in my project" and is a
+    natural thing to type. It converts the report's "copying this over your
+    project would replace that file" into "it already did": raw.orders is gone
+    from the real project, with no copy left to compare against.
+    """
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, project) == 2
+    assert _snapshot(project) == before
+    err = capsys.readouterr().err
+    assert str(project.resolve()) in err
+    assert "models/sources.yml" in err
+
+
+def test_refuses_when_out_is_a_directory_inside_the_target_project(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, project / "models") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_a_relative_out_path_that_resolves_into_the_project(tmp_path, monkeypatch):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    monkeypatch.chdir(project)
+    assert _convert_into(project, ".") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_path_with_a_trailing_slash(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, f"{project}/") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_path_that_reaches_the_project_through_a_symlink(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    link = tmp_path / "link"
+    link.symlink_to(project, target_is_directory=True)
+    assert _convert_into(project, link) == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_a_home_relative_out_path_that_names_the_project(tmp_path, monkeypatch, capsys):
+    """A quoted '~/project' never reaches the shell, so the CLI has to expand
+    it itself — and has to expand --project the same way, or the two paths are
+    compared in different spellings and the guard misses.
+
+    The exit code alone cannot tell this test apart from an unexpanded '~'
+    landing on a directory that is not a dbt project at all, which also exits
+    2. The stderr assertion is what makes it the guard's refusal.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into("~/project", "~/project") == 2
+    assert "refusing to convert into the target project" in capsys.readouterr().err
+    assert _snapshot(project) == before
+
+
+def test_a_directory_beside_the_project_is_still_a_valid_out(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, tmp_path / "out") == 0
+    assert _snapshot(project) == before
+    assert (tmp_path / "out" / "models" / "sources_dbtw.yml").is_file()
+
+
+def test_the_projects_own_parent_is_still_a_valid_out(tmp_path):
+    """The project sits inside out_dir, not the other way round: nothing this
+    run writes can reach it. Refusing here would be a guard inventing a clash.
+    """
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, tmp_path) == 0
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_path_that_differs_from_the_project_only_in_case(tmp_path):
+    """APFS (this machine) and NTFS are case-insensitive: /x/PROJECT and
+    /x/project are one directory. Path.resolve() does not canonicalise case,
+    so comparing resolved path *strings* sees two different projects and lets
+    the conversion write over the real one. os.path.samefile compares the
+    stat dev/ino pair and sees one directory.
+
+    On a case-sensitive filesystem the alias cannot exist by spelling alone,
+    so the test builds it as a symlink instead of skipping: the same "two
+    names, one directory" shape, which the guard has to answer for either way.
+    """
+    project = _victim(tmp_path)
+    alias = tmp_path / "PROJECT"
+    if not alias.exists():  # case-sensitive filesystem: make the alias real
+        alias.symlink_to(project, target_is_directory=True)
+    before = _snapshot(project)
+    assert _convert_into(project, alias) == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_dir_holding_the_projects_model_path_by_another_route(tmp_path):
+    """A project whose models/ is a symlink to a shared tree. --out <shared>
+    is neither the project root nor under it by any spelling, so a
+    root-only containment test lets it through — and every model this run
+    writes lands in <shared>/models, which is the project's real models
+    directory. The project's own sources.yml is replaced in place.
+    """
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shutil.copytree(ROOT / "projects" / "sources_at_root" / "models", shared / "models")
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copy(
+        ROOT / "projects" / "sources_at_root" / "dbt_project.yml", project / "dbt_project.yml"
+    )
+    (project / "models").symlink_to(shared / "models", target_is_directory=True)
+    before = _snapshot(shared)
+    assert _convert_into(project, shared) == 2
+    assert _snapshot(shared) == before
+
+
+def test_an_unexpandable_out_path_is_a_usage_error_not_a_traceback(tmp_path, capsys):
+    """Path.expanduser() raises RuntimeError for a '~' it cannot resolve — an
+    unknown user, or no home directory at all, which is routine in a
+    container. The CLI documents four lines above the expansion that input
+    errors are reported on stderr with no traceback; a RuntimeError escaping
+    main() breaks that.
+    """
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    code = main(["convert", str(SQL), "--project", str(project), "--out", "~nosuchuser_dbtw/out"])
+    assert code == 2
+    assert "--out" in capsys.readouterr().err
+    assert _snapshot(project) == before
+
+
+def test_an_unexpandable_project_path_is_a_usage_error_too(tmp_path, capsys):
+    code = main(
+        ["convert", str(SQL), "--project", "~nosuchuser_dbtw/proj", "--out", str(tmp_path / "out")]
+    )
+    assert code == 2
+    assert "--project" in capsys.readouterr().err
+
+
+def test_the_terminal_says_a_placement_decision_exists(tmp_path, capsys):
+    """A user who reads only the terminal and then runs `cp -r` never opens
+    the report. One line on stderr, in the Decision's own words, is what tells
+    them there is something in there to read.
+    """
+    project = ROOT / "projects" / "sources_at_root"
+    sql = ROOT / "sql" / "incremental_etl.sql"
+    assert main(["convert", str(sql), "--project", str(project), "--out", str(tmp_path)]) == 0
+    err = capsys.readouterr().err
+    assert "models/sources_dbtw.yml" in err
+    assert "models/sources.yml" in err
+
+
+def test_a_source_declared_in_seeds_is_not_proposed_again(tmp_path):
+    """The reviewer's scenario, end to end. dbt reads sources out of
+    seeds/schema.yml, so a project declaring raw.orders there has declared it;
+    re-proposing the same (source, table) in our own file gives dbt two
+    declarations of one table, which it does reject. The dedupe in
+    assemble._source_entries already handles this — it just could not see the
+    declaration.
+    """
+    project = tmp_path / "project"
+    (project / "models" / "staging").mkdir(parents=True)
+    (project / "seeds").mkdir()
+    (project / "dbt_project.yml").write_text(
+        'name: seeded\nconfig-version: 2\nmodel-paths: ["models"]\n'
+    )
+    (project / "models" / "staging" / "stg_existing.sql").write_text("select 1 as id")
+    (project / "seeds" / "schema.yml").write_text(
+        "version: 2\nsources:\n  - name: raw\n    schema: raw\n    tables:\n      - name: orders\n"
+    )
+    out = tmp_path / "out"
+    assert _convert_into(project, out, sql=ROOT / "sql" / "qualified_etl.sql") == 0
+    proposed = list(out.rglob("sources*.yml"))
+    assert proposed == [], f"raw.orders is already declared; nothing to propose, got {proposed}"
+    report = (out / "CONVERSION_REPORT.md").read_text()
+    assert "seeds/schema.yml" in report
+    assert "already declared as a source" in report
+
+
+def test_refuses_an_out_symlink_pointing_into_a_project_subdirectory(tmp_path):
+    """A symlink's .parents are the link's own, not its target's, so walking
+    the unresolved path never reaches the project. The existing symlink test
+    points at the project *root*, where the equality check catches it before
+    the walk matters; this one points one level in, which is where the walk is
+    the only thing that can answer.
+    """
+    project = _victim(tmp_path)
+    (project / "sub").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(project / "sub", target_is_directory=True)
+    before = _snapshot(project)
+    assert _convert_into(project, link) == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_a_relative_out_resolved_from_a_cwd_inside_the_project(tmp_path, monkeypatch):
+    """Path('out').parents is (Path('.'),) — a relative --out has no ancestors
+    to walk, so the chain stops at '.' and never sees the project two levels
+    up. The existing relative test chdirs to the project root, where '.' *is*
+    the project and equality answers it.
+    """
+    project = _victim(tmp_path)
+    (project / "sub").mkdir()
+    monkeypatch.chdir(project / "sub")
+    before = _snapshot(project)
+    assert _convert_into(project, "out") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_dot_as_out_from_inside_a_model_path(tmp_path, monkeypatch):
+    """The worst of the three: '.' from inside models/ writes
+    models/models/staging/*.sql — under a model-path, where dbt compiles them
+    as real models on the next run. Path('.').parents is empty, so nothing is
+    walked at all.
+    """
+    project = _victim(tmp_path)
+    monkeypatch.chdir(project / "models")
+    before = _snapshot(project)
+    assert _convert_into(project, ".") == 2
+    assert _snapshot(project) == before

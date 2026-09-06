@@ -23,6 +23,12 @@ from dbtw.core.context.types import (
 )
 
 _DBT_DEFAULT_MODEL_PATHS = ("models",)
+# dbt parses `sources:` out of every YAML file in the project, not only the
+# ones under model-paths, so a seeds/ or snapshots/ schema.yml declaring a
+# source has really declared it. These are dbt's own defaults for the two
+# other path keys that carry YAML worth reading.
+_DBT_DEFAULT_SEED_PATHS = ("seeds",)
+_DBT_DEFAULT_SNAPSHOT_PATHS = ("snapshots",)
 _PREFIX_RE = re.compile(r"^([a-z]+_)")
 
 
@@ -41,34 +47,23 @@ def read_project(root: Path | str) -> ProjectContext:
         raise NotADbtProjectError(f"dbt_project.yml at {root} has a non-mapping 'models' key")
     models_config = (models_raw or {}).get(project_name)
 
-    if "model-paths" in raw:
-        raw_model_paths = raw["model-paths"]
-        if not isinstance(raw_model_paths, list) or not all(
-            isinstance(p, str) for p in raw_model_paths
-        ):
-            raise NotADbtProjectError(
-                f"dbt_project.yml at {root} has a malformed 'model-paths'"
-                " (expected a list of strings)"
-            )
-        model_paths = tuple(raw_model_paths)
-        detections.append(
-            Detection(
-                key="project.model_paths",
-                status="detected",
-                value=", ".join(model_paths),
-                evidence="model-paths in dbt_project.yml",
-            )
+    model_paths, model_paths_configured = _configured_paths(
+        raw, "model-paths", _DBT_DEFAULT_MODEL_PATHS, root
+    )
+    detections.append(
+        Detection(
+            key="project.model_paths",
+            status="detected",
+            value=", ".join(model_paths),
+            evidence=(
+                "model-paths in dbt_project.yml"
+                if model_paths_configured
+                else "dbt default ('models') — model-paths key absent"
+            ),
         )
-    else:
-        model_paths = _DBT_DEFAULT_MODEL_PATHS
-        detections.append(
-            Detection(
-                key="project.model_paths",
-                status="detected",
-                value="models",
-                evidence="dbt default ('models') — model-paths key absent",
-            )
-        )
+    )
+    seed_paths, _ = _configured_paths(raw, "seed-paths", _DBT_DEFAULT_SEED_PATHS, root)
+    snapshot_paths, _ = _configured_paths(raw, "snapshot-paths", _DBT_DEFAULT_SNAPSHOT_PATHS, root)
 
     vars_raw = raw.get("vars")
     if vars_raw is not None and not isinstance(vars_raw, dict):
@@ -80,7 +75,9 @@ def read_project(root: Path | str) -> ProjectContext:
     layers, layer_detections = _build_layers(models, layer_bases, models_config)
     detections.extend(layer_detections)
 
-    found_sources, source_warnings = _collect_sources(root, model_paths)
+    found_sources, source_warnings = _collect_sources(
+        root, (*model_paths, *seed_paths, *snapshot_paths)
+    )
     detections.extend(source_warnings)
 
     return ProjectContext(
@@ -92,6 +89,26 @@ def read_project(root: Path | str) -> ProjectContext:
         vars_declared=vars_declared,
         detections=tuple(detections),
     )
+
+
+def _configured_paths(
+    raw: dict[str, Any], key: str, default: tuple[str, ...], root: Path
+) -> tuple[tuple[str, ...], bool]:
+    """One of dbt_project.yml's path keys, and whether it was configured.
+
+    Absent means dbt's own default for that key, which is what dbt itself
+    would use — the same rule model-paths has always followed here, now
+    shared with seed-paths and snapshot-paths so all three agree on what
+    "unset" means and reject the same malformed shapes.
+    """
+    if key not in raw:
+        return default, False
+    value = raw[key]
+    if not isinstance(value, list) or not all(isinstance(entry, str) for entry in value):
+        raise NotADbtProjectError(
+            f"dbt_project.yml at {root} has a malformed {key!r} (expected a list of strings)"
+        )
+    return tuple(value), True
 
 
 def _load_project_yaml(root: Path) -> dict[str, Any]:
@@ -134,16 +151,27 @@ def _collect_models(
 
 
 def _collect_sources(
-    root: Path, model_paths: tuple[str, ...]
+    root: Path, search_paths: tuple[str, ...]
 ) -> tuple[list[SourceInfo], list[Detection]]:
+    """Every source declared in YAML under any of `search_paths`.
+
+    A file reached through two configured paths — seed-paths pointing at a
+    model-path, or one nested inside another — is read once. Counting a
+    declaration twice would skew `emit._sources_dir`'s most-common declaring
+    file, which decides where this tool's own sources land.
+    """
     sources: list[SourceInfo] = []
     warnings: list[Detection] = []
-    for mp in model_paths:
-        base = root / mp
+    seen: set[str] = set()
+    for search_path in search_paths:
+        base = root / search_path
         if not base.is_dir():
             continue
         for yml in sorted([*base.rglob("*.yml"), *base.rglob("*.yaml")]):
             rel = yml.relative_to(root).as_posix()
+            if rel in seen:
+                continue
+            seen.add(rel)
             try:
                 loaded = yaml.safe_load(yml.read_text(encoding="utf-8"))
             except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
