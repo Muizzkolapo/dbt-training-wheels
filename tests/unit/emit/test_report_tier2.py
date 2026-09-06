@@ -5,7 +5,14 @@ import yaml
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry, Variable
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import render_report
-from dbtw.core.passes import Decision, Option
+from dbtw.core.passes import (
+    Decision,
+    Option,
+    append_option,
+    inline_option,
+    merge_option,
+    var_option,
+)
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -291,3 +298,80 @@ def test_question_bearing_decision_with_one_option_renders_only_that_option():
     assert "    - merge (chosen) — updates matching rows and inserts the rest" in out
     # One option offered, one option rendered -- nothing invented beside it.
     assert len([line for line in out.splitlines() if line.startswith("    - ")]) == 1
+
+
+def test_every_shipped_option_reaches_the_report_in_both_registers():
+    """The guard that keeps the plain register load-bearing. The report is
+    the only thing in production that reads `Option.plain`, so if a future
+    option ships without a plain wording -- or the renderer stops printing
+    one -- this is what fails, rather than the field quietly becoming
+    decorative the way `Option.effect` did when it was produced at five
+    sites and read by none.
+
+    `tests/unit/passes/test_plain_register.py` already asserts the options
+    carry the wording. What is asserted here is the half nothing else
+    covers: that it lands on the page, in its own nested list item beneath
+    the dbt-register line it restates, and beside that line rather than in
+    place of it.
+    """
+    options = (
+        append_option(),
+        merge_option(),
+        merge_option(("id",)),
+        inline_option(),
+        var_option("cutoff"),
+    )
+    out = _report(
+        decisions=(
+            Decision(
+                key="k3",
+                tier=2,
+                action="chose incremental strategy",
+                reason="Tier 2 owns it",
+                source_file="etl.sql",
+                line_start=9,
+                line_end=9,
+                question="How should rows arriving again be handled?",
+                plain_question="What should happen to a row it has seen before?",
+                chosen=options[0].label,
+                options=options,
+            ),
+        )
+    )
+    assert "  - In plain words: What should happen to a row it has seen before?" in out
+    for option in options:
+        assert option.plain, f"{option.label} ships with no plain wording"
+        assert option.plain != option.effect, f"{option.label} repeats its effect verbatim"
+        assert f"    - {option.label}" in out, f"{option.label} is not rendered"
+        assert option.effect in out, f"{option.label}'s effect is not rendered"
+        assert f"      - In plain words: {option.plain}" in out, (
+            f"{option.label}'s plain wording is not rendered under it"
+        )
+
+
+def test_each_register_is_its_own_list_item_not_a_continuation_line():
+    """Markdown folds consecutive lines of a list item into one paragraph, so
+    an unbulleted "In plain words: ..." under the question would render as
+    "... Chose: append every row In plain words: ..." -- one run-on
+    sentence. Every restatement has to be a list item of its own.
+    """
+    out = _report(
+        decisions=(
+            Decision(
+                key="k4",
+                tier=2,
+                action="chose incremental strategy",
+                reason="Tier 2 owns it",
+                source_file="etl.sql",
+                line_start=9,
+                line_end=9,
+                question="Append or merge?",
+                plain_question="Add every row again, or update the ones already there?",
+                chosen="append every row",
+                options=(append_option(),),
+            ),
+        )
+    )
+    plain = [line for line in out.splitlines() if "In plain words:" in line]
+    assert len(plain) == 2, plain
+    assert all(line.lstrip().startswith("- ") for line in plain), plain

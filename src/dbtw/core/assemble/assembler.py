@@ -7,11 +7,8 @@ import heapq
 from collections.abc import Mapping
 from typing import Literal
 
-import sqlglot
-from sqlglot import exp
-from sqlglot.errors import SqlglotError
-
 from dbtw.core.assemble.layers import layer_roles, role_for
+from dbtw.core.assemble.projections import known_projections
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.resolve import resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
@@ -25,9 +22,11 @@ from dbtw.core.passes.types import (
     ModelDraft,
     Option,
     PassState,
+    Subject,
     append_option,
     inline_option,
     merge_option,
+    statement_index,
     var_option,
 )
 
@@ -254,18 +253,6 @@ def _keys_str(keys: tuple[str, ...]) -> str:
     return ", ".join(keys)
 
 
-def _decision_statement_index(dec: Decision) -> int | None:
-    """The pipeline statement index embedded in a Decision's key.
-
-    `Decision.key`'s documented shape is "<prefix>.<source_file>:<index>"
-    (see the example in `Decision`'s own docstring) -- every `_decision()`
-    helper across tier 1 and tier 2 builds it this way. Reading it back out
-    here is reading that documented contract, not parsing prose.
-    """
-    _, _, suffix = dec.key.rpartition(":")
-    return int(suffix) if suffix.isdigit() else None
-
-
 def _find_incremental_decision_index(
     decisions: tuple[Decision, ...], source_indices: tuple[int, ...], chosen_label: str
 ) -> int | None:
@@ -293,58 +280,9 @@ def _find_incremental_decision_index(
     """
     wanted = set(source_indices)
     for i, dec in enumerate(decisions):
-        if dec.chosen == chosen_label and _decision_statement_index(dec) in wanted:
+        if dec.chosen == chosen_label and statement_index(dec) in wanted:
             return i
     return None
-
-
-def _known_projections(
-    body: str, dialect: str | None
-) -> tuple[list[tuple[str, bool]], bool] | None:
-    """The named, non-star output columns a query body projects, as
-    (name, was-written-quoted) pairs, plus whether a star projection (`*`
-    or `t.*`) is present anywhere in it.
-
-    Works on any `exp.Query` -- a plain `SELECT` or a set operation
-    (`UNION`/`INTERSECT`/`EXCEPT`) alike, via `.selects`, which sqlglot's
-    own `named_selects` is built on. An unaliased compound projection (a
-    bare `CASE` with no `AS`) has no output name at all and is simply
-    skipped: it can never match a --unique-key column (which must name a
-    real output column), so leaving it out never hides a real match --
-    see `_key_status` below, which is the only thing that reads this list.
-
-    None means the body couldn't be parsed as a query at all -- should not
-    happen for an append draft's body (always exactly the INSERT's own
-    SELECT, re-parsed with the same dialect it was rendered with), but
-    callers must describe this honestly rather than folding it into the
-    star case, which would claim a construct that was never actually
-    there (FINDING 6).
-    """
-    try:
-        node = sqlglot.parse_one(body, read=dialect)
-    except SqlglotError:
-        return None
-    if not isinstance(node, exp.Query):
-        return None
-
-    projections: list[tuple[str, bool]] = []
-    has_star = False
-    for projection in node.selects:
-        name = projection.alias_or_name
-        if not name:
-            continue  # unnamed (e.g. a bare CASE): can never match a key
-        if name == "*":
-            has_star = True
-            continue
-        if isinstance(projection, exp.Alias):
-            identifier = projection.args.get("alias")
-        elif isinstance(projection, exp.Column):
-            identifier = projection.this
-        else:
-            identifier = None
-        quoted = bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
-        projections.append((name, quoted))
-    return projections, has_star
 
 
 _KeyStatus = Literal["matched", "ambiguous", "missing"]
@@ -621,7 +559,7 @@ def _apply_unique_key(
             answered_label = answered.option.label if answered is not None else None
             model_keys_str = _keys_str(model_keys)
             requested = _requested_phrase(model_keys, answered is not None)
-            known = _known_projections(model.body, dialect)
+            known = known_projections(model.body, dialect)
 
             if known is None:
                 caveat = (
@@ -629,7 +567,10 @@ def _apply_unique_key(
                     "columns, so this could not be verified)"
                 )
             else:
-                projections, has_star = known
+                # An unnamed projection can never match a key, so this one
+                # reader of the list has no use for `known_projections`'
+                # third flag.
+                projections, has_star, _unnamed = known
                 # (key, status, matched-or-ambiguous-name) per key column --
                 # built as one list, not zip(model_keys, statuses), so the
                 # three views below can never drift out of alignment.
@@ -1326,8 +1267,13 @@ def assemble(
             line_start=variable.line_start,
             line_end=variable.line_start,
             question=f"Is {variable.name} a run-time parameter or a constant?",
+            plain_question=(
+                f"Should {variable.name} always be the value your script used, or "
+                "something you choose each time you run it?"
+            ),
             chosen=chosen,
             options=(inline_answer, keep_answer),
+            subject=Subject(table=variable.name),
         )
         new_decisions.append(variable_decision)
         answerable_decisions.append(variable_decision)
@@ -1430,8 +1376,11 @@ def assemble(
     # An option that cannot settle its own key says so with a
     # `columns_prompt` -- "merge on a unique key" is the one that does today
     # -- and it is the only kind that reads `columns`: without them it would
-    # write `unique_key=[]`, which fails at dbt run time, and the report would
-    # meanwhile claim a merge that cannot run. Every other option settles
+    # write `unique_key=[]`, which leaves the merge nothing to match on, and
+    # the report would meanwhile claim rows are matched and updated when every
+    # one of them would simply be added. (Not "fails at dbt run time": that
+    # was the wording here and on the option itself, and this engine never
+    # runs dbt to establish it -- see `merge_option`.) Every other option settles
     # itself, so columns handed to one would be discarded -- silently, and
     # leaving the caller believing a key was recorded somewhere. Read off the
     # option rather than compared against its label, so a consumer rendering

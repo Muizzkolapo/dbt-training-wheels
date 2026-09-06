@@ -13,10 +13,12 @@ from dbtw.core.passes.types import (
     ModelDraft,
     Option,
     PassState,
+    Subject,
     Tier,
     append_option,
     inline_option,
     merge_option,
+    statement_index,
     var_option,
 )
 
@@ -28,6 +30,7 @@ __all__ = [
     "ModelDraft",
     "Option",
     "PassState",
+    "Subject",
     "Tier",
     "append_option",
     "append_pass",
@@ -39,6 +42,7 @@ __all__ = [
     "merge_option",
     "merge_pass",
     "run_passes",
+    "statement_index",
     "truncate_insert_columns_pass",
     "truncate_insert_pass",
     "var_option",

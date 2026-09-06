@@ -29,11 +29,15 @@ class Option:
     is written here: a bare boolean would leave every consumer inventing
     its own prompt, which is the label-copying this record exists to
     remove, one step removed.
+
+    `plain` says what `effect` says to a reader who has never used dbt;
+    the two are reviewed together in the report so they cannot drift.
     """
 
     label: str
     effect: str
     columns_prompt: str = ""
+    plain: str = ""  # the same consequence, assuming no dbt knowledge
 
 
 def append_option() -> Option:
@@ -45,6 +49,11 @@ def append_option() -> Option:
             "table stay where they are, so a second run duplicates them unless the "
             "SELECT filters to new rows itself."
         ),
+        plain=(
+            "Every time this runs it adds everything it finds, on top of what is "
+            "already there. Run it twice and you get two copies of every row, "
+            "unless the query itself only asks for new ones."
+        ),
     )
 
 
@@ -53,16 +62,34 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
     off a MERGE's ON clause — and stays generic when the user has yet to pick.
     """
     if not keys:
+        # Both registers used to say a merge with an empty unique_key "fails
+        # at dbt run time". This engine never runs dbt, and the claim is not
+        # one it can stand behind: dbt-core's merge macro appears to
+        # substitute a false join predicate and drop the matched branch when
+        # the key is empty, which appends rather than errors. Neither reading
+        # was verifiable here, so both now say only the consequence that
+        # holds whichever it is -- with no key there is nothing to match on,
+        # so nothing gets updated. That is still the cost the reader needs
+        # before leaving the column blank, without asserting a failure mode
+        # nobody checked, or which branch dbt actually takes when there is
+        # nothing to match.
         return Option(
             label="merge on a unique key",
             effect=(
                 "Each run updates the row whose key matches and inserts the rows that "
-                "match nothing. Needs a column that identifies a row uniquely — a merge "
-                "with an empty unique_key fails at dbt run time."
+                "match nothing. Needs a column that identifies a row uniquely — with an "
+                "empty unique_key there is nothing to match on, so nothing gets updated."
             ),
             # The one option whose label leaves its key unsaid, so the one
             # option that needs columns supplied with the answer.
             columns_prompt="the column(s) that identify a row uniquely",
+            plain=(
+                "Each run compares that column's value against what is already in "
+                "the table -- a match updates the existing row, and everything "
+                "else gets added, so nothing is duplicated. It needs a column "
+                "whose value is different on every row -- an id -- and without "
+                "one there is nothing to compare against, so nothing gets updated."
+            ),
         )
     named = ", ".join(keys)
     return Option(
@@ -70,6 +97,10 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
         effect=(
             f"Updates the row whose {named} matches, with every column this model "
             "selects, and inserts rows matching none."
+        ),
+        plain=(
+            f"Each run finds the row whose {named} matches and updates it, and "
+            "adds the rows that match nothing. Rows are not duplicated."
         ),
     )
 
@@ -81,6 +112,11 @@ def inline_option() -> Option:
         effect=(
             "The literal from the source SQL is spliced into the model body. The "
             "model stops taking the value at run time and always uses this one."
+        ),
+        plain=(
+            "The value from your script is written straight into the model, so "
+            "it is the same on every run and cannot be changed without editing "
+            "the file."
         ),
     )
 
@@ -97,7 +133,33 @@ def var_option(name: str = "") -> Option:
             f"The value stays a run-time parameter: the model calls {called} "
             "and dbt supplies it per run, so it can differ between environments."
         ),
+        plain=(
+            f"The value stays something you set when you run it, so {name or 'it'} "
+            "can be different in testing than in production."
+        ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Subject:
+    """What a Tier-2 question is about, as data rather than as prose.
+
+    `table` is the target's name as the source script spelled it -- the
+    spelling a user will recognise, NOT `naming.target_key`'s casefolded
+    identity triple, which exists for comparison and would show them a name
+    their script does not contain.
+
+    `columns` are the columns the question turns on: the key a MERGE's ON
+    clause already names, or empty when the question is precisely which
+    column to use. Empty means "none known", never "none exist".
+
+    A consumer needs these to offer a check query, to label a column input,
+    or to build a worked example. Recovering them by parsing `question`
+    would make every consumer a parser of our own prose.
+    """
+
+    table: str
+    columns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +174,30 @@ class Decision:
     line_start: int
     line_end: int
     question: str = ""  # Tier-2 only: the design question posed to the user
+    plain_question: str = ""  # the same question, assuming no dbt knowledge
     chosen: str = ""  # Tier-2 only: the label of the option that stands
     options: tuple[Option, ...] = ()  # Tier-2 only: every option, chosen included
+    subject: Subject | None = None  # Tier-2 questions only: what it is about
+
+
+def statement_index(decision: Decision) -> int | None:
+    """The pipeline statement index embedded in a Decision's key, or None
+    when its key carries none.
+
+    `Decision.key`'s documented shape is "<prefix>.<source_file>:<index>"
+    (see the example on `key` above) -- every `_decision()` helper across
+    tier 1 and tier 2 builds it this way, and the Decisions assemble adds
+    for its own actions (`assemble.rename.<name>`) deliberately do not,
+    since they answer for a model rather than for a statement. Reading the
+    index back out is reading that documented contract, not parsing prose.
+
+    It lives here, beside the field whose shape it knows, because two
+    packages now need it: `assemble` matches a Decision to the model that
+    inherited its statement, and `emit.example` refuses to illustrate a
+    Decision against a model that did not.
+    """
+    _, _, suffix = decision.key.rpartition(":")
+    return int(suffix) if suffix.isdigit() else None
 
 
 @dataclass(frozen=True, slots=True)

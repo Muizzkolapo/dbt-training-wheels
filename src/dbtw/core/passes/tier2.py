@@ -23,6 +23,7 @@ from dbtw.core.passes.types import (
     ModelDraft,
     Option,
     PassState,
+    Subject,
     Tier,
     append_option,
     merge_option,
@@ -64,8 +65,10 @@ def _decision(
     action: str,
     reason: str,
     question: str = "",
+    plain_question: str = "",
     chosen: str = "",
     options: tuple[Option, ...] = (),
+    subject: Subject | None = None,
 ) -> Decision:
     return Decision(
         key=f"tier2.{name}.{stmt.raw.source_file}:{index}",
@@ -76,8 +79,10 @@ def _decision(
         line_start=stmt.raw.line_start,
         line_end=stmt.raw.line_end,
         question=question,
+        plain_question=plain_question,
         chosen=chosen,
         options=options,
+        subject=subject,
     )
 
 
@@ -1238,8 +1243,12 @@ def merge_pass(state: PassState) -> PassState:
                     f"none; this MERGE {performed}"
                 ),
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
+                plain_question=(
+                    f"In {table.name}, is there only ever one row for each {key_list}?"
+                ),
                 chosen=merge_answer.label,
                 options=(merge_answer, append_option()),
+                subject=Subject(table=table.name, columns=keys),
             )
         )
         for caveat_name, caveat_action, caveat_reason in _merge_caveats(branches, table.name):
@@ -1491,8 +1500,27 @@ def append_pass(state: PassState) -> PassState:
                 ),
                 reason=reason,
                 question=("Should rows be appended on every run, or deduplicated on a unique key?"),
+                # `draft.name` is the INSERT's *destination*, and the sentence
+                # has to name it as one. Wording it as where rows come from
+                # ("every row it finds in revenue_events") contradicts the
+                # model file written beside this Decision, whose body reads the
+                # SELECT's tables and never reads the target at all.
+                #
+                # The second branch is `merge_option()`, which matches on a key
+                # and *updates* the row it matched with every column the model
+                # selects. Offering it as "only the ones it has not seen
+                # before" describes an insert-only skip -- a behaviour this
+                # engine does not produce, contradicted by the option's own
+                # plain wording rendered directly below it and by the worked
+                # example rendered below that.
+                plain_question=(
+                    f"When this runs again tomorrow, should every row it produces be added "
+                    f"to {draft.name} on top of what is already there -- or should the ones "
+                    f"matching a row that is already there update it instead?"
+                ),
                 chosen=append_answer.label,
                 options=(append_answer, merge_option()),
+                subject=Subject(table=draft.name),
             )
         )
     return PassState(
