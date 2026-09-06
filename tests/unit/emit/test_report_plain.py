@@ -13,7 +13,9 @@ import pytest
 from dbtw.core.assemble import assemble
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import read_project
-from dbtw.core.emit.example import PLACEHOLDER_NOTICE
+from dbtw.core.emit import example as example_module
+from dbtw.core.emit import report as report_module
+from dbtw.core.emit.example import AFTER_RUN_LABEL, PLACEHOLDER_NOTICE, SUPPOSED_ROW_LABEL
 from dbtw.core.emit.report import render_report
 from dbtw.core.ingest import classify_statements, ingest
 from dbtw.core.passes import run_passes
@@ -154,10 +156,15 @@ def test_the_example_labels_a_supposed_row_and_what_the_model_leaves():
     does -- `worked_example` gets no evidence about the script."""
     out, _ = _report()
     block = _block(out, "INSERT INTO events became an incremental model")
-    assert "suppose this row is already there" in block
-    assert "after this model runs" in block
+    # Read off the engine rather than spelled here: a renderer that words its
+    # own fails this the moment its wording differs from the engine's, which
+    # is the failure mode. Spelled literals would pass for both.
+    assert SUPPOSED_ROW_LABEL in block, block
+    assert AFTER_RUN_LABEL in block, block
     for claim in ("your table", "your warehouse", "your script", "the script leaves"):
         assert claim not in block.lower(), claim
+        assert claim not in SUPPOSED_ROW_LABEL.lower(), claim
+        assert claim not in AFTER_RUN_LABEL.lower(), claim
 
 
 def test_the_example_table_lines_up_with_the_model_s_own_columns():
@@ -423,3 +430,58 @@ def test_the_header_is_protected_the_same_way_the_cells_under_it_are():
     # Not vacuous: the cells under it carry the same name and are wrapped too,
     # so the header is not the odd one out in either direction.
     assert "`<<b>>`" in block, block
+
+
+def test_the_report_reads_the_row_labels_at_render_time_rather_than_copying_them(monkeypatch):
+    """The direction that matters, and the one an "is the wording there?"
+    assertion cannot reach: it passes just as well for a renderer that has
+    re-typed the same words.
+
+    Both names are replaced on the *report* module and the report re-rendered.
+    A report that authors its own copies renders the original wording and
+    fails; a report with no such names at all fails `setattr` outright; only
+    one that reads the engine's strings at render time renders the sentinels.
+    That is the proof the two labels are wired rather than coincidentally
+    matching -- and the reason it is worth having is that "after your script
+    runs", authored in a consumer, is exactly the claim deleted from this
+    branch two rounds ago for being evidence the engine does not hold.
+    """
+    out, _ = _report()
+    assert SUPPOSED_ROW_LABEL in out and AFTER_RUN_LABEL in out
+
+    monkeypatch.setattr(report_module, "SUPPOSED_ROW_LABEL", "<<premise>>")
+    monkeypatch.setattr(report_module, "AFTER_RUN_LABEL", "<<result>>")
+    mutated, _ = _report()
+
+    assert "<<premise>>" in mutated, mutated
+    assert "<<result>>" in mutated, mutated
+    # The engine's own wording is gone with it, so nothing rendered a copy.
+    assert SUPPOSED_ROW_LABEL not in mutated, mutated
+    assert AFTER_RUN_LABEL not in mutated, mutated
+
+
+def test_the_example_surface_is_reachable_from_the_package():
+    """`Example`, `worked_example`, and the three strings an example must be
+    rendered under are how a second consumer -- the web layer this branch
+    exists to unblock -- gets them. Exposed on the package like every other
+    public name in `dbtw.core.*`, so that consumer imports the wording rather
+    than reaching past the package into a submodule or, worse, writing its
+    own."""
+    import dbtw.core.emit as emit
+
+    assert emit.Example is example_module.Example
+    assert emit.worked_example is example_module.worked_example
+    assert emit.PLACEHOLDER_NOTICE == example_module.PLACEHOLDER_NOTICE
+    assert emit.SUPPOSED_ROW_LABEL == example_module.SUPPOSED_ROW_LABEL
+    assert emit.AFTER_RUN_LABEL == example_module.AFTER_RUN_LABEL
+
+    exported = set(emit.__all__)
+    for name in (
+        "Example",
+        "worked_example",
+        "PLACEHOLDER_NOTICE",
+        "SUPPOSED_ROW_LABEL",
+        "AFTER_RUN_LABEL",
+    ):
+        assert name in exported, name
+        assert getattr(emit, name) is not None, name

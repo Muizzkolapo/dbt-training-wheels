@@ -9,7 +9,13 @@ from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble import ProjectChange
 from dbtw.core.context import ProjectContext
-from dbtw.core.emit.example import PLACEHOLDER_NOTICE, Example, worked_example
+from dbtw.core.emit.example import (
+    AFTER_RUN_LABEL,
+    PLACEHOLDER_NOTICE,
+    SUPPOSED_ROW_LABEL,
+    Example,
+    worked_example,
+)
 from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision, statement_index
 
@@ -159,23 +165,6 @@ def _render_vars(change: ProjectChange) -> str:
     return "\n".join(lines)
 
 
-# The two labels the worked example's row blocks carry. Neither is a fact
-# about the reader's warehouse and neither describes their script.
-#
-# "suppose" is doing the work in the first: `Example.before` is a premise the
-# reader is asked to grant, not a row this engine read -- it reads no rows at
-# all. "in your table" would claim knowledge the conversion does not have.
-#
-# The second names *this model* as what acts. It is the model's own strategy
-# and unique_key that decide the rows below it, and both are in the change
-# being reported. Attributing them to the script instead would be inventing
-# evidence: `worked_example` is handed a model and a Decision, never the
-# statement, which is why the "and here is what your script did" block was
-# deleted in Task 3 after it rendered a false comparison against this
-# project's own fixture.
-_SUPPOSED_ROW = "suppose this row is already there"
-_AFTER_RUN = "after this model runs"
-
 # A pipe inside a table cell, escaped so Markdown reads it as content rather
 # than as the end of the cell. Named rather than inlined because a backslash
 # is not allowed inside an f-string expression before Python 3.12, and this
@@ -248,10 +237,11 @@ def _render_example(example: Example) -> list[str]:
     blank on the rest, which is the table convention for "same as above" --
     repeating "after this model runs" three times says nothing more.
     """
-    # "Worked example." is this renderer's caption, the same kind of thing as
-    # the two row-block labels. The sentence after it is not: it is a claim
-    # about where these values came from, and `example.py` owns it because
-    # `worked_example` is the only thing that can vouch for it.
+    # "Worked example." is this renderer's caption, and the only string on
+    # this page that is. The sentence after it and the two row-block labels
+    # below are claims -- about where these values came from, and about what
+    # acted on them -- and `example.py` owns all three, because
+    # `worked_example` is the only thing that can vouch for any of them.
     lines = [f"  - Worked example. {PLACEHOLDER_NOTICE}"]
     if example.key:
         lines.append(f"    Rows are matched on {example.key}.")
@@ -263,9 +253,13 @@ def _render_example(example: Example) -> list[str]:
         ]
     )
     for i, row in enumerate(example.before):
-        lines.append(_example_row(_SUPPOSED_ROW if i == 0 else "", tuple(map(_example_cell, row))))
+        lines.append(
+            _example_row(SUPPOSED_ROW_LABEL if i == 0 else "", tuple(map(_example_cell, row)))
+        )
     for i, row in enumerate(example.model_after):
-        lines.append(_example_row(_AFTER_RUN if i == 0 else "", tuple(map(_example_cell, row))))
+        lines.append(
+            _example_row(AFTER_RUN_LABEL if i == 0 else "", tuple(map(_example_cell, row)))
+        )
     lines.append("")
     return lines
 

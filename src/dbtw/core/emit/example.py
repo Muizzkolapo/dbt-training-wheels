@@ -55,9 +55,9 @@ _LINE_BREAKS = ("\n", "\r")
 
 
 # The claim every Example is rendered under, owned here rather than by a
-# renderer. It is not a caption a consumer invents for its own layout (the
-# labels its two row blocks get are exactly that, and belong to the
-# renderer); it is an assertion about where these values came from, and the
+# renderer. It is not a caption a consumer invents for its own layout
+# ("Worked example.", the heading `emit.report` puts this after, is exactly
+# that); it is an assertion about where these values came from, and the
 # only thing that makes it true lives in this module: `worked_example` is
 # handed a Decision and an AssembledModel, and neither of them contains a
 # row. A consumer cannot vouch for that, so a consumer must not be the one
@@ -69,6 +69,30 @@ _LINE_BREAKS = ("\n", "\r")
 # puts it beside or after its rows rather than above them can still use it
 # verbatim.
 PLACEHOLDER_NOTICE = "The values are placeholders -- this conversion has not read your data."
+
+# The labels an Example's two row blocks carry, owned here for the reason the
+# notice above them is. They read like captions; they are not. Each states an
+# invariant this module exists to hold, and a renderer cannot vouch for
+# either.
+#
+# "suppose" is doing the work in the first: `before` is a premise the reader
+# is asked to grant, not a row this engine read -- it reads no rows at all.
+# "in your table" would claim knowledge the conversion does not have.
+#
+# The second names *this model* as what acts. The model's own strategy and
+# unique_key decide the rows under it, and `worked_example` is handed a model
+# and a Decision, never the statement -- so it holds no evidence about the
+# reader's script and nothing here may be labelled as what that script does.
+# That is precisely the block deleted from this branch two rounds ago, when
+# "and here is what your script did" rendered a false comparison against this
+# project's own fixture; a second consumer authoring "after your script runs"
+# for its own page would write it straight back. A string carrying the
+# invariant is not something each renderer may reinvent.
+#
+# Worded without reference to where they sit, like the notice, so a renderer
+# that lays its rows out some other way can still use them verbatim.
+SUPPOSED_ROW_LABEL = "suppose this row is already there"
+AFTER_RUN_LABEL = "after this model runs"
 
 
 @dataclass(frozen=True, slots=True)
