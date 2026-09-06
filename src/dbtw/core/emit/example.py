@@ -132,9 +132,9 @@ def _parseable_projections(
 
 
 def _placeholder_row(
-    columns: tuple[str, ...], key_columns: tuple[str, ...], *, changed: bool
+    projections: list[tuple[str, bool]], key_columns: tuple[str, ...], *, changed: bool
 ) -> Row:
-    """A row of `<column>` placeholders.
+    """A row of `<column>` placeholders over the model's projections.
 
     `changed` swaps in `<column-new>` for every column that is not one of
     `key_columns`, which is what makes a merge's update visible: the key
@@ -142,11 +142,23 @@ def _placeholder_row(
     updated one -- while everything else moves. With `key_columns` empty and
     `changed` set, every cell moves, which is a row that matches nothing and
     so is inserted rather than updated.
+
+    Takes the projections rather than their bare names because "is this
+    column one of the keys" is `same_identifier`'s question and it needs to
+    know whether the output name was written quoted.
+    `_every_key_is_projected` asks the same question from the other end --
+    does any column match this key -- and the two have to answer it the same
+    way. Folded case here and `same_identifier` there disagree on exactly the
+    row that matters: `SELECT order_id, x AS "ORDER_ID"` keyed on order_id
+    clears the guard on the unquoted column, and then a casefold would hold
+    the quoted one fixed as well, showing a column unchanged that dbt's merge
+    overwrites on every dialect that respects quoting.
     """
-    keyed = {key.casefold() for key in key_columns}
     return tuple(
-        f"<{name}-new>" if changed and name.casefold() not in keyed else f"<{name}>"
-        for name in columns
+        f"<{name}-new>"
+        if changed and not any(same_identifier(key, False, name, quoted) for key in key_columns)
+        else f"<{name}>"
+        for name, quoted in projections
     )
 
 
@@ -217,9 +229,9 @@ def worked_example(
     if any(char in name for name in columns for char in _LINE_BREAKS):
         return None
 
-    existing = _placeholder_row(columns, (), changed=False)
+    existing = _placeholder_row(projections, (), changed=False)
     # A row whose key matches nothing already there, so every cell is new.
-    inserted = _placeholder_row(columns, (), changed=True)
+    inserted = _placeholder_row(projections, (), changed=True)
 
     if model.incremental_strategy == "merge":
         if not model.unique_key or not _every_key_is_projected(model.unique_key, projections):
@@ -227,7 +239,7 @@ def worked_example(
         # The row already there is found by its key and updated in place --
         # the key column holds, the rest move -- and the row matching nothing
         # is added. One row in, two rows out, neither of them a duplicate.
-        updated = _placeholder_row(columns, model.unique_key, changed=True)
+        updated = _placeholder_row(projections, model.unique_key, changed=True)
         return Example(
             columns=columns,
             key=", ".join(model.unique_key),

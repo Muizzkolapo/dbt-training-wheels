@@ -3,7 +3,11 @@ import dataclasses
 from dbtw.core.assemble import assemble
 from dbtw.core.assemble.types import AssembledModel
 from dbtw.core.context import read_project
-from dbtw.core.emit.example import _parseable_projections, worked_example
+from dbtw.core.emit.example import (
+    _every_key_is_projected,
+    _parseable_projections,
+    worked_example,
+)
 from dbtw.core.ingest import classify_statements, ingest
 from dbtw.core.passes import run_passes
 from dbtw.core.passes.types import Decision, Subject
@@ -266,6 +270,72 @@ def test_a_merge_model_that_does_not_select_its_key_has_no_example():
         worked_example(_question(), _model(strategy="merge", unique_key=("order_id",)), None)
         is None
     )
+
+
+# --- the quoting rule, on both sides of the key comparison
+
+_QUOTED_KEY_BODY = "SELECT\n  \"Order_Id\",\n  amount\nFROM {{ source('raw', 'orders') }}"
+_QUOTED_COLUMN_BODY = "SELECT\n  order_id,\n  x AS \"ORDER_ID\"\nFROM {{ source('raw', 'orders') }}"
+
+
+def _merge_on_order_id(body: str):
+    return worked_example(
+        _question("merge on order_id", ("order_id",)),
+        _model(body, strategy="merge", unique_key=("order_id",)),
+        None,
+    )
+
+
+def test_a_quoted_output_name_differing_only_by_case_is_not_a_key_match():
+    """`same_identifier`'s rule, which the whole engine matches identifiers
+    by: a quoted name is case-sensitive on every dialect that respects
+    quoting, so `"Order_Id"` and the key `order_id` are two different
+    columns. The guard treats "not a confident match" as no match, because a
+    key the model does not select cannot be held fixed and the merge would be
+    drawn updating nothing.
+
+    Nothing pinned this behaviour, and swapping the guard for a bare
+    `key.casefold() == name.casefold()` left the whole suite green while the
+    engine rendered a merge holding `"Order_Id"` fixed as its key.
+    """
+    known = _parseable_projections(_QUOTED_KEY_BODY, None)
+    assert known is not None
+    projections, has_star, has_unnamed = known
+    assert (has_star, has_unnamed) == (False, False)
+    assert projections == [("Order_Id", True), ("amount", False)]
+
+    assert _every_key_is_projected(("order_id",), projections) is False
+    assert _merge_on_order_id(_QUOTED_KEY_BODY) is None
+
+    # Not vacuous, twice over: the key spelled the way the quoted column
+    # spells it does match, and the same body with the column written
+    # unquoted is illustrated under the original key.
+    assert _every_key_is_projected(("Order_Id",), projections) is True
+    assert _merge_on_order_id(_QUOTED_KEY_BODY.replace('"Order_Id"', "order_id")) is not None
+
+
+def test_a_quoted_column_matching_the_key_only_by_case_is_not_held_fixed():
+    """The same rule from the other end. `SELECT order_id, x AS "ORDER_ID"`
+    keyed on order_id clears the guard -- the unquoted `order_id` really is
+    projected -- and the row builder then has to decide whether the quoted
+    `"ORDER_ID"` is that key too. It is not: dbt matches on order_id and
+    overwrites `"ORDER_ID"` along with every other column the model selects.
+    Folding case would show it unchanged, which is the one thing the example
+    exists to get right.
+    """
+    example = _merge_on_order_id(_QUOTED_COLUMN_BODY)
+    assert example is not None
+    assert example.columns == ("order_id", "ORDER_ID")
+
+    updated, inserted = example.model_after
+    # The key holds its value; the quoted column, a different column, moves.
+    assert updated == ("<order_id>", "<ORDER_ID-new>")
+    assert inserted == ("<order_id-new>", "<ORDER_ID-new>")
+
+    # Not vacuous: written unquoted it IS the key, and then it does hold.
+    unquoted = _merge_on_order_id(_QUOTED_COLUMN_BODY.replace('x AS "ORDER_ID"', "ORDER_ID"))
+    assert unquoted is not None
+    assert unquoted.model_after[0] == ("<order_id>", "<ORDER_ID>")
 
 
 def test_a_model_that_is_not_incremental_has_no_example():
