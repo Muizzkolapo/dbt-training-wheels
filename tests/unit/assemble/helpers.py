@@ -33,6 +33,7 @@ def convert(
     answers: Mapping[str, Answer] | None = None,
     unique_key: tuple[str, ...] = (),
     project: str = "jaffle_shop",
+    dialect: str | None = None,
 ) -> ProjectChange:
     """Run the real ingest -> classify -> passes -> assemble pipeline over `sql`.
 
@@ -45,14 +46,17 @@ def convert(
     answer -- naming a key an earlier run handed out -- only works if two
     convert() calls on the same script agree on where that script lives. A
     fresh directory per call would make every key single-use, and every answer
-    keyed from a previous call would be refused as unknown.
+    keyed from a previous call would be refused as unknown. The dialect is part
+    of that identity too: the same text read as two dialects is two different
+    conversions.
     """
-    directory = _CONVERT_ROOT / hashlib.sha256(sql.encode("utf-8")).hexdigest()[:16]
+    keyed_on = f"{dialect}\n{sql}"
+    directory = _CONVERT_ROOT / hashlib.sha256(keyed_on.encode("utf-8")).hexdigest()[:16]
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "in.sql"
     path.write_text(sql, encoding="utf-8")
 
-    result = ingest(path)
+    result = ingest(path, dialect)
     state = run_passes(classify_statements(result), result.dialect)
     return assemble(state, context_for(project), unique_key=unique_key, answers=answers)
 

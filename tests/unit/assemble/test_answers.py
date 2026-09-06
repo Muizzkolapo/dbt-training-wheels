@@ -3,6 +3,7 @@ from tests.unit.assemble.helpers import context_for, convert, state_with_variabl
 
 from dbtw.core.assemble import UnknownAnswerError, assemble
 from dbtw.core.assemble import assembler as assembler_module
+from dbtw.core.emit.render import render_model
 from dbtw.core.passes import Decision, Option, PassState, append_option, merge_option
 from dbtw.core.passes import tier2 as tier2_module
 from dbtw.core.passes.types import Answer
@@ -15,6 +16,13 @@ ONE_APPEND = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders
 ONE_MERGE = (
     "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
     "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
+)
+# The one script that asks both kinds of answerable question: a script
+# variable and an incremental strategy.
+VARIABLE_AND_APPEND = (
+    "DECLARE @cutoff DATE = '2024-01-01';\n"
+    "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders "
+    "WHERE order_date >= @cutoff;\n"
 )
 
 
@@ -170,6 +178,67 @@ def test_a_merge_answer_upgrades_only_the_model_it_names():
     assert revenue.unique_key == ("order_id",)
     assert views.incremental_strategy == "append"
     assert views.unique_key == ()
+
+
+def test_two_models_in_one_script_take_two_different_answers():
+    """Answering one model differently from another is the whole point of a
+    per-question answer -- a blanket --unique-key cannot do it. Both answers
+    have to land, each on its own model. Every other test here sends exactly
+    one answer, so an implementation that kept only the first or only the
+    last of them, or applied one model's key to both, would pass all of them.
+    """
+    baseline = convert(TWO_APPENDS)
+    revenue_q = _question_for(baseline, "revenue_events")
+    views_q = _question_for(baseline, "page_views")
+
+    answered = convert(
+        TWO_APPENDS,
+        answers={
+            revenue_q.key: Answer("merge on a unique key", ("order_id",)),
+            views_q.key: Answer("merge on a unique key", ("ts",)),
+        },
+    )
+    revenue = next(m for m in answered.models if "revenue_events" in m.name)
+    views = next(m for m in answered.models if "page_views" in m.name)
+    assert (revenue.incremental_strategy, revenue.unique_key) == ("merge", ("order_id",))
+    assert (views.incremental_strategy, views.unique_key) == ("merge", ("ts",))
+    # The files that actually get written, not just the fields behind them:
+    # each model carries its own key and not the other's.
+    revenue_file, views_file = render_model(revenue), render_model(views)
+    assert "unique_key='order_id'" in revenue_file
+    assert "unique_key='ts'" not in revenue_file
+    assert "unique_key='ts'" in views_file
+    assert "unique_key='order_id'" not in views_file
+
+
+def test_a_variable_answer_and_an_incremental_answer_both_apply_in_one_call():
+    """The two kinds of question a caller can answer are registered at
+    different points in assemble() -- the incremental ones before the models
+    are placed, the variable ones during the rewrite -- and a screen showing
+    both sends both back together. Neither kind may clear or shadow the
+    other: one answered model that is also one answered variable has to come
+    out merged on the key AND with the literal spliced in.
+    """
+    baseline = convert(VARIABLE_AND_APPEND, dialect="tsql")
+    incremental_q = _question_for(baseline, "revenue_events")
+    (variable_q,) = [d for d in baseline.decisions if d.key == "assemble.variable.cutoff"]
+
+    answered = convert(
+        VARIABLE_AND_APPEND,
+        dialect="tsql",
+        answers={
+            incremental_q.key: Answer("merge on a unique key", ("order_id",)),
+            variable_q.key: Answer("inline the literal value"),
+        },
+    )
+    (model,) = answered.models
+    rendered = render_model(model)
+    assert (model.incremental_strategy, model.unique_key) == ("merge", ("order_id",))
+    assert "unique_key='order_id'" in rendered
+    assert "'2024-01-01'" in rendered
+    assert "var('cutoff')" not in rendered
+    # Nothing calls var('cutoff') any more, so dbt_project.yml declares no var.
+    assert answered.variables == ()
 
 
 def test_an_upgrade_from_an_answer_says_so_instead_of_blaming_the_flag():
