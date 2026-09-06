@@ -5,8 +5,7 @@ import yaml
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry, Variable
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import render_report
-from dbtw.core.passes import Decision
-from dbtw.core.passes.types import Option
+from dbtw.core.passes import Decision, Option
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 

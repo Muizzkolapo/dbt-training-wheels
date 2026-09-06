@@ -286,8 +286,9 @@ def _find_append_decision_index(
     only way two append Decisions can compete for one model.
     """
     wanted = set(source_indices)
+    append_label = append_option().label
     for i, dec in enumerate(decisions):
-        if dec.chosen == "append every row" and _decision_statement_index(dec) in wanted:
+        if dec.chosen == append_label and _decision_statement_index(dec) in wanted:
             return i
     return None
 
@@ -383,7 +384,7 @@ def _upgrade_to_merge(
     never has to guess (and can never fabricate) what's actually true of
     the model's body (FINDING 6).
     """
-    keys_str = _keys_str(keys)
+    merge_answer = merge_option(keys)
     return dataclasses.replace(
         dec,
         action=(
@@ -396,8 +397,8 @@ def _upgrade_to_merge(
             "re-inserts everything the model selects on every run, so this model "
             "was switched to a merge on the given key instead" + caveat
         ),
-        chosen=f"merge on {keys_str}",
-        options=(merge_option(keys), append_option()),
+        chosen=merge_answer.label,
+        options=(merge_answer, append_option()),
     )
 
 
@@ -886,8 +887,8 @@ def assemble(
         var_option = Option(
             label="keep as a dbt var",
             effect=(
-                "The value stays a run-time parameter: the model calls var('name') and "
-                "dbt supplies it per run, so it can differ between environments."
+                f"The value stays a run-time parameter: the model calls var('{variable.name}') "
+                "and dbt supplies it per run, so it can differ between environments."
             ),
         )
         inline_option = Option(

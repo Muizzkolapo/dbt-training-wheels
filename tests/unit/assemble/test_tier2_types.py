@@ -1,6 +1,5 @@
 from dbtw.core.assemble import ProjectChange, Variable
-from dbtw.core.passes import Decision
-from dbtw.core.passes.types import Option
+from dbtw.core.passes import Decision, Option
 
 
 def test_decision_defaults_keep_tier1_constructions_working():

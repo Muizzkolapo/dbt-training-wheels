@@ -1209,6 +1209,7 @@ def merge_pass(state: PassState) -> PassState:
         if verdict == "superseded":
             continue
         key_list = ", ".join(keys)
+        merge_answer = merge_option(keys)
         performed = " and ".join(
             phrase
             for phrase, present in (
@@ -1237,8 +1238,8 @@ def merge_pass(state: PassState) -> PassState:
                     f"none; this MERGE {performed}"
                 ),
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
-                chosen=f"merge on {key_list}",
-                options=(merge_option(keys), append_option()),
+                chosen=merge_answer.label,
+                options=(merge_answer, append_option()),
             )
         )
         for caveat_name, caveat_action, caveat_reason in _merge_caveats(branches, table.name):
@@ -1473,6 +1474,7 @@ def append_pass(state: PassState) -> PassState:
                 f" — the SELECT already carries a WHERE ({where_sql}), named here as the "
                 "likely incremental filter for a human to confirm, not applied as one"
             )
+        append_answer = append_option()
         decisions.append(
             _decision(
                 stmt,
@@ -1485,8 +1487,8 @@ def append_pass(state: PassState) -> PassState:
                 ),
                 reason=reason,
                 question=("Should rows be appended on every run, or deduplicated on a unique key?"),
-                chosen="append every row",
-                options=(append_option(), merge_option()),
+                chosen=append_answer.label,
+                options=(append_answer, merge_option()),
             )
         )
     return PassState(

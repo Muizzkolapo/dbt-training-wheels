@@ -29,9 +29,10 @@ def test_an_append_question_describes_both_of_its_answers():
     assert "append every row" in labels
     assert "merge on a unique key" in labels
     assert dec.chosen in labels
-    for option in dec.options:
-        assert option.effect, f"{option.label} explains nothing"
-        assert option.effect != option.label
+    append_option = next(o for o in dec.options if o.label == "append every row")
+    assert "duplicates" in append_option.effect
+    merge_option = next(o for o in dec.options if o.label == "merge on a unique key")
+    assert "uniquely" in merge_option.effect
 
 
 def test_a_merge_question_names_its_key_in_the_option_it_offers():
