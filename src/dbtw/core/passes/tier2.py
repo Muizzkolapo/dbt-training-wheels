@@ -1462,10 +1462,14 @@ def append_pass(state: PassState) -> PassState:
             )
         if verdict == "superseded":
             continue
+        # The alternative is described as the choice it is, not as the CLI
+        # flag that happens to make it: this reason is rendered directly
+        # above the options offering that same switch in-band, to readers
+        # (the web layer among them) who have no command line to type it on.
         reason = (
             "an append incremental re-inserts everything the model selects on every run "
-            "unless the model's own SELECT filters to new rows; supply --unique-key to "
-            "switch it to a merge incremental instead"
+            "unless the model's own SELECT filters to new rows; keying it on a column "
+            "that identifies a row uniquely would make it a merge incremental instead"
         )
         where = select.args.get("where") if isinstance(select, exp.Select) else None
         if where is not None:

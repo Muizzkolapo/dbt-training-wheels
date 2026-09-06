@@ -80,3 +80,26 @@ def test_a_merge_option_that_names_its_keys_needs_no_columns():
     ask for."""
     dec = _question(_run(merge_pass, MERGE, "merge"))
     assert [o.columns_prompt for o in dec.options] == ["", ""]
+
+
+def test_no_question_recommends_a_command_line_flag():
+    """A question, its reason and its options are rendered together to a
+    reader who may have no command line -- the web layer this surface exists
+    for -- and the options already offer the same switch in-band. Prose
+    telling that reader to "supply --unique-key" points at a door they
+    cannot open, directly above the button that does the same thing.
+    """
+    for out in (_run(append_pass, APPEND, "insert_select"), _run(merge_pass, MERGE, "merge")):
+        dec = _question(out)
+        rendered = " ".join(
+            [dec.action, dec.reason, dec.question, *(o.label + " " + o.effect for o in dec.options)]
+        )
+        assert "--" not in rendered, rendered
+
+
+def test_the_append_question_describes_the_merge_alternative_not_the_flag():
+    """What the reader is choosing between, in the same terms the options
+    use: a key that identifies a row uniquely, not a flag name."""
+    dec = _question(_run(append_pass, APPEND, "insert_select"))
+    assert "identifies a row uniquely" in dec.reason
+    assert "merge incremental" in dec.reason
