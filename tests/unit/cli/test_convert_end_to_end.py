@@ -746,3 +746,67 @@ def test_the_projects_own_parent_is_still_a_valid_out(tmp_path):
     before = _snapshot(project)
     assert _convert_into(project, tmp_path) == 0
     assert _snapshot(project) == before
+
+
+def test_refuses_an_out_path_that_differs_from_the_project_only_in_case(tmp_path):
+    """APFS (this machine) and NTFS are case-insensitive: /x/PROJECT and
+    /x/project are one directory. Path.resolve() does not canonicalise case,
+    so comparing resolved path *strings* sees two different projects and lets
+    the conversion write over the real one. os.path.samefile compares the
+    stat dev/ino pair and sees one directory.
+
+    On a case-sensitive filesystem the alias cannot exist by spelling alone,
+    so the test builds it as a symlink instead of skipping: the same "two
+    names, one directory" shape, which the guard has to answer for either way.
+    """
+    project = _victim(tmp_path)
+    alias = tmp_path / "PROJECT"
+    if not alias.exists():  # case-sensitive filesystem: make the alias real
+        alias.symlink_to(project, target_is_directory=True)
+    before = _snapshot(project)
+    assert _convert_into(project, alias) == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_dir_holding_the_projects_model_path_by_another_route(tmp_path):
+    """A project whose models/ is a symlink to a shared tree. --out <shared>
+    is neither the project root nor under it by any spelling, so a
+    root-only containment test lets it through — and every model this run
+    writes lands in <shared>/models, which is the project's real models
+    directory. The project's own sources.yml is replaced in place.
+    """
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shutil.copytree(ROOT / "projects" / "sources_at_root" / "models", shared / "models")
+    project = tmp_path / "project"
+    project.mkdir()
+    shutil.copy(
+        ROOT / "projects" / "sources_at_root" / "dbt_project.yml", project / "dbt_project.yml"
+    )
+    (project / "models").symlink_to(shared / "models", target_is_directory=True)
+    before = _snapshot(shared)
+    assert _convert_into(project, shared) == 2
+    assert _snapshot(shared) == before
+
+
+def test_an_unexpandable_out_path_is_a_usage_error_not_a_traceback(tmp_path, capsys):
+    """Path.expanduser() raises RuntimeError for a '~' it cannot resolve — an
+    unknown user, or no home directory at all, which is routine in a
+    container. The CLI documents four lines above the expansion that input
+    errors are reported on stderr with no traceback; a RuntimeError escaping
+    main() breaks that.
+    """
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    code = main(["convert", str(SQL), "--project", str(project), "--out", "~nosuchuser_dbtw/out"])
+    assert code == 2
+    assert "--out" in capsys.readouterr().err
+    assert _snapshot(project) == before
+
+
+def test_an_unexpandable_project_path_is_a_usage_error_too(tmp_path, capsys):
+    code = main(
+        ["convert", str(SQL), "--project", "~nosuchuser_dbtw/proj", "--out", str(tmp_path / "out")]
+    )
+    assert code == 2
+    assert "--project" in capsys.readouterr().err

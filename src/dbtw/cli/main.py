@@ -12,6 +12,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NoReturn
 
 from dbtw.core.assemble import assemble
 from dbtw.core.context import NotADbtProjectError, ProjectContext, read_project
@@ -20,6 +21,20 @@ from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest
 from dbtw.core.passes import run_passes
 
 _REPORT_NAME = "CONVERSION_REPORT.md"
+
+
+class UnexpandablePathError(ValueError):
+    """A path argument starts with a '~' that cannot be expanded.
+
+    Path.expanduser() raises RuntimeError for an unknown user
+    ('~nosuchuser/out') and for a bare '~' when no home directory can be
+    determined at all, which is routine inside a container. RuntimeError is
+    not in _USAGE_ERRORS and never should be — it is the shape of a dbtw bug
+    — so it escapes main() as a traceback, contradicting the convention
+    recorded on _USAGE_ERRORS itself. Caught at the expansion site and
+    re-raised as what it actually is: a path the user gave that cannot be
+    read.
+    """
 
 
 class OutputInsideProjectError(ValueError):
@@ -50,6 +65,7 @@ _USAGE_ERRORS = (
     NotADbtProjectError,
     UnsafeOutputPathError,
     OutputInsideProjectError,
+    UnexpandablePathError,
 )
 
 # How many of the project's own files the refusal names. Enough to make
@@ -97,15 +113,74 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _expanded(value: str, argument: str) -> Path:
+    """One path argument, with a leading '~' expanded, or a usage error.
+
+    Both arguments go through this, not just --out: expanding one side and
+    not the other compares '~/proj' against an already-expanded path, and the
+    in-project guard misses the very case it exists for.
+    """
+    try:
+        return Path(value).expanduser()
+    except RuntimeError as exc:
+        raise UnexpandablePathError(f"{argument} {value!r} could not be expanded: {exc}") from exc
+
+
+def _existing_chain(path: Path) -> list[Path]:
+    """`path` and its ancestors, keeping only the ones that exist.
+
+    An --out that has not been created yet still has to be placed, and a
+    stat-based comparison needs something on disk to stat: the nearest
+    ancestor that does exist is the first entry, and everything above it
+    exists too. `mkdir -p` would put the new directory inside that ancestor,
+    so an ancestor that is the project is an --out that is inside the project.
+    """
+    return [candidate for candidate in (path, *path.parents) if candidate.exists()]
+
+
+def _same_dir(one: Path, other: Path) -> bool:
+    """Whether two paths are one directory on disk. Both must exist.
+
+    NOT `one.resolve() == other.resolve()`. resolve() expands symlinks but
+    does not canonicalise case, so on a case-insensitive filesystem — APFS and
+    NTFS, which is most desktops — /x/PROJ and /x/proj resolve to two
+    different strings and are one directory; a string comparison lets
+    `--out /x/PROJ` convert straight into `/x/proj`. os.path.samefile compares
+    the stat dev/ino pair, which is the identity the filesystem itself uses,
+    and answers for case-folding, symlinks, hardlinked directories and bind
+    mounts in one test.
+
+    An OSError from stat (a path that vanished between the exists() check and
+    here, or one we cannot stat) is left to propagate: OSError is already a
+    usage error to main(), and swallowing it here would turn "cannot tell"
+    into "not the project", which is the answer that destroys the project.
+    """
+    return one.samefile(other)
+
+
+def _refuse(given_out: str, relation: str, ctx: ProjectContext) -> NoReturn:
+    at_risk = sorted(
+        {s.declared_in for s in ctx.existing_sources} | {m.path for m in ctx.existing_models}
+    )
+    named = ", ".join(at_risk[:_NAMED_AT_RISK]) if at_risk else "dbt_project.yml"
+    raise OutputInsideProjectError(
+        f"refusing to convert into the target project: --out {given_out!r} {relation}. "
+        "Every file this conversion writes lands at a project-relative path, so it would "
+        f"write straight into the project — where {named} already live — and replace them "
+        "in place, leaving nothing to compare against. Convert into a directory outside "
+        "the project, read the report, and copy across what you want."
+    )
+
+
 def _refuse_output_inside_project(
     out_dir: Path, project_root: Path, given_out: str, ctx: ProjectContext
 ) -> None:
-    """Refuse --out when it is the target project, or a directory inside it.
+    """Refuse --out when this run would write into the target project.
 
     dbtw's whole contract is that it hands you a copy to read before you
     change anything: every file it writes lands at a *project-relative* path,
     so an out_dir that is the project writes the conversion's models and
-    sources.yml straight over the project's own — the source declaration this
+    sources file straight over the project's own — the declaration this
     conversion doesn't repeat is gone from the real project, immediately, with
     no copy left to compare against and a CONVERSION_REPORT.md sitting in
     there claiming a clean run.
@@ -117,37 +192,47 @@ def _refuse_output_inside_project(
     a refusal raised after three model files have landed has already done the
     damage it exists to prevent.
 
-    Both paths are expanded and resolved before comparing, so a relative
-    --out, a trailing slash, a symlink, '.' and a quoted '~' all reach the
-    same answer — the same reasoning `emit._safe_join` uses for its own guard,
-    and the same containment test: equal, or the project among out_dir's
-    resolved parents.
+    Two ways this run reaches the project, and both are asked as questions
+    about filesystem identity rather than about path spelling:
 
-    out_dir *containing* the project is not refused. The project sits inside
-    out_dir there, and nothing this run writes reaches into it.
+    (1) out_dir *is* the project, or sits inside it. Asked of out_dir and
+        every existing ancestor, so an --out that does not exist yet is placed
+        by the directory it would be created in.
+    (2) out_dir *holds* the project's model-path by another route. A project
+        whose models/ is a symlink into a shared tree is neither the root nor
+        under it when out_dir is that shared tree — and yet every model this
+        run writes lands in the project's real models directory. Each
+        configured model-path is checked as `out_dir/<path>` against
+        `project_root/<path>`, which is exactly the pairing emit will use.
+
+    out_dir merely *containing* the project is still allowed: the project sits
+    inside out_dir there, at a path this run writes nothing to.
     """
     out_resolved = out_dir.resolve()
     project_resolved = project_root.resolve()
-    if out_resolved != project_resolved:
-        if project_resolved not in out_resolved.parents:
-            return
-        relation = "inside the dbt project at"
-    else:
-        relation = "the dbt project at"
 
-    at_risk = sorted(
-        {s.declared_in for s in ctx.existing_sources} | {m.path for m in ctx.existing_models}
-    )
-    named = ", ".join(at_risk[:_NAMED_AT_RISK]) if at_risk else "dbt_project.yml"
+    for ancestor in _existing_chain(out_dir):
+        if _same_dir(ancestor, project_root):
+            preposition = (
+                "is the dbt project at" if ancestor == out_dir else "is inside the dbt project at"
+            )
+            _refuse(
+                given_out,
+                f"resolves to {out_resolved}, which {preposition} {project_resolved}",
+                ctx,
+            )
 
-    raise OutputInsideProjectError(
-        f"refusing to convert into the target project: --out {given_out!r} resolves to "
-        f"{out_resolved}, which is {relation} {project_resolved}. Every file this "
-        "conversion writes lands at a project-relative path, so it would write straight "
-        f"into the project — where {named} already live — and replace them in place, "
-        "leaving nothing to compare against. Convert into a directory outside the "
-        "project, read the report, and copy across what you want."
-    )
+    for relative in ctx.model_paths:
+        theirs = project_root / relative
+        ours = out_dir / relative
+        if theirs.is_dir() and ours.exists() and _same_dir(ours, theirs):
+            _refuse(
+                given_out,
+                f"resolves to {out_resolved}, whose {relative}/ is the same directory as "
+                f"{relative}/ in the dbt project at {project_resolved} — one directory "
+                "reached by two paths",
+                ctx,
+            )
 
 
 def _convert(
@@ -161,8 +246,8 @@ def _convert(
     # Expanded here, once, for both arguments: --out and --project have to be
     # read in the same spelling or the guard below compares '~/proj' against
     # an already-expanded path and lets the very case it exists for through.
-    project_root = Path(project).expanduser()
-    out_dir = Path(out).expanduser()
+    project_root = _expanded(project, "--project")
+    out_dir = _expanded(out, "--out")
 
     ingest_result = ingest(sql_path, dialect)
     for warning in ingest_result.warnings:
