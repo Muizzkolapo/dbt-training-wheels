@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import pytest
@@ -632,3 +633,116 @@ def test_report_names_the_source_file_the_output_lands_on(tmp_path):
     assert "models/sources.yml" in report
     assert "raw.orders" in report
     assert "replaces that file" in report
+
+
+def _victim(tmp_path):
+    """A throwaway copy of a real dbt project — one that declares a source, so
+    a destroyed declaration is visible in the bytes. Copied rather than used
+    in place so that a broken guard damages the copy, never the fixture.
+    """
+    project = tmp_path / "project"
+    shutil.copytree(ROOT / "projects" / "sources_at_root", project)
+    return project
+
+
+def _snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        p.relative_to(root).as_posix(): p.read_bytes()
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _convert_into(project, out, sql=None):
+    return main(
+        [
+            "convert",
+            str(sql if sql is not None else ROOT / "sql" / "incremental_etl.sql"),
+            "--project",
+            str(project),
+            "--out",
+            str(out),
+        ]
+    )
+
+
+def test_refuses_to_convert_into_the_target_project_itself(tmp_path, capsys):
+    """--out <the project> reads as "put the output in my project" and is a
+    natural thing to type. It converts the report's "copying this over your
+    project would replace that file" into "it already did": raw.orders is gone
+    from the real project, with no copy left to compare against.
+    """
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, project) == 2
+    assert _snapshot(project) == before
+    err = capsys.readouterr().err
+    assert str(project.resolve()) in err
+    assert "models/sources.yml" in err
+
+
+def test_refuses_when_out_is_a_directory_inside_the_target_project(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, project / "models") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_a_relative_out_path_that_resolves_into_the_project(tmp_path, monkeypatch):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    monkeypatch.chdir(project)
+    assert _convert_into(project, ".") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_path_with_a_trailing_slash(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, f"{project}/") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_an_out_path_that_reaches_the_project_through_a_symlink(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    link = tmp_path / "link"
+    link.symlink_to(project, target_is_directory=True)
+    assert _convert_into(project, link) == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_a_home_relative_out_path_that_names_the_project(tmp_path, monkeypatch, capsys):
+    """A quoted '~/project' never reaches the shell, so the CLI has to expand
+    it itself — and has to expand --project the same way, or the two paths are
+    compared in different spellings and the guard misses.
+
+    The exit code alone cannot tell this test apart from an unexpanded '~'
+    landing on a directory that is not a dbt project at all, which also exits
+    2. The stderr assertion is what makes it the guard's refusal.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into("~/project", "~/project") == 2
+    assert "refusing to convert into the target project" in capsys.readouterr().err
+    assert _snapshot(project) == before
+
+
+def test_a_directory_beside_the_project_is_still_a_valid_out(tmp_path):
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, tmp_path / "out") == 0
+    assert _snapshot(project) == before
+    assert (tmp_path / "out" / "models" / "sources.yml").is_file()
+
+
+def test_the_projects_own_parent_is_still_a_valid_out(tmp_path):
+    """The project sits inside out_dir, not the other way round: nothing this
+    run writes can reach it. Refusing here would be a guard inventing a clash.
+    """
+    project = _victim(tmp_path)
+    before = _snapshot(project)
+    assert _convert_into(project, tmp_path) == 0
+    assert _snapshot(project) == before
