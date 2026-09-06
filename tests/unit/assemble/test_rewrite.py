@@ -21,7 +21,6 @@ def test_unqualified_table_becomes_a_ref():
         None,
         _res("", "", "order_totals", "ref", "stg_order_totals"),
         {},
-        False,
     )
     assert "{{ ref('stg_order_totals') }}" in out
     assert "order_totals" not in out.replace("stg_order_totals", "")
@@ -33,7 +32,6 @@ def test_qualified_table_becomes_a_source():
         None,
         _res("", "raw", "orders", "source", "orders", "raw"),
         {},
-        False,
     )
     assert "{{ source('raw', 'orders') }}" in out
 
@@ -45,7 +43,6 @@ def test_table_alias_survives_the_rewrite():
         None,
         _res("", "raw", "orders", "source", "orders", "raw"),
         {},
-        False,
     )
     assert "AS o" in out
     assert "o.id" in out
@@ -57,7 +54,6 @@ def test_unresolved_table_is_left_exactly_as_written():
         None,
         _res("", "", "raw_orders", "unresolved", "", ""),
         {},
-        False,
     )
     assert "raw_orders" in out
     assert "{{" not in out
@@ -65,7 +61,7 @@ def test_unresolved_table_is_left_exactly_as_written():
 
 def test_cte_alias_is_never_rewritten():
     body = "WITH order_totals AS (SELECT 1 AS a) SELECT * FROM order_totals"
-    out = rewrite_body(body, None, _res("", "", "order_totals", "ref", "stg_x"), {}, False)
+    out = rewrite_body(body, None, _res("", "", "order_totals", "ref", "stg_x"), {})
     assert "{{ ref(" not in out
 
 
@@ -78,7 +74,7 @@ def test_cte_alias_is_never_rewritten_case_insensitively():
     different table.
     """
     body = "WITH Totals AS (SELECT 1 AS x) SELECT * FROM totals"
-    out = rewrite_body(body, "tsql", _res("", "", "totals", "ref", "stg_totals"), {}, False)
+    out = rewrite_body(body, "tsql", _res("", "", "totals", "ref", "stg_totals"), {})
     assert "{{ ref(" not in out
     assert "totals" in out.lower()
 
@@ -91,26 +87,26 @@ def test_quoted_case_distinct_table_is_rewritten_as_an_external_reference():
     same as it wrongly excluded it from refs.py's output.
     """
     body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "totals"'
-    out = rewrite_body(body, "postgres", _res("", "", "totals", "ref", "stg_totals"), {}, False)
+    out = rewrite_body(body, "postgres", _res("", "", "totals", "ref", "stg_totals"), {})
     assert "{{ ref('stg_totals') }}" in out
 
 
 def test_quoted_same_case_table_is_still_excluded_as_a_cte_read():
     body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "Totals"'
-    out = rewrite_body(body, "postgres", _res("", "", "totals", "ref", "stg_totals"), {}, False)
+    out = rewrite_body(body, "postgres", _res("", "", "totals", "ref", "stg_totals"), {})
     assert "{{ ref(" not in out
 
 
 def test_parameter_becomes_a_var():
-    out = rewrite_body(
-        "SELECT a FROM t WHERE d >= @start_date", "tsql", {}, {"start_date": "'2024-01-01'"}, False
-    )
+    """A None entry is how the caller says "keep this one a var": the map
+    carries the decision, so there is no default here to be inlined."""
+    out = rewrite_body("SELECT a FROM t WHERE d >= @start_date", "tsql", {}, {"start_date": None})
     assert "{{ var('start_date') }}" in out
 
 
-def test_parameter_is_inlined_when_asked():
+def test_parameter_is_inlined_when_the_map_carries_a_default():
     out = rewrite_body(
-        "SELECT a FROM t WHERE d >= @start_date", "tsql", {}, {"start_date": "'2024-01-01'"}, True
+        "SELECT a FROM t WHERE d >= @start_date", "tsql", {}, {"start_date": "'2024-01-01'"}
     )
     assert "'2024-01-01'" in out
     assert "var(" not in out
@@ -137,21 +133,19 @@ def test_inline_vars_wraps_a_compound_default_in_parens():
     it's already atomic, so it always evaluates as a single unit wherever it
     lands.
     """
-    out = rewrite_body("SELECT @n * 3 AS result", "tsql", {}, {"n": "1 + 2"}, True)
+    out = rewrite_body("SELECT @n * 3 AS result", "tsql", {}, {"n": "1 + 2"})
     assert "(1+2)*3" in _squashed(out)
     assert "1+2*3" not in _squashed(out)
 
 
 def test_inline_vars_does_not_double_wrap_an_already_parenthesized_default():
-    out = rewrite_body("SELECT @n * 3 AS result", "tsql", {}, {"n": "(1 + 2)"}, True)
+    out = rewrite_body("SELECT @n * 3 AS result", "tsql", {}, {"n": "(1 + 2)"})
     assert "(1+2)*3" in _squashed(out)
     assert "((1+2))*3" not in _squashed(out)
 
 
 def test_unknown_parameter_is_left_alone():
-    out = rewrite_body(
-        "SELECT a FROM t WHERE d >= @other", "tsql", {}, {"start_date": "'x'"}, False
-    )
+    out = rewrite_body("SELECT a FROM t WHERE d >= @other", "tsql", {}, {"start_date": "'x'"})
     assert "@other" in out
 
 
@@ -160,15 +154,14 @@ def test_tables_and_parameters_rewrite_together():
         "SELECT a FROM raw.orders AS o WHERE o.d >= @start_date",
         "tsql",
         _res("", "raw", "orders", "source", "orders", "raw"),
-        {"start_date": "'2024-01-01'"},
-        False,
+        {"start_date": None},
     )
     assert "{{ source('raw', 'orders') }} AS o" in out
     assert "{{ var('start_date') }}" in out
 
 
 def test_unparseable_body_is_returned_unchanged():
-    assert rewrite_body("SELEC nope FRM", None, {}, {}, False) == "SELEC nope FRM"
+    assert rewrite_body("SELEC nope FRM", None, {}, {}) == "SELEC nope FRM"
 
 
 def test_inline_vars_falls_back_to_a_var_call_when_the_default_will_not_parse():
@@ -177,7 +170,6 @@ def test_inline_vars_falls_back_to_a_var_call_when_the_default_will_not_parse():
         "tsql",
         {},
         {"start_date": "SELEC garbage NOPE ("},
-        True,
     )
     assert "{{ var('start_date') }}" in out
 
@@ -195,8 +187,7 @@ def test_getvariable_call_becomes_a_var():
         "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff')",
         "duckdb",
         {},
-        {"cutoff": "'2024-06-30'"},
-        False,
+        {"cutoff": None},
     )
     assert "{{ var('cutoff') }}" in out
     assert "GETVARIABLE" not in out.upper()
@@ -207,8 +198,7 @@ def test_getvariable_call_is_case_insensitively_matched():
         "SELECT a FROM t WHERE d >= getVariable('cutoff')",
         "duckdb",
         {},
-        {"cutoff": "'2024-06-30'"},
-        False,
+        {"cutoff": None},
     )
     assert "{{ var('cutoff') }}" in out
 
@@ -219,7 +209,6 @@ def test_getvariable_call_is_inlined_when_asked():
         "duckdb",
         {},
         {"cutoff": "'2024-06-30'"},
-        True,
     )
     assert "'2024-06-30'" in out
     assert "var(" not in out
@@ -232,7 +221,6 @@ def test_unknown_getvariable_call_is_left_alone():
         "duckdb",
         {},
         {"cutoff": "'x'"},
-        False,
     )
     assert "GETVARIABLE('other')" in out
     assert "var(" not in out
@@ -259,10 +247,13 @@ def test_spark_style_bare_identifier_reference_is_never_rewritten():
         "SELECT cutoff FROM t WHERE d >= cutoff",
         "spark",
         {},
-        {"cutoff": "'2024-06-30'"},
-        False,
+        # None, not a literal: with a default in the map a rewrite of the bare
+        # identifier would splice the literal in and leave no var() call for
+        # the assertion below to catch. This way any rewrite at all shows up.
+        {"cutoff": None},
     )
     assert "var(" not in out
+    assert "{{" not in out
     assert "cutoff" in out
 
 
@@ -275,7 +266,9 @@ def test_getvariable_call_with_more_than_one_argument_is_left_alone():
         "SELECT a FROM t WHERE d >= GETVARIABLE('cutoff', 'extra')",
         "duckdb",
         {},
-        {"cutoff": "'2024-06-30'"},
-        False,
+        # None for the same reason as the spark probe above: an over-matching
+        # rewrite has to show up as a var() call, not as a spliced literal.
+        {"cutoff": None},
     )
     assert "var(" not in out
+    assert "{{" not in out

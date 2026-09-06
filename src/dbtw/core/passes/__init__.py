@@ -7,22 +7,39 @@ from dbtw.core.passes.tier1 import (
     truncate_insert_pass,
 )
 from dbtw.core.passes.tier2 import append_pass, merge_pass, truncate_insert_columns_pass
-from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
+from dbtw.core.passes.types import (
+    Answer,
+    Decision,
+    ModelDraft,
+    Option,
+    PassState,
+    Tier,
+    append_option,
+    inline_option,
+    merge_option,
+    var_option,
+)
 
 __all__ = [
     "TIER1_PASSES",
     "TIER2_PASSES",
+    "Answer",
     "Decision",
     "ModelDraft",
+    "Option",
     "PassState",
     "Tier",
+    "append_option",
     "append_pass",
     "build_models_pass",
     "drop_ddl_pass",
     "drop_session_pass",
     "grants_pass",
+    "inline_option",
+    "merge_option",
     "merge_pass",
     "run_passes",
     "truncate_insert_columns_pass",
     "truncate_insert_pass",
+    "var_option",
 ]

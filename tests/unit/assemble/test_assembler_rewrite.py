@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import yaml
+from tests.unit.assemble.helpers import state_with_variable
 
 from dbtw.core.assemble import assemble
 from dbtw.core.context import read_project
@@ -65,41 +66,24 @@ def test_unresolved_reference_is_left_as_written_with_a_decision():
     assert any("left as written" in d.action for d in change.decisions)
 
 
-def _variable_state():
-    raw = RawStatement(
-        source_file="e.sql",
-        index=0,
-        text="DECLARE @cutoff DATE = '2024-01-01'",
-        line_start=1,
-        line_end=1,
-    )
-    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
-    draft = ModelDraft(
-        name="m",
-        qualified_name="m",
-        identity=("", "", "m"),
-        body="SELECT a FROM raw.t WHERE d >= @cutoff",
-        materialization="table",
-        grants=(),
-        source_indices=(1,),
-        leading_comments=(),
-    )
-    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="tsql")
-
-
 def test_variable_becomes_a_var_and_leaves_pending():
-    change = assemble(_variable_state(), read_project(PROJECTS / "jaffle_shop"))
+    change = assemble(state_with_variable(), read_project(PROJECTS / "jaffle_shop"))
     assert "{{ var('cutoff') }}" in change.models[0].body
     assert change.pending == ()
     assert [v.name for v in change.variables] == ["cutoff"]
     q = [d for d in change.decisions if d.question]
     assert q and "cutoff" in q[0].question
     assert q[0].chosen == "keep as a dbt var"
-    assert q[0].alternatives
+    labels = [o.label for o in q[0].options]
+    assert "keep as a dbt var" in labels
+    assert "inline the literal value" in labels
+    assert q[0].chosen in labels
 
 
 def test_inline_vars_substitutes_the_literal_and_declares_nothing():
-    change = assemble(_variable_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True)
+    change = assemble(
+        state_with_variable(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True
+    )
     assert "'2024-01-01'" in change.models[0].body
     assert "var(" not in change.models[0].body
     assert change.variables == ()
@@ -229,6 +213,30 @@ def test_declare_then_set_inlines_the_assigned_value():
     )
     assert "'2024-06-30'" in change.models[0].body
     assert "var(" not in change.models[0].body
+
+
+def test_declare_then_set_decision_says_what_the_body_actually_did():
+    """The inline decision was made on the DECLARE's None default and never
+    revisited once the SET backfilled a literal, so the body inlined
+    '2024-06-30' while the Decision beside it read "no literal value to
+    inline; kept as a dbt var instead" and change.variables still declared
+    cutoff in dbt_project.yml -- a var no model references. Decision, report
+    and disk each said something different about the same variable.
+    """
+    change = assemble(
+        _declare_then_set_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True
+    )
+    body = change.models[0].body
+    assert "'2024-06-30'" in body
+    assert "var(" not in body
+
+    (decision,) = [d for d in change.decisions if d.key == "assemble.variable.cutoff"]
+    assert decision.chosen == "inline the literal value"
+    assert "inlined" in decision.action
+    assert "kept as a dbt var" not in decision.action
+
+    # Nothing calls var('cutoff') any more, so nothing may declare it either.
+    assert change.variables == ()
 
 
 def _default_less_variable_state():

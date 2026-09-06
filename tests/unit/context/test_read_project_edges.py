@@ -6,9 +6,16 @@ from dbtw.core.context import NotADbtProjectError, read_project
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
+# read_project raises NotADbtProjectError from seven distinct places, so a
+# bare `pytest.raises(NotADbtProjectError)` says almost nothing: a regression
+# that raised the wrong one of them -- "has no usable name" where "non-mapping
+# 'vars' key" was meant -- keeps the test green while the message a user reads
+# points at the wrong line of their file. Every refusal below names the site it
+# means, and no pattern here matches any other site's message.
+
 
 def test_missing_dbt_project_yml_raises(tmp_path):
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="no dbt_project.yml at"):
         read_project(tmp_path)
 
 
@@ -68,42 +75,50 @@ def test_single_model_layer_is_undetermined(tmp_path):
 
 def test_model_paths_null_raises(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: p\nmodel-paths: null\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="malformed 'model-paths'"):
         read_project(tmp_path)
 
 
 def test_model_paths_bare_string_raises(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: p\nmodel-paths: models\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="malformed 'model-paths'"):
         read_project(tmp_path)
 
 
 def test_models_scalar_raises(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: p\nmodels: foo\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="non-mapping 'models' key"):
         read_project(tmp_path)
 
 
 def test_vars_scalar_raises(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: p\nvars: foo\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="non-mapping 'vars' key"):
         read_project(tmp_path)
 
 
 def test_missing_name_raises(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("config-version: 2\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="has no usable name"):
         read_project(tmp_path)
 
 
 def test_empty_name_raises(tmp_path):
     (tmp_path / "dbt_project.yml").write_text("name: ''\nconfig-version: 2\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="has no usable name"):
+        read_project(tmp_path)
+
+
+def test_scalar_dbt_project_yml_raises(tmp_path):
+    """Valid YAML that is not a mapping at all -- the seventh refusal, and
+    the only one this file did not reach."""
+    (tmp_path / "dbt_project.yml").write_text("hello\n")
+    with pytest.raises(NotADbtProjectError, match="is not a mapping"):
         read_project(tmp_path)
 
 
 def test_non_utf8_dbt_project_yml_raises(tmp_path):
     # 0xe9 alone (no continuation bytes) is not valid UTF-8.
     (tmp_path / "dbt_project.yml").write_bytes(b"name: caf\xe9\n")
-    with pytest.raises(NotADbtProjectError):
+    with pytest.raises(NotADbtProjectError, match="could not be parsed"):
         read_project(tmp_path)
