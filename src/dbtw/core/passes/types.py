@@ -122,9 +122,10 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
             ),
             columns_prompt="the column(s) that identify a row uniquely",
             plain=(
-                "The same as merging, plus a check that runs alongside: if two "
-                "rows ever share the same value in that column, it stops and "
-                "tells you which value, instead of quietly picking one row."
+                "The same as merging, plus a check that runs alongside: if "
+                "two rows ever share the same value in that column, the "
+                "check fails the next time it runs and names the value, so "
+                "the problem cannot slip past unnoticed."
             ),
         )
     named = ", ".join(keys)
@@ -133,12 +134,13 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
         effect=(
             f"The same merge as 'merge on {named}', plus dbt's unique test on "
             f"{named}: declared in a .yml file beside the model, it fails "
-            f"loudly the first time two rows share a {named}."
+            f"loudly the first time two rows share the same {named}."
         ),
         plain=(
             f"The same as merging on {named}, plus a check that runs "
-            f"alongside: if two rows ever share the same {named}, it stops "
-            "and tells you which value, instead of quietly picking one row."
+            f"alongside: if two rows ever share the same {named}, the check "
+            "fails the next time it runs and names the value, so the "
+            "problem cannot slip past unnoticed."
         ),
     )
 

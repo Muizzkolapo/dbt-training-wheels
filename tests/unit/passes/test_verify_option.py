@@ -50,3 +50,22 @@ def test_the_checked_answer_explains_the_check_in_both_registers():
     option = verify_option(("customer_id",))
     assert "unique" in option.effect  # dbt-native register names the test
     assert option.plain and option.plain != option.effect
+
+
+def test_the_plain_wording_does_not_imply_the_merge_is_blocked():
+    """The check is dbt's `unique` test, declared in a .yml and evaluated
+    only when `dbt test`/`dbt build` is separately invoked -- after the
+    merge has already written. The merge still quietly picks its row; the
+    check reports the violation on its own next run. A plain wording saying
+    the check "stops", "prevents", or "blocks" anything tells a newcomer the
+    merge itself is halted before harm, which is not what happens."""
+    for option in (verify_option(), verify_option(("customer_id",))):
+        plain = option.plain.lower()
+        for blocking_verb in ("stops", "prevents", "blocks"):
+            assert blocking_verb not in plain, f"{option.label}: {option.plain}"
+        # The defensible fact this wording has to keep, not just avoid
+        # overstating: the check still fails loudly, later, and names the
+        # offending value -- so a fix that drops the consequence entirely
+        # (rather than just softening its timing) fails here too.
+        assert "next time it runs" in plain, option.plain
+        assert "names the value" in plain, option.plain
