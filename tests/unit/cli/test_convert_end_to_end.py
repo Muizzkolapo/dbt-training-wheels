@@ -824,3 +824,30 @@ def test_the_terminal_says_a_placement_decision_exists(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "models/sources_dbtw.yml" in err
     assert "models/sources.yml" in err
+
+
+def test_a_source_declared_in_seeds_is_not_proposed_again(tmp_path):
+    """The reviewer's scenario, end to end. dbt reads sources out of
+    seeds/schema.yml, so a project declaring raw.orders there has declared it;
+    re-proposing the same (source, table) in our own file gives dbt two
+    declarations of one table, which it does reject. The dedupe in
+    assemble._source_entries already handles this — it just could not see the
+    declaration.
+    """
+    project = tmp_path / "project"
+    (project / "models" / "staging").mkdir(parents=True)
+    (project / "seeds").mkdir()
+    (project / "dbt_project.yml").write_text(
+        'name: seeded\nconfig-version: 2\nmodel-paths: ["models"]\n'
+    )
+    (project / "models" / "staging" / "stg_existing.sql").write_text("select 1 as id")
+    (project / "seeds" / "schema.yml").write_text(
+        "version: 2\nsources:\n  - name: raw\n    schema: raw\n    tables:\n      - name: orders\n"
+    )
+    out = tmp_path / "out"
+    assert _convert_into(project, out, sql=ROOT / "sql" / "qualified_etl.sql") == 0
+    proposed = list(out.rglob("sources*.yml"))
+    assert proposed == [], f"raw.orders is already declared; nothing to propose, got {proposed}"
+    report = (out / "CONVERSION_REPORT.md").read_text()
+    assert "seeds/schema.yml" in report
+    assert "already declared as a source" in report
