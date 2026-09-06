@@ -26,6 +26,7 @@ from dbtw.core.passes.types import (
     append_option,
     inline_option,
     merge_option,
+    statement_index,
     var_option,
 )
 
@@ -252,18 +253,6 @@ def _keys_str(keys: tuple[str, ...]) -> str:
     return ", ".join(keys)
 
 
-def _decision_statement_index(dec: Decision) -> int | None:
-    """The pipeline statement index embedded in a Decision's key.
-
-    `Decision.key`'s documented shape is "<prefix>.<source_file>:<index>"
-    (see the example in `Decision`'s own docstring) -- every `_decision()`
-    helper across tier 1 and tier 2 builds it this way. Reading it back out
-    here is reading that documented contract, not parsing prose.
-    """
-    _, _, suffix = dec.key.rpartition(":")
-    return int(suffix) if suffix.isdigit() else None
-
-
 def _find_incremental_decision_index(
     decisions: tuple[Decision, ...], source_indices: tuple[int, ...], chosen_label: str
 ) -> int | None:
@@ -291,7 +280,7 @@ def _find_incremental_decision_index(
     """
     wanted = set(source_indices)
     for i, dec in enumerate(decisions):
-        if dec.chosen == chosen_label and _decision_statement_index(dec) in wanted:
+        if dec.chosen == chosen_label and statement_index(dec) in wanted:
             return i
     return None
 

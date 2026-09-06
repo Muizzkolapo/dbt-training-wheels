@@ -169,6 +169,26 @@ class Decision:
     subject: Subject | None = None  # Tier-2 questions only: what it is about
 
 
+def statement_index(decision: Decision) -> int | None:
+    """The pipeline statement index embedded in a Decision's key, or None
+    when its key carries none.
+
+    `Decision.key`'s documented shape is "<prefix>.<source_file>:<index>"
+    (see the example on `key` above) -- every `_decision()` helper across
+    tier 1 and tier 2 builds it this way, and the Decisions assemble adds
+    for its own actions (`assemble.rename.<name>`) deliberately do not,
+    since they answer for a model rather than for a statement. Reading the
+    index back out is reading that documented contract, not parsing prose.
+
+    It lives here, beside the field whose shape it knows, because two
+    packages now need it: `assemble` matches a Decision to the model that
+    inherited its statement, and `emit.example` refuses to illustrate a
+    Decision against a model that did not.
+    """
+    _, _, suffix = decision.key.rpartition(":")
+    return int(suffix) if suffix.isdigit() else None
+
+
 @dataclass(frozen=True, slots=True)
 class Answer:
     """A user's reply to one Tier-2 question.
