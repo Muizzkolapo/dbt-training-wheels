@@ -67,18 +67,18 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
         # one it can stand behind: dbt-core's merge macro appears to
         # substitute a false join predicate and drop the matched branch when
         # the key is empty, which appends rather than errors. Neither reading
-        # was verifiable here, so both now say the consequence that holds
-        # whichever it is -- with no key there is nothing to match on, so
-        # every row is added rather than any being updated. That is still the
-        # cost the reader needs before leaving the column blank, without
-        # asserting a failure mode nobody checked.
+        # was verifiable here, so both now say only the consequence that
+        # holds whichever it is -- with no key there is nothing to match on,
+        # so nothing gets updated. That is still the cost the reader needs
+        # before leaving the column blank, without asserting a failure mode
+        # nobody checked, or which branch dbt actually takes when there is
+        # nothing to match.
         return Option(
             label="merge on a unique key",
             effect=(
                 "Each run updates the row whose key matches and inserts the rows that "
                 "match nothing. Needs a column that identifies a row uniquely — with an "
-                "empty unique_key there is nothing to match on, so every row is added "
-                "rather than any being updated."
+                "empty unique_key there is nothing to match on, so nothing gets updated."
             ),
             # The one option whose label leaves its key unsaid, so the one
             # option that needs columns supplied with the answer.
@@ -88,8 +88,7 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
                 "the table -- a match updates the existing row, and everything "
                 "else gets added, so nothing is duplicated. It needs a column "
                 "whose value is different on every row -- an id -- and without "
-                "one there is nothing to compare against, so every row is added "
-                "instead of any being updated."
+                "one there is nothing to compare against, so nothing gets updated."
             ),
         )
     named = ", ".join(keys)

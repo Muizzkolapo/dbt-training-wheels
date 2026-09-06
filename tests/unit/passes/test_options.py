@@ -68,22 +68,26 @@ def test_the_keyless_merge_option_names_the_cost_of_leaving_the_key_empty():
     consequence only as a code comment at the validation site, invisible to
     anyone reading the report or the screen. It belongs on the option itself.
 
-    What it may say has narrowed: not that the run fails, which this engine
-    cannot establish, but the consequence that holds whichever way dbt
-    behaves -- with no key there is nothing to match on, so every row is
-    added rather than any being updated. Both registers carry it, because
-    they sit one under the other in the report and must not disagree.
+    What it may say has narrowed twice now: first to drop the claim that the
+    run fails, which this engine cannot establish, and then to drop "every
+    row is added" too -- that is the appended-branch reading, and if dbt
+    errors instead, no row is added. What's left is the half that holds
+    whichever way dbt behaves -- with no key there is nothing to match on,
+    so nothing gets updated. Both registers carry it, because they sit one
+    under the other in the report and must not disagree.
     """
     dec = _question(_run(append_pass, APPEND, "insert_select"))
     merge_option = next(o for o in dec.options if o.label == "merge on a unique key")
 
     effect = _empty_key_consequence(merge_option.effect, "empty unique_key")
     assert "nothing to match" in effect, merge_option.effect
-    assert "added" in effect and "updated" in effect, merge_option.effect
+    assert "updated" in effect, merge_option.effect
+    assert "added" not in effect, merge_option.effect
 
     plain = _empty_key_consequence(merge_option.plain, "without")
     assert "nothing to compare" in plain, merge_option.plain
-    assert "added" in plain and "updated" in plain, merge_option.plain
+    assert "updated" in plain, merge_option.plain
+    assert "added" not in plain, merge_option.plain
 
     for claim in UNSUPPORTABLE:
         assert claim not in merge_option.effect.lower(), merge_option.effect
