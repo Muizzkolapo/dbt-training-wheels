@@ -168,7 +168,7 @@ def test_the_example_table_lines_up_with_the_model_s_own_columns():
     block = _block(out, "INSERT INTO events became an incremental model")
     rows = [line.strip() for line in block.splitlines() if line.strip().startswith("|")]
     assert len(rows) == 6, rows  # header, separator, one before row, three after
-    assert rows[0] == "|  | event_id | occurred_at |"
+    assert rows[0] == "|  | `event_id` | `occurred_at` |"
     assert all(row.count("|") == 4 for row in rows), rows
 
 
@@ -291,6 +291,11 @@ REFUSALS = {
     ),
     "not incremental": _model(strategy=None, unique_key=()),
     "merge with no key": _model(unique_key=()),
+    # Every column is named and the key is projected, so the line break in
+    # the second alias is the only thing left to refuse on.
+    "line break in a column name": _model(
+        body="SELECT\n  customer_id,\n  email AS \"a\nb\"\nFROM {{ source('raw', 'customers') }}"
+    ),
 }
 
 
@@ -385,3 +390,36 @@ def test_a_column_name_containing_a_pipe_does_not_break_the_table():
     example_rows = [row for row in rows if "customer_id" in row or "<" in row]
     assert example_rows, out
     assert all(row.count("|") - row.count("\\|") == 4 for row in example_rows), example_rows
+
+
+def test_a_column_name_containing_a_backtick_stays_inside_its_code_span():
+    """Every cell is wrapped in backticks so `<customer_id>` is not read as an
+    HTML tag and dropped. A backtick in the name closes that span early and
+    the rest of the cell -- the placeholder's own closing bracket included --
+    spills into the prose beside it. No backslash escape reaches inside a code
+    span, so the fence is widened instead, which is Markdown's own mechanism
+    for holding one."""
+    body = "SELECT\n  customer_id,\n  email AS \"a`b\"\nFROM {{ source('raw', 'customers') }}"
+    out = _hand_report(_model(body=body), _decision())
+    assert "``a`b``" in out  # the header cell
+    assert "``<a`b>``" in out  # the row already there
+    assert "``<a`b-new>``" in out  # the row the model leaves
+
+    # The plain columns are untouched by the widening -- a single backtick is
+    # still enough for a name that contains none.
+    assert "`<customer_id>`" in out
+
+
+def test_the_header_is_protected_the_same_way_the_cells_under_it_are():
+    """A quoted alias can itself be an HTML tag (`SELECT email AS "<b>"`), and
+    the header takes its names from the same SQL the placeholders below it are
+    built over. Left bare, GitHub drops the tag and the column is nameless
+    above cells that still show -- the same failure the backticks around a
+    value cell exist to prevent, one row up."""
+    body = "SELECT\n  customer_id,\n  email AS \"<b>\"\nFROM {{ source('raw', 'customers') }}"
+    block = _block(_hand_report(_model(body=body), _decision()), "dim_customers becomes")
+    rows = [line.strip() for line in block.splitlines() if line.strip().startswith("|")]
+    assert rows[0] == "|  | `customer_id` | `<b>` |", rows
+    # Not vacuous: the cells under it carry the same name and are wrapped too,
+    # so the header is not the odd one out in either direction.
+    assert "`<<b>>`" in block, block

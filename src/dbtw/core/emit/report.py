@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import sqlglot
 from sqlglot.errors import SqlglotError
 
@@ -180,24 +182,57 @@ _AFTER_RUN = "after this model runs"
 # package supports 3.11.
 _ESCAPED_PIPE = "\\|"
 
+# Every run of backticks in a cell's text, so `_example_cell` can choose a
+# fence longer than the longest of them.
+_BACKTICK_RUN = re.compile(r"`+")
+
 
 def _escaped(text: str) -> str:
     """`text` with any pipe escaped, so a quoted alias that contains one
     (`SELECT email AS "a|b"`) stays inside its cell instead of ending it and
-    shifting every later cell in the row one column left. Applies to the
-    header as much as to the body: the column names come from the same SQL.
+    shifting every later cell in the row one column left.
+
+    A pipe is the only one of its class this can fix, and the other two are
+    handled where they can be:
+
+    * a backtick would close the code span `_example_cell` wraps a cell in,
+      and no backslash escape reaches it -- backslash escapes are inert
+      inside a code span. `_example_cell` widens the fence instead, which is
+      Markdown's own mechanism for holding a backtick.
+    * a line break ends the row wherever it falls and nothing escapes it, so
+      `worked_example` refuses to build an example over a column named with
+      one at all -- `emit.example._LINE_BREAKS`.
     """
     return text.replace("|", _ESCAPED_PIPE)
 
 
 def _example_cell(text: str) -> str:
-    """One value cell: escaped, and wrapped as inline code.
+    """One cell -- header or value alike: escaped, and wrapped as inline code.
 
     The backticks are not decoration. A placeholder like `<event_id>` is an
     HTML tag to a Markdown renderer, and GitHub drops it -- the cell arrives
-    empty on the page the team actually reads.
+    empty on the page the team actually reads. The header runs through this
+    for exactly the same reason and not a weaker one: its column names come
+    from the same SQL as the placeholders built over them, so a quoted alias
+    (`SELECT amount AS "<b>"`) reaches the header as a tag too and vanishes
+    from it just the same, leaving a nameless column over cells that do show.
+
+    The fence is one backtick longer than the longest run of backticks in the
+    text, so a name containing one stays inside its span. Text that begins or
+    ends with a backtick is padded a space each side -- which the renderer
+    strips back off -- because otherwise the fence and the text run together
+    into a longer fence and the span never opens.
     """
-    return f"`{_escaped(text)}`"
+    escaped = _escaped(text)
+    if not escaped:
+        # An empty name has nothing to protect and no span to hold it: ``
+        # reads as a two-backtick fence with no closer, so it would render as
+        # two literal backticks where the honest rendering is an empty cell.
+        return ""
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(escaped)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if escaped.startswith("`") or escaped.endswith("`") else ""
+    return f"{fence}{pad}{escaped}{pad}{fence}"
 
 
 def _example_row(label: str, cells: tuple[str, ...]) -> str:
@@ -223,7 +258,7 @@ def _render_example(example: Example) -> list[str]:
     lines.extend(
         [
             "",
-            _example_row("", tuple(map(_escaped, example.columns))),
+            _example_row("", tuple(map(_example_cell, example.columns))),
             _example_row("---", ("---",) * len(example.columns)),
         ]
     )

@@ -37,6 +37,22 @@ _JINJA_TAG = re.compile(r"\{\{.*?\}\}", re.DOTALL)
 # module detects that a tag stood where a column name should be.
 _STAND_IN = "_dbtw_jinja_stand_in"
 
+# What an output column name cannot carry into a rendered example. A quoted
+# alias may legally contain a line break (`SELECT amount AS "a<newline>b"` is
+# a real Postgres column), and a line break ends a row wherever it falls: the
+# table stops mid-cell and every cell and row after it is lost. Nothing
+# escapes it back -- unlike a pipe, which a renderer escapes, or a backtick,
+# which it fences around; `emit.report` does both.
+#
+# So the refusal is here rather than in a renderer, for the reason every
+# other refusal in this module is: a consumer holding an Example is entitled
+# to assume it can be rendered, and a second consumer would otherwise have to
+# rediscover this on its own page. The cost is stated rather than hidden: a
+# consumer that *could* show it -- an HTML cell holds a newline happily --
+# loses the example for a column named this way. Taken deliberately, because
+# no example is never wrong and a table that stops mid-row always is.
+_LINE_BREAKS = ("\n", "\r")
+
 
 # The claim every Example is rendered under, owned here rather than by a
 # renderer. It is not a caption a consumer invents for its own layout (the
@@ -176,6 +192,8 @@ def worked_example(
       *are* known would be no better: an example listing two of a row's three
       columns describes a table the user does not have, which is the same lie
       as inventing a value, told by omission;
+    * a column's name contains a line break, which no row-shaped rendering can
+      carry and no escape brings back -- see `_LINE_BREAKS`;
     * the model is not incremental, or is a merge with no unique key, or is a
       merge whose key it does not select. Each of those is a model whose
       run-time behaviour is not the one the branches below draw, and drawing
@@ -196,6 +214,9 @@ def worked_example(
         return None
 
     columns = tuple(name for name, _quoted in projections)
+    if any(char in name for name in columns for char in _LINE_BREAKS):
+        return None
+
     existing = _placeholder_row(columns, (), changed=False)
     # A row whose key matches nothing already there, so every cell is new.
     inserted = _placeholder_row(columns, (), changed=True)

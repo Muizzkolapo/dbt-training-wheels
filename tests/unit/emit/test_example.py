@@ -227,6 +227,31 @@ def test_a_body_that_does_not_parse_has_no_example():
     assert worked_example(_question(), _model(body), None) is None
 
 
+def test_a_column_name_containing_a_line_break_has_no_example():
+    """A quoted alias may legally hold a newline (`SELECT email AS "a<nl>b"`
+    is a real Postgres column). Nothing row-shaped can carry it: a Markdown
+    table row ends where the newline falls and takes every cell after it, and
+    the rest of the table, with it. A pipe can be escaped and a backtick
+    fenced around -- `emit.report` does both -- but this one has no repair at
+    any layer, so the refusal belongs here with every other one."""
+    body = "SELECT\n  customer_id,\n  email AS \"a\nb\"\nFROM {{ source('raw', 'customers') }}"
+
+    # Not vacuous: the body parses, projects no star, names every column, and
+    # the newline really does reach the column list -- so the refusal below
+    # can only be for the line break.
+    known = _parseable_projections(body, None)
+    assert known is not None
+    projections, has_star, has_unnamed = known
+    assert (has_star, has_unnamed) == (False, False)
+    assert [name for name, _quoted in projections] == ["customer_id", "a\nb"]
+
+    assert worked_example(_question(), _model(body), None) is None
+
+    # And the same body with the newline taken out is illustrated, so it is
+    # the character and not the alias that stops it.
+    assert worked_example(_question(), _model(body.replace("a\nb", "ab")), None) is not None
+
+
 def test_a_merge_model_with_no_unique_key_has_no_example():
     """Nothing to match on, so the merge branch cannot be drawn -- and the
     append branch must not be drawn under a merge config instead."""
