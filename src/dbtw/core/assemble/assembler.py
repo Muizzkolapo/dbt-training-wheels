@@ -264,11 +264,12 @@ def _decision_statement_index(dec: Decision) -> int | None:
     return int(suffix) if suffix.isdigit() else None
 
 
-def _find_append_decision_index(
-    decisions: tuple[Decision, ...], source_indices: tuple[int, ...]
+def _find_incremental_decision_index(
+    decisions: tuple[Decision, ...], source_indices: tuple[int, ...], chosen_label: str
 ) -> int | None:
-    """Locate the tier-2 Decision recording the append conversion for the
-    statement that actually survived into this model.
+    """Locate the tier-2 Decision that recorded `chosen_label` for the
+    statement that actually survived into this model -- the append question
+    `append_pass` asked, or the merge question `merge_pass` asked.
 
     Matching on `chosen == "append every row"` alone is not enough: a
     *collision* -- two differently qualified tables sharing a bare name, say
@@ -279,7 +280,9 @@ def _find_append_decision_index(
     `AssembledModel.source_indices` (which always names the *surviving*
     statement) is what tells those two Decisions apart; text-matching the
     action against the model's name cannot, since a collision's two
-    statements share that name by construction.
+    statements share that name by construction. `merge_pass` records its own
+    question the same way, and collides the same way, so a merge model is
+    matched by the same two facts with its own `chosen` label.
 
     Two INSERTs into the *same* target no longer reach here as a
     redefinition -- `collisions.written_earlier` defers the later one before
@@ -287,9 +290,8 @@ def _find_append_decision_index(
     only way two append Decisions can compete for one model.
     """
     wanted = set(source_indices)
-    append_label = append_option().label
     for i, dec in enumerate(decisions):
-        if dec.chosen == append_label and _decision_statement_index(dec) in wanted:
+        if dec.chosen == chosen_label and _decision_statement_index(dec) in wanted:
             return i
     return None
 
@@ -373,34 +375,119 @@ def _key_status(key: str, projections: list[tuple[str, bool]]) -> tuple[_KeyStat
 
 
 def _upgrade_to_merge(
-    dec: Decision, draft_name: str, keys: tuple[str, ...], *, caveat: str
+    dec: Decision, draft_name: str, keys: tuple[str, ...], *, caveat: str, from_answer: bool
 ) -> Decision:
-    """Rewrite an append Decision into the merge upgrade `--unique-key` chose.
+    """Rewrite an append Decision into the merge upgrade that was chosen.
 
     `chosen`/`options` mirror the wording `merge_pass` already uses for
     its own script-derived merges ("merge on <keys>" / "append every row"),
     so a model's incremental history reads the same regardless of whether
-    the merge came from the script or from this flag. `caveat` is appended
-    to `reason` verbatim -- callers own its exact wording, so this function
-    never has to guess (and can never fabricate) what's actually true of
-    the model's body (FINDING 6).
+    the merge came from the script, from the flag, or from an answer to
+    this very question. Which of the two inputs asked for it is the one
+    thing that does differ, and it is named: a report that credited
+    `--unique-key` for a merge nobody passed a flag for would describe a
+    run that never happened. `caveat` is appended to `reason` verbatim --
+    callers own its exact wording, so this function never has to guess (and
+    can never fabricate) what's actually true of the model's body
+    (FINDING 6).
     """
     merge_answer = merge_option(keys)
+    if from_answer:
+        by = "an answer to this question"
+        because = (
+            f"this question was answered {merge_option().label!r}, naming "
+            f"{_keys_str(keys)} as that key"
+        )
+    else:
+        by = "--unique-key"
+        because = "--unique-key was supplied on the command line"
     return dataclasses.replace(
         dec,
         action=(
             f"INSERT INTO {draft_name} became an incremental model "
             f"(incremental_strategy='merge', unique_key={list(keys)!r}) — upgraded "
-            "from append by --unique-key"
+            f"from append by {by}"
         ),
         reason=(
-            "--unique-key was supplied on the command line; an append incremental "
-            "re-inserts everything the model selects on every run, so this model "
-            "was switched to a merge on the given key instead" + caveat
+            f"{because}; an append incremental re-inserts everything the model "
+            "selects on every run, so this model was switched to a merge on the "
+            "given key instead" + caveat
         ),
         chosen=merge_answer.label,
         options=(merge_answer, append_option()),
     )
+
+
+def _downgrade_to_append(dec: Decision, draft_name: str, keys: tuple[str, ...]) -> Decision:
+    """Rewrite a merge Decision into the append an answer chose instead.
+
+    Only an answer can get here: `--unique-key` never turns a merge into an
+    append. The script's ON clause is still where `keys` came from, so the
+    keyed merge stays on offer as the alternative -- worded with the columns
+    it actually named rather than as the keyless "merge on a unique key", so
+    the report keeps a record of which key the script proposed and the
+    answer turned down.
+    """
+    append_answer = append_option()
+    keys_str = _keys_str(keys)
+    return dataclasses.replace(
+        dec,
+        action=(
+            f"MERGE INTO {draft_name} became an incremental model "
+            f"(incremental_strategy='append') — downgraded from a merge on {keys_str} "
+            "by an answer to this question"
+        ),
+        reason=(
+            f"this question was answered {append_answer.label!r}: {keys_str} came off "
+            "the MERGE's ON clause, and the answer rejects it as identifying a row "
+            "uniquely, so every row this model selects is appended instead of merged "
+            "on that key"
+        ),
+        chosen=append_answer.label,
+        options=(append_answer, merge_option(keys)),
+    )
+
+
+def _flag_overridden_decision(
+    draft_name: str, keys_str: str, answered: tuple[str, ...]
+) -> Decision:
+    """Record that a per-model answer displaced the blanket `--unique-key`.
+
+    Without it the flag goes unmentioned for this model: the report would
+    show the answer's outcome and nothing at all about the key the command
+    line asked for, leaving a run that was told two different things looking
+    like it was only ever told one.
+    """
+    taken = merge_option(answered).label if answered else append_option().label
+    return Decision(
+        key=f"assemble.unique_key_overridden.{draft_name}",
+        tier=2,
+        action=(
+            f"--unique-key {keys_str} was not applied to {draft_name}: its own "
+            f"question was answered {taken!r} instead"
+        ),
+        reason=(
+            "--unique-key answers every incremental question in this run at once, "
+            "and this model's own question was answered separately; the answer "
+            "naming this one model is the more specific of the two, so it was taken "
+            "and the flag was not applied here"
+        ),
+        source_file="",
+        line_start=0,
+        line_end=0,
+    )
+
+
+def _requested_phrase(keys: tuple[str, ...], from_answer: bool) -> str:
+    """How a Decision names the input that asked for `keys`.
+
+    The flag-driven wording is unchanged from before answers existed --
+    "--unique-key order_id" -- because it is what the report has always
+    said and what the CLI tests read back.
+    """
+    if from_answer:
+        return f"the answered unique key {_keys_str(keys)}"
+    return f"--unique-key {_keys_str(keys)}"
 
 
 def _apply_unique_key(
@@ -409,8 +496,22 @@ def _apply_unique_key(
     unique_key: tuple[str, ...],
     final_to_draft_name: Mapping[str, str],
     dialect: str | None,
+    answered_keys: Mapping[str, tuple[str, ...]],
 ) -> tuple[list[AssembledModel], tuple[Decision, ...], list[Decision]]:
-    """Upgrade every eligible append model to merge on `unique_key`.
+    """Settle each incremental model's unique key from the two inputs that
+    can name one: `answered_keys`, this run's answers to the models' own
+    incremental questions, and `unique_key`, the blanket `--unique-key`.
+
+    The two are the same question asked at two widths, so they meet here
+    rather than in two code paths: an answer for a model supplies that
+    model's key, `--unique-key` supplies every other model's, and a model
+    neither of them names keeps the strategy the script gave it. Where both
+    speak for one model the answer wins, being the more specific of the
+    two, and `_flag_overridden_decision` records the flag that was dropped.
+    An answer of "append every row" arrives here as an empty key tuple:
+    for an append model that means stay as you are, and for a merge model
+    it is the one thing `--unique-key` can never ask for, a downgrade off
+    the script's own ON clause.
 
     A model that is already `merge` keeps its own key untouched -- its ON
     clause is better evidence of the true unique key than a blanket CLI
@@ -418,14 +519,17 @@ def _apply_unique_key(
     it, so the override that was declined is visible in the report. An
     append model is upgraded only when its own body backs up the key
     (FINDING 2/5/6): every key column must be a real output column of the
-    model (matched case-insensitively, per `_key_status`, since a CLI value
-    can never be quoted), a star projection gets the key applied with an
-    honest caveat instead of a confident match, a genuinely absent column
-    blocks the upgrade outright, and a quoted output name that only
-    differs by case is left ambiguous rather than guessed either way.
-    Naming in every new Decision kind here uses the pre-rename draft name
-    -- matching the convention every surrounding tier-2 Decision already
-    uses (FINDING 3).
+    model (matched case-insensitively, per `_key_status`, since neither a
+    CLI value nor an answered column carries quoting), a star projection
+    gets the key applied with an honest caveat instead of a confident
+    match, a genuinely absent column blocks the upgrade outright, and a
+    quoted output name that only differs by case is left ambiguous rather
+    than guessed either way. That classification is the same whichever
+    input named the key -- a key the model does not select fails at dbt run
+    time no matter who asked for it -- so only the wording naming the input
+    differs. Naming in every new Decision kind here uses the pre-rename
+    draft name -- matching the convention every surrounding tier-2 Decision
+    already uses (FINDING 3).
     """
     keys_str = _keys_str(unique_key)
     decisions_list = list(decisions)
@@ -434,9 +538,25 @@ def _apply_unique_key(
     found_incremental = False
 
     for model in models:
+        # None means "no answer for this model"; an empty tuple means "answered
+        # 'append every row'". Both are falsy, and only the first falls back to
+        # the flag, so they are told apart by identity, never by truthiness.
+        answered = answered_keys.get(model.name)
         if model.incremental_strategy == "append":
             found_incremental = True
             draft_name = final_to_draft_name[model.name]
+            if answered is not None and unique_key and answered != unique_key:
+                extra_decisions.append(_flag_overridden_decision(draft_name, keys_str, answered))
+            model_keys = unique_key if answered is None else answered
+            if not model_keys:
+                # Neither this model's own answer nor the flag names a key for
+                # it. An append incremental with no unique key is exactly what
+                # the script already produced, so it stays as it is.
+                new_models.append(model)
+                continue
+            from_answer = answered is not None
+            model_keys_str = _keys_str(model_keys)
+            requested = _requested_phrase(model_keys, from_answer)
             known = _known_projections(model.body, dialect)
 
             if known is None:
@@ -447,9 +567,9 @@ def _apply_unique_key(
             else:
                 projections, has_star = known
                 # (key, status, matched-or-ambiguous-name) per key column --
-                # built as one list, not zip(unique_key, statuses), so the
+                # built as one list, not zip(model_keys, statuses), so the
                 # three views below can never drift out of alignment.
-                statuses = [(k, *_key_status(k, projections)) for k in unique_key]
+                statuses = [(k, *_key_status(k, projections)) for k in model_keys]
                 missing = [k for k, status, _ in statuses if status == "missing"]
                 ambiguous = [(k, name) for k, status, name in statuses if status == "ambiguous"]
                 all_matched = all(status == "matched" for _, status, _ in statuses)
@@ -460,7 +580,7 @@ def _apply_unique_key(
                             key=f"assemble.unique_key_not_selected.{draft_name}",
                             tier=2,
                             action=(
-                                f"--unique-key {keys_str} was not applied to "
+                                f"{requested} was not applied to "
                                 f"{draft_name}: it does not select {_keys_str(tuple(missing))}"
                             ),
                             reason=(
@@ -484,14 +604,14 @@ def _apply_unique_key(
                             key=f"assemble.unique_key_ambiguous.{draft_name}",
                             tier=2,
                             action=(
-                                f"--unique-key {keys_str} was not applied to "
+                                f"{requested} was not applied to "
                                 f"{draft_name}: whether it selects {named} is "
                                 "ambiguous, not confirmed"
                             ),
                             reason=(
                                 "a quoted output column is case-sensitive, so whether "
-                                "it's really the same column as an unquoted "
-                                "--unique-key value can't be told from the SQL text "
+                                "it's really the same column as the unquoted key "
+                                "value asked for can't be told from the SQL text "
                                 "alone -- the same ambiguous/same/different tri-state "
                                 "naming.compare_targets uses for cross-statement "
                                 "target identity; left as an append incremental "
@@ -508,23 +628,53 @@ def _apply_unique_key(
                 if has_star and not all_matched:
                     caveat = (
                         f" (this model selects *, so whether it actually projects "
-                        f"{keys_str} could not be verified)"
+                        f"{model_keys_str} could not be verified)"
                     )
                 else:
                     caveat = ""
 
-            index = _find_append_decision_index(decisions, model.source_indices)
+            index = _find_incremental_decision_index(
+                decisions, model.source_indices, append_option().label
+            )
             assert index is not None  # every append model has its own append_pass Decision
             decisions_list[index] = _upgrade_to_merge(
-                decisions_list[index], draft_name, unique_key, caveat=caveat
+                decisions_list[index],
+                draft_name,
+                model_keys,
+                caveat=caveat,
+                from_answer=from_answer,
             )
             new_models.append(
-                dataclasses.replace(model, incremental_strategy="merge", unique_key=unique_key)
+                dataclasses.replace(model, incremental_strategy="merge", unique_key=model_keys)
             )
         elif model.incremental_strategy == "merge":
             found_incremental = True
-            if model.unique_key != unique_key:
-                draft_name = final_to_draft_name[model.name]
+            draft_name = final_to_draft_name[model.name]
+            if answered is not None:
+                if unique_key and answered != unique_key:
+                    extra_decisions.append(
+                        _flag_overridden_decision(draft_name, keys_str, answered)
+                    )
+                if answered:
+                    # The only keyed merge label a merge question ever offers is
+                    # its own script-derived one, so an answer that keeps the
+                    # merge keeps exactly the key the model already carries.
+                    new_models.append(model)
+                    continue
+                index = _find_incremental_decision_index(
+                    decisions, model.source_indices, merge_option(model.unique_key).label
+                )
+                # _incremental_answers found this same Decision to register the
+                # answer against it; there is no answer without one.
+                assert index is not None
+                decisions_list[index] = _downgrade_to_append(
+                    decisions_list[index], draft_name, model.unique_key
+                )
+                new_models.append(
+                    dataclasses.replace(model, incremental_strategy="append", unique_key=())
+                )
+                continue
+            if unique_key and model.unique_key != unique_key:
                 extra_decisions.append(
                     Decision(
                         key=f"assemble.unique_key_ignored.{draft_name}",
@@ -549,7 +699,10 @@ def _apply_unique_key(
         else:
             new_models.append(model)
 
-    if not found_incremental:
+    # Only the flag can go unused this way: an answer names one model's own
+    # question, so it can never be left with nothing to apply to -- a key with
+    # no model behind it is refused by assemble()'s validation gate instead.
+    if unique_key and not found_incremental:
         extra_decisions.append(
             Decision(
                 key="assemble.unique_key_unused",
@@ -572,10 +725,72 @@ def _apply_unique_key(
     return new_models, tuple(decisions_list), extra_decisions
 
 
+def _incremental_answers(
+    models: list[AssembledModel],
+    decisions: tuple[Decision, ...],
+    answers: Mapping[str, Answer],
+) -> tuple[dict[str, tuple[str, ...]], list[Decision]]:
+    """Pair each incremental model with the tier-2 question that produced it,
+    and read this run's answer to that question.
+
+    Returns the unique key each answered model's own answer chose, keyed by
+    final model name and empty for "append every row", together with every
+    incremental question an answer may legitimately name this run.
+
+    Both come out of the same walk deliberately. A question is answerable
+    exactly when an answer to it would reach `_apply_unique_key`, which
+    iterates these same models -- so an inherited question whose statement
+    never became a model (deferred, superseded, or dropped as a final-name
+    collision) is neither registered nor applied, and the two can't drift
+    into the two failure modes that matter: a legitimate answer refused, or
+    an answer accepted for a question nothing acts on.
+    """
+    answered_keys: dict[str, tuple[str, ...]] = {}
+    questions: list[Decision] = []
+    append_label = append_option().label
+    keyless_merge_label = merge_option().label
+    for model in models:
+        if model.incremental_strategy == "append":
+            chosen_label = append_label
+        elif model.incremental_strategy == "merge":
+            chosen_label = merge_option(model.unique_key).label
+        else:
+            continue
+        index = _find_incremental_decision_index(decisions, model.source_indices, chosen_label)
+        if index is None:
+            continue
+        dec = decisions[index]
+        if not dec.question or not dec.options:
+            continue
+        questions.append(dec)
+
+        answer = answers.get(dec.key)
+        if answer is None or answer.label not in {o.label for o in dec.options}:
+            # A label this question never offered is refused by assemble()'s
+            # validation gate, so it is left alone here rather than guessed
+            # into one of the options it might have meant.
+            continue
+        if answer.label == append_label:
+            answered_keys[model.name] = ()
+        elif answer.label == keyless_merge_label:
+            # The one option whose label leaves the key unsaid, so the one
+            # option that reads `columns`. An empty tuple here is an answer
+            # with no key at all; it reaches the gate below, which refuses it
+            # rather than writing a merge with an empty unique_key.
+            answered_keys[model.name] = answer.columns
+        else:
+            # A keyed merge label ("merge on order_id"), which a question only
+            # ever offers for the key the model it belongs to already carries
+            # -- so the label names the key and `columns` has nothing to add.
+            answered_keys[model.name] = model.unique_key
+    return answered_keys, questions
+
+
 class UnknownAnswerError(ValueError):
-    """An answer names a Decision this run did not produce, or an option that
-    Decision did not offer. Refused rather than ignored: an ignored answer
-    leaves the caller believing a choice was applied that never was.
+    """An answer names a Decision this run did not produce, an option that
+    Decision did not offer, or columns that option cannot use. Refused rather
+    than ignored: an ignored answer leaves the caller believing a choice was
+    applied that never was.
     """
 
 
@@ -791,10 +1006,35 @@ def assemble(
     ordered, cycle_decisions = _topological(models)
     new_decisions.extend(cycle_decisions)
 
+    # Read once, here, rather than at each of the two stages that consult it:
+    # the incremental questions just below, and the variable questions further
+    # down.
+    answers_map = answers or {}
+    # Decisions an answer can actually be validated and applied against in this
+    # run -- and only those. Collected structurally, as each one is matched to
+    # the model it decides, rather than picked out of all_decisions afterwards
+    # by key shape: an inherited Decision can carry a `question` and `options`
+    # without this run having anything to apply an answer to (its statement was
+    # deferred, superseded, or dropped), and such a question must not validate
+    # as answerable. Registering a question here and applying its answer below
+    # are two halves of one thing -- register without applying and a caller
+    # believes a choice was taken that never was; apply without registering and
+    # a legitimate answer is refused.
+    answerable_decisions: list[Decision] = []
+
     inherited_decisions = state.decisions
-    if unique_key:
+    incremental_answers, incremental_questions = _incremental_answers(
+        ordered, inherited_decisions, answers_map
+    )
+    answerable_decisions.extend(incremental_questions)
+    if unique_key or incremental_answers:
         ordered, inherited_decisions, unique_key_decisions = _apply_unique_key(
-            ordered, inherited_decisions, unique_key, final_to_draft_name, state.dialect
+            ordered,
+            inherited_decisions,
+            unique_key,
+            final_to_draft_name,
+            state.dialect,
+            incremental_answers,
         )
         new_decisions.extend(unique_key_decisions)
 
@@ -816,8 +1056,6 @@ def assemble(
     remaining_pending = tuple(item for item in state.pending if item[0] not in consumed)
 
     declared_var_names = {name for name, _ in ctx.vars_declared}
-    # Read once, not per iteration below.
-    answers_map = answers or {}
     variable_defaults: dict[str, str | None] = {}
     # Whether to inline each variable's default, keyed the same as
     # variable_defaults but decided once per name (first occurrence) and
@@ -829,15 +1067,6 @@ def assemble(
     # silently revert to blanket-flag semantics for a future case that adds
     # to variable_defaults without also recording an inline decision.
     variable_inline: dict[str, bool] = {}
-    # Decisions an answer can actually be validated and applied against this
-    # run -- the variable ones this loop builds, and only those. Collected
-    # structurally, as each one is built, rather than picked out of
-    # all_decisions afterwards by key shape: an inherited Decision (e.g. a
-    # tier2 incremental one from an earlier pass) can carry a `question` and
-    # `options` too, but assemble() has no branch that consumes an answer for
-    # it, so it must never validate as answerable -- Task 3 widens this list
-    # when it wires the incremental questions up to actually be answered.
-    answerable_decisions: list[Decision] = []
     kept_variables: list[Variable] = []
     # name -> its index in kept_variables, so a later fill-in (below) can
     # replace that entry's default_sql without disturbing its position.
@@ -1080,11 +1309,20 @@ def assemble(
     # a Decision key from a *previous* run of this same conversion, and that
     # run's keys are deterministic, so this run's own answerable_decisions is
     # the right set to check them against. Checked against answerable_decisions
-    # rather than all_decisions -- an inherited tier2 incremental Decision can
-    # also carry a question, but this run has no branch that would act on an
-    # answer to it, so it must not validate as an answerable key (Task 3
-    # widens answerable_decisions when that becomes true).
+    # rather than all_decisions -- a question whose statement never became a
+    # model in this change (deferred, superseded, dropped) still carries its
+    # `question` and `options`, but there is nothing here for an answer to it
+    # to change, so it must not validate as an answerable key.
+    #
+    # The columns check is the third refusal, and it runs in both directions.
+    # "merge on a unique key" is the only option whose label leaves its key
+    # unsaid, so it is the only one that reads `columns`: without them it would
+    # write `unique_key=[]`, which fails at dbt run time, and the report would
+    # meanwhile claim a merge that cannot run. Every other option settles
+    # itself, so columns handed to one would be discarded -- silently, and
+    # leaving the caller believing a key was recorded somewhere.
     if answers:
+        keyless_merge_label = merge_option().label
         answerable = {d.key: {o.label for o in d.options} for d in answerable_decisions}
         for key, answer in answers.items():
             if key not in answerable:
@@ -1093,6 +1331,19 @@ def assemble(
                 offered = ", ".join(sorted(answerable[key]))
                 raise UnknownAnswerError(
                     f"{key} does not offer {answer.label!r}; it offers {offered}"
+                )
+            if answer.label == keyless_merge_label:
+                if not answer.columns:
+                    raise UnknownAnswerError(
+                        f"{key} was answered {answer.label!r} with no columns; that "
+                        "option needs the column(s) that identify a row uniquely, and "
+                        "a merge with an empty unique_key fails at dbt run time"
+                    )
+            elif answer.columns:
+                raise UnknownAnswerError(
+                    f"{key} was answered {answer.label!r} with columns "
+                    f"{_keys_str(answer.columns)}; that option takes no columns, so "
+                    "they would have been discarded"
                 )
 
     return ProjectChange(

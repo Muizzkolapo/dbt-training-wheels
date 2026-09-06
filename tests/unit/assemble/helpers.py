@@ -5,18 +5,56 @@ test_assembler_rewrite.py rather than inventing a new shape.
 
 from __future__ import annotations
 
+import hashlib
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
+from dbtw.core.assemble import ProjectChange, assemble
 from dbtw.core.context import ProjectContext, read_project
-from dbtw.core.ingest import ClassifiedStatement, RawStatement
-from dbtw.core.passes import ModelDraft, PassState
+from dbtw.core.ingest import ClassifiedStatement, RawStatement, classify_statements, ingest
+from dbtw.core.passes import Answer, ModelDraft, PassState, run_passes
 
 FIXTURES = Path(__file__).parents[2] / "fixtures"
 PROJECTS = FIXTURES / "projects"
 
+# One directory per test session, with one subdirectory per distinct SQL
+# script inside it -- see convert() for why the path has to be stable.
+_CONVERT_ROOT = Path(tempfile.mkdtemp(prefix="dbtw-convert-"))
+
 
 def context_for(project: str = "jaffle_shop") -> ProjectContext:
     return read_project(PROJECTS / project)
+
+
+def convert(
+    sql: str,
+    *,
+    answers: Mapping[str, Answer] | None = None,
+    unique_key: tuple[str, ...] = (),
+    project: str = "jaffle_shop",
+) -> ProjectChange:
+    """Run the real ingest -> classify -> passes -> assemble pipeline over `sql`.
+
+    The same path the CLI takes, so a test that answers a question here is
+    answering the question a user would actually be shown.
+
+    The file is written to a directory derived from the SQL itself rather than
+    to a fresh `mkdtemp()` per call. A tier-2 `Decision.key` embeds its source
+    file's path ("tier2.append.<path>:<index>"), so the whole point of an
+    answer -- naming a key an earlier run handed out -- only works if two
+    convert() calls on the same script agree on where that script lives. A
+    fresh directory per call would make every key single-use, and every answer
+    keyed from a previous call would be refused as unknown.
+    """
+    directory = _CONVERT_ROOT / hashlib.sha256(sql.encode("utf-8")).hexdigest()[:16]
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "in.sql"
+    path.write_text(sql, encoding="utf-8")
+
+    result = ingest(path)
+    state = run_passes(classify_statements(result), result.dialect)
+    return assemble(state, context_for(project), unique_key=unique_key, answers=answers)
 
 
 def state_with_variable() -> PassState:
