@@ -55,3 +55,28 @@ def test_the_chosen_label_is_always_one_of_the_offered_options():
     ):
         dec = _question(out)
         assert dec.chosen in [o.label for o in dec.options]
+
+
+def test_the_option_that_needs_columns_says_so_on_the_record():
+    """A consumer rendering `dec.options` -- the report, or the web UI this
+    surface exists for -- has to know which option needs a column input
+    before it can offer one. Deciding that by comparing the label against
+    "merge on a unique key" makes every consumer carry its own copy of that
+    string, which is the duplication these options exist to remove. The
+    requirement travels on the Option, and the prompt is the wording every
+    consumer shows.
+    """
+    dec = _question(_run(append_pass, APPEND, "insert_select"))
+    needing = [o for o in dec.options if o.columns_prompt]
+    assert [o.label for o in needing] == ["merge on a unique key"]
+    assert "uniquely" in needing[0].columns_prompt
+    # The option that settles itself asks for nothing.
+    (append_alternative,) = [o for o in dec.options if o.label == "append every row"]
+    assert append_alternative.columns_prompt == ""
+
+
+def test_a_merge_option_that_names_its_keys_needs_no_columns():
+    """The key is in the label, so there is nothing left for a consumer to
+    ask for."""
+    dec = _question(_run(merge_pass, MERGE, "merge"))
+    assert [o.columns_prompt for o in dec.options] == ["", ""]

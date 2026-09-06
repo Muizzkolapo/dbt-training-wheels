@@ -4,6 +4,7 @@ from tests.unit.assemble.helpers import context_for, convert, state_with_variabl
 from dbtw.core.assemble import UnknownAnswerError, assemble
 from dbtw.core.assemble import assembler as assembler_module
 from dbtw.core.passes import Decision, Option, PassState, append_option, merge_option
+from dbtw.core.passes import tier2 as tier2_module
 from dbtw.core.passes.types import Answer
 
 TWO_APPENDS = (
@@ -186,6 +187,34 @@ def test_an_upgrade_from_an_answer_says_so_instead_of_blaming_the_flag():
     assert "--unique-key" not in upgraded.reason
     assert "--unique-key" not in upgraded.action
     assert "order_id" in upgraded.reason
+
+
+def test_the_columns_requirement_is_read_off_the_option_not_its_label(monkeypatch):
+    """Which option needs columns is the option's own property, and the gate
+    that enforces it -- and the code that applies the answer -- must read it
+    from there. While both compared against `merge_option().label`, an
+    option offering the same choice under any other wording was refused its
+    columns and then applied as though it had named none: accepted, and
+    silently turned into the model nobody asked for. Renaming the option the
+    question offers is the cheapest way to show the two are no longer
+    keyed on the string.
+    """
+    renamed = Option(
+        label="key it on a column",
+        effect="Each run updates the row whose key matches and inserts the rest.",
+        columns_prompt="the column(s) that identify a row uniquely",
+    )
+    monkeypatch.setattr(tier2_module, "merge_option", lambda keys=(): renamed)
+    key = _question_for(convert(ONE_APPEND), "revenue_events").key
+
+    answered = convert(ONE_APPEND, answers={key: Answer("key it on a column", ("order_id",))})
+    (model,) = answered.models
+    assert (model.incremental_strategy, model.unique_key) == ("merge", ("order_id",))
+
+    # And the same option, answered with nothing to key on, is still refused
+    # -- the requirement came off the record, not off the label.
+    with pytest.raises(UnknownAnswerError, match="with no columns"):
+        convert(ONE_APPEND, answers={key: Answer("key it on a column")})
 
 
 def test_a_merge_answer_with_no_columns_is_refused():

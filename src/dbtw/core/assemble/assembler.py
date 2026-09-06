@@ -23,6 +23,7 @@ from dbtw.core.passes.types import (
     Answer,
     Decision,
     ModelDraft,
+    Option,
     PassState,
     append_option,
     inline_option,
@@ -376,7 +377,12 @@ def _key_status(key: str, projections: list[tuple[str, bool]]) -> tuple[_KeyStat
 
 
 def _upgrade_to_merge(
-    dec: Decision, draft_name: str, keys: tuple[str, ...], *, caveat: str, from_answer: bool
+    dec: Decision,
+    draft_name: str,
+    keys: tuple[str, ...],
+    *,
+    caveat: str,
+    answered_label: str | None,
 ) -> Decision:
     """Rewrite an append Decision into the merge upgrade that was chosen.
 
@@ -393,11 +399,14 @@ def _upgrade_to_merge(
     (FINDING 6).
     """
     merge_answer = merge_option(keys)
-    if from_answer:
+    if answered_label is not None:
         by = "an answer to this question"
+        # The label as the answer sent it, not one re-derived from `keys`:
+        # the option that asks for columns is the one that does not name
+        # them, so naming it from the key it was given would report a
+        # question the user was never asked.
         because = (
-            f"this question was answered {merge_option().label!r}, naming "
-            f"{_keys_str(keys)} as that key"
+            f"this question was answered {answered_label!r}, naming {_keys_str(keys)} as that key"
         )
     else:
         by = "--unique-key"
@@ -453,14 +462,17 @@ def _downgrade_to_append(dec: Decision, draft_name: str, keys: tuple[str, ...]) 
 class _AnsweredKey:
     """One model's answer to its own incremental question, already resolved.
 
-    `label` is the option the answer named, kept as the caller sent it so a
+    `option` is the option the answer named, as the question offered it, so a
     Decision can quote what was actually chosen rather than re-deriving a
     label from `keys` -- "merge on a unique key" with no columns and "append
     every row" both resolve to an empty `keys`, and re-deriving would report
-    the second when the caller sent the first.
+    the second when the caller sent the first. Keeping the whole Option
+    rather than its label also keeps `columns_prompt` to hand: whether the
+    label leaves the key unsaid is the option's own answer to give, not
+    something a reader of the label gets to decide.
     """
 
-    label: str
+    option: Option
     keys: tuple[str, ...]  # empty for "append every row"
 
 
@@ -486,8 +498,10 @@ def _flag_overridden_decision(
     # The label as sent, plus the columns when the label is the one that
     # leaves them unsaid -- quoting "merge on a unique key" and stopping there
     # would leave the report unable to say which key displaced the flag.
-    taken = f"{answered.label!r}"
-    if answered.keys and answered.label == merge_option().label:
+    # Which option that is comes off the option itself (`columns_prompt`),
+    # not off a comparison with a label spelled here.
+    taken = f"{answered.option.label!r}"
+    if answered.keys and answered.option.columns_prompt:
         taken += f" with {_keys_str(answered.keys)}"
     # The answer took effect exactly when the model came out carrying the key
     # it asked for -- an empty one for "append every row", the named one for a
@@ -604,9 +618,9 @@ def _apply_unique_key(
                 # the script already produced, so it stays as it is.
                 new_models.append(model)
                 continue
-            from_answer = answered is not None
+            answered_label = answered.option.label if answered is not None else None
             model_keys_str = _keys_str(model_keys)
-            requested = _requested_phrase(model_keys, from_answer)
+            requested = _requested_phrase(model_keys, answered is not None)
             known = _known_projections(model.body, dialect)
 
             if known is None:
@@ -692,7 +706,7 @@ def _apply_unique_key(
                 draft_name,
                 model_keys,
                 caveat=caveat,
-                from_answer=from_answer,
+                answered_label=answered_label,
             )
             new_models.append(
                 dataclasses.replace(model, incremental_strategy="merge", unique_key=model_keys)
@@ -815,7 +829,6 @@ def _incremental_answers(
     answered_keys: dict[str, _AnsweredKey] = {}
     questions: list[Decision] = []
     append_label = append_option().label
-    keyless_merge_label = merge_option().label
     for model in models:
         if model.incremental_strategy == "append":
             chosen_label = append_label
@@ -832,25 +845,29 @@ def _incremental_answers(
         questions.append(dec)
 
         answer = answers.get(dec.key)
-        if answer is None or answer.label not in {o.label for o in dec.options}:
+        chosen_option = (
+            next((o for o in dec.options if o.label == answer.label), None) if answer else None
+        )
+        if chosen_option is None:
             # A label this question never offered is refused by assemble()'s
             # validation gate, so it is left alone here rather than guessed
             # into one of the options it might have meant.
             continue
-        if answer.label == append_label:
-            keys = ()
-        elif answer.label == keyless_merge_label:
-            # The one option whose label leaves the key unsaid, so the one
+        assert answer is not None  # chosen_option is None whenever answer is
+        if chosen_option.columns_prompt:
+            # The option that says it cannot settle its own key, so the one
             # option that reads `columns`. An empty tuple here is an answer
             # with no key at all; it reaches the gate below, which refuses it
             # rather than writing a merge with an empty unique_key.
             keys = answer.columns
+        elif answer.label == append_label:
+            keys = ()
         else:
             # A keyed merge label ("merge on order_id"), which a question only
             # ever offers for the key the model it belongs to already carries
             # -- so the label names the key and `columns` has nothing to add.
             keys = model.unique_key
-        answered_keys[model.name] = _AnsweredKey(label=answer.label, keys=keys)
+        answered_keys[model.name] = _AnsweredKey(option=chosen_option, keys=keys)
     return answered_keys, questions
 
 
@@ -1412,29 +1429,33 @@ def assemble(
     # to change, so it must not validate as an answerable key.
     #
     # The columns check is the third refusal, and it runs in both directions.
-    # "merge on a unique key" is the only option whose label leaves its key
-    # unsaid, so it is the only one that reads `columns`: without them it would
+    # An option that cannot settle its own key says so with a
+    # `columns_prompt` -- "merge on a unique key" is the one that does today
+    # -- and it is the only kind that reads `columns`: without them it would
     # write `unique_key=[]`, which fails at dbt run time, and the report would
     # meanwhile claim a merge that cannot run. Every other option settles
     # itself, so columns handed to one would be discarded -- silently, and
-    # leaving the caller believing a key was recorded somewhere.
+    # leaving the caller believing a key was recorded somewhere. Read off the
+    # option rather than compared against its label, so a consumer rendering
+    # these options can ask for the columns without knowing which wording
+    # means "needs a key", and a reworded option keeps its requirement.
     if answers:
-        keyless_merge_label = merge_option().label
-        answerable = {d.key: {o.label for o in d.options} for d in answerable_decisions}
+        answerable = {d.key: {o.label: o for o in d.options} for d in answerable_decisions}
         for key, answer in answers.items():
             if key not in answerable:
                 raise UnknownAnswerError(f"no question with key {key} in this conversion")
-            if answer.label not in answerable[key]:
+            chosen_option = answerable[key].get(answer.label)
+            if chosen_option is None:
                 offered = ", ".join(sorted(answerable[key]))
                 raise UnknownAnswerError(
                     f"{key} does not offer {answer.label!r}; it offers {offered}"
                 )
-            if answer.label == keyless_merge_label:
+            if chosen_option.columns_prompt:
                 if not answer.columns:
                     raise UnknownAnswerError(
                         f"{key} was answered {answer.label!r} with no columns; that "
-                        "option needs the column(s) that identify a row uniquely, and "
-                        "a merge with an empty unique_key fails at dbt run time"
+                        f"option needs {chosen_option.columns_prompt}, and cannot be "
+                        "applied without them"
                     )
             elif answer.columns:
                 raise UnknownAnswerError(

@@ -19,10 +19,21 @@ class Option:
     written here rather than by a consumer because the report and the web
     UI render from the same records and must not explain a choice
     differently — see RFC section 9.
+
+    `columns_prompt` is the extra input the option cannot settle without,
+    named in the wording every consumer shows above the field it asks for
+    it in — "merge on a unique key" says nothing about which key. Empty
+    means the label settles the choice by itself, and columns handed to
+    such an option are refused rather than discarded. It carries the
+    requirement and the wording in one field for the same reason `effect`
+    is written here: a bare boolean would leave every consumer inventing
+    its own prompt, which is the label-copying this record exists to
+    remove, one step removed.
     """
 
     label: str
     effect: str
+    columns_prompt: str = ""
 
 
 def append_option() -> Option:
@@ -48,6 +59,9 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
                 "Each run updates the row whose key matches and inserts the rows that "
                 "match nothing. Needs a column that identifies a row uniquely."
             ),
+            # The one option whose label leaves its key unsaid, so the one
+            # option that needs columns supplied with the answer.
+            columns_prompt="the column(s) that identify a row uniquely",
         )
     named = ", ".join(keys)
     return Option(
