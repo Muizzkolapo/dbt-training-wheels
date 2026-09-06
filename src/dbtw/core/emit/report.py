@@ -60,6 +60,7 @@ def _render_summary(change: ProjectChange) -> str:
         "",
         f"- **Project**: {change.project_name}",
         f"- **Models**: {len(change.models)}",
+        f"- **Tests**: {len(change.tests)}",
         f"- **Sources**: {len(change.sources)}",
         f"- **Pending statements**: {len(change.pending)}",
         f"- **Dialect**: {dialect}",

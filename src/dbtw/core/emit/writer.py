@@ -9,12 +9,12 @@ import dataclasses
 from collections import Counter
 from pathlib import Path
 
-from dbtw.core.assemble import ProjectChange
+from dbtw.core.assemble import AssembledModel, ProjectChange
 from dbtw.core.assemble.layers import layer_roles
 from dbtw.core.context import ProjectContext
-from dbtw.core.emit.render import render_model, render_sources_yaml
+from dbtw.core.emit.render import render_model, render_schema_yaml, render_sources_yaml
 from dbtw.core.emit.report import render_report
-from dbtw.core.passes.types import Decision
+from dbtw.core.passes.types import Decision, SchemaTest
 
 _REPORT_NAME = "CONVERSION_REPORT.md"
 _SOURCES_NAME = "sources.yml"
@@ -82,11 +82,26 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResul
     if change.sources:
         sources_rel, placement = _sources_placement(change, ctx)
 
+    # Grouped once, up front, rather than filtered per model in the loop
+    # below: a SchemaTest naming a model absent from this dict is exactly the
+    # caller bug render_schema_yaml refuses loudly if two models' tests ever
+    # reach one call -- this grouping is what keeps that from happening.
+    tests_by_model: dict[str, list[SchemaTest]] = {}
+    for test in change.tests:
+        tests_by_model.setdefault(test.model, []).append(test)
+
     for model in change.models:
         model_path = _safe_join(out_dir, model.path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model_path.write_text(render_model(model), encoding="utf-8")
         written.append(model_path)
+
+        model_tests = tests_by_model.get(model.name)
+        if model_tests:
+            schema_path = _safe_join(out_dir, _schema_yaml_rel(model))
+            schema_path.parent.mkdir(parents=True, exist_ok=True)
+            schema_path.write_text(render_schema_yaml(tuple(model_tests)), encoding="utf-8")
+            written.append(schema_path)
 
     if change.sources:
         sources_path = _safe_join(out_dir, sources_rel)
@@ -127,6 +142,32 @@ def _safe_join(out_dir: Path, relative: str | Path) -> Path:
             f"refusing to write outside out_dir: {relative!r} would resolve to {resolved}"
         )
     return target
+
+
+def _schema_yaml_rel(model: AssembledModel) -> str:
+    """The project-relative path a model's schema .yml lands at: `model.path`
+    with `.sql` swapped for `.yml`, so the file sits in the same directory as
+    the model it tests, under the model's own final name.
+
+    This file class gets no `_sources_placement`-style collision Decision of
+    its own, and that is a considered choice, not an oversight. Sources.yml's
+    landing name is a fixed constant ("sources.yml") that nothing upstream
+    vouches for -- any project could already have a file at that exact path,
+    which is the whole reason `_sources_placement` exists. A schema .yml's
+    landing name is different in kind: it is *derived from* `model.name`, the
+    model's own final name, which `assemble._final_name` already resolves
+    against the target project before this module ever sees it. If a project
+    file already sits at this exact path, that file sits at the model's own
+    name one suffix removed -- and a project file at a NEW model's name is
+    precisely what `assemble` already calls a "collision" and records as its
+    own Decision (assembler.py: `existing_by_name.get(final_name)`, that
+    module's own `_decision("collision", ...)`). There is no separate clash
+    for this function to discover that the model-naming pass has not already
+    reported; inventing one here would just restate that Decision in a
+    second, easier to drift, sentence. (Proven for the fixture projects in
+    test_writer.py::test_a_models_schema_yml_never_lands_on_a_declared_sources_file.)
+    """
+    return Path(model.path).with_suffix(".yml").as_posix()
 
 
 def _sources_dir(ctx: ProjectContext) -> Path:

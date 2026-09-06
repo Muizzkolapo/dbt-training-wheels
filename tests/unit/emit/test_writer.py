@@ -1,15 +1,18 @@
 from pathlib import Path
 
 import pytest
+import yaml
+from tests.unit.assemble.helpers import context_for, convert
 
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import ProjectContext, SourceInfo, read_project
 from dbtw.core.emit import DuplicateSourceEntryError, emit
+from dbtw.core.passes import Answer, SchemaTest, verify_option
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
 
-def _change(sources=()) -> ProjectChange:
+def _change(sources=(), tests=()) -> ProjectChange:
     return ProjectChange(
         models=(
             AssembledModel(
@@ -29,6 +32,7 @@ def _change(sources=()) -> ProjectChange:
         pending=(),
         dialect=None,
         project_name="jaffle_shop",
+        tests=tests,
     )
 
 
@@ -355,3 +359,104 @@ def test_emit_refuses_a_source_entry_the_project_already_declares(tmp_path):
             tmp_path,
         )
     assert list(tmp_path.rglob("*")) == []  # refused before anything was written
+
+
+def test_a_models_schema_yml_is_written_beside_it(tmp_path):
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    written = emit(_change(tests=(SchemaTest("stg_orders", "order_id"),)), ctx, tmp_path)
+    schema_file = tmp_path / "models" / "staging" / "stg_orders.yml"
+    assert schema_file.is_file()
+    assert "name: order_id" in schema_file.read_text()
+    assert schema_file in written.paths
+
+
+def test_no_schema_yml_when_the_model_has_no_tests(tmp_path):
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    emit(_change(), ctx, tmp_path)
+    assert not (tmp_path / "models" / "staging" / "stg_orders.yml").exists()
+
+
+def test_two_tests_for_one_model_produce_one_yml_with_two_columns(tmp_path):
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    emit(
+        _change(
+            tests=(
+                SchemaTest("stg_orders", "order_id"),
+                SchemaTest("stg_orders", "line_id"),
+            )
+        ),
+        ctx,
+        tmp_path,
+    )
+    schema_file = tmp_path / "models" / "staging" / "stg_orders.yml"
+    doc = yaml.safe_load(schema_file.read_text())
+    (model_doc,) = doc["models"]
+    assert model_doc["name"] == "stg_orders"
+    assert {c["name"] for c in model_doc["columns"]} == {"order_id", "line_id"}
+
+
+def test_a_models_schema_yml_never_lands_on_a_declared_sources_file():
+    """The reasoning writer.py records beside `_schema_yaml_rel`: a per-model
+    schema.yml lands at the model's own final name, one suffix removed from
+    its .sql file, so a project file already at that path would mean the
+    model's *name* already collides -- which `assemble` already reports as
+    its own "collision" Decision (assembler.py, `existing_by_name.get`).
+    There is no separate clash for this file to have, unlike sources.yml,
+    whose landing name is a fixed constant no earlier stage vouches for.
+
+    Checked over every model already in every fixture project that declares
+    sources at all: for a model here to become the target of a new
+    conversion under its own name (the only way our .yml would ever land on
+    an existing file), the .yml computed the same way emit computes it must
+    not already be where the project declares its sources.
+    """
+    for project in ("with_sources", "sources_at_root"):
+        ctx = read_project(FIXTURES / project)
+        declared = {s.declared_in for s in ctx.existing_sources}
+        assert declared  # only meaningful where the project declares sources
+        for model in ctx.existing_models:
+            candidate = Path(model.path).with_suffix(".yml").as_posix()
+            assert candidate not in declared
+
+
+APPEND_SQL = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+
+
+def _question_key(change, table):
+    (dec,) = [d for d in change.decisions if d.question and table in d.action]
+    return dec.key
+
+
+def test_end_to_end_the_yml_lands_beside_the_model_and_parses_clean(tmp_path):
+    baseline = convert(APPEND_SQL)
+    key = _question_key(baseline, "revenue_events")
+    change = convert(APPEND_SQL, answers={key: Answer(verify_option().label, ("order_id",))})
+    ctx = context_for("jaffle_shop")
+
+    result = emit(change, ctx, tmp_path)
+
+    (model,) = [m for m in change.models if "revenue_events" in m.name]
+    model_file = tmp_path / model.path
+    schema_file = model_file.with_suffix(".yml")
+    assert schema_file.parent == model_file.parent
+    assert schema_file.is_file()
+    assert schema_file in result.paths
+
+    doc = yaml.safe_load(schema_file.read_text())
+    assert doc == {
+        "version": 2,
+        "models": [{"name": model.name, "columns": [{"name": "order_id", "tests": ["unique"]}]}],
+    }
+
+    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
+    assert "**Tests**: 1" in report
+
+
+def test_end_to_end_an_unanswered_conversion_emits_no_yml_and_reports_zero_tests(tmp_path):
+    change = convert(APPEND_SQL)
+    ctx = context_for("jaffle_shop")
+    emit(change, ctx, tmp_path)
+
+    assert list(tmp_path.rglob("*.yml")) == []
+    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
+    assert "**Tests**: 0" in report

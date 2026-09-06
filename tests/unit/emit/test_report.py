@@ -4,7 +4,7 @@ from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import render_report
 from dbtw.core.ingest import ClassifiedStatement, RawStatement
-from dbtw.core.passes import Decision
+from dbtw.core.passes import Decision, SchemaTest
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -75,6 +75,17 @@ def test_summary_counts_and_dialect():
     out = _report()
     assert "jaffle_shop" in out
     assert "tsql" in out
+
+
+def test_summary_shows_zero_tests_when_none_were_recorded():
+    """Derived, always rendered -- 0 as 0, never omitted just because the
+    conversion asked for none (spec §11.4(c))."""
+    assert "- **Tests**: 0" in _report()
+
+
+def test_summary_shows_the_recorded_tests_count():
+    out = _report(tests=(SchemaTest("stg_orders", "order_id"),))
+    assert "- **Tests**: 1" in out
 
 
 def test_conventions_section_quotes_detection_evidence():
