@@ -1500,9 +1500,23 @@ def append_pass(state: PassState) -> PassState:
                 ),
                 reason=reason,
                 question=("Should rows be appended on every run, or deduplicated on a unique key?"),
+                # `draft.name` is the INSERT's *destination*, and the sentence
+                # has to name it as one. Wording it as where rows come from
+                # ("every row it finds in revenue_events") contradicts the
+                # model file written beside this Decision, whose body reads the
+                # SELECT's tables and never reads the target at all.
+                #
+                # The second branch is `merge_option()`, which matches on a key
+                # and *updates* the row it matched with every column the model
+                # selects. Offering it as "only the ones it has not seen
+                # before" describes an insert-only skip -- a behaviour this
+                # engine does not produce, contradicted by the option's own
+                # plain wording rendered directly below it and by the worked
+                # example rendered below that.
                 plain_question=(
-                    f"When this runs again tomorrow, should it add every row it finds in "
-                    f"{draft.name} -- or only the ones it has not seen before?"
+                    f"When this runs again tomorrow, should every row it produces be added "
+                    f"to {draft.name} on top of what is already there -- or should the ones "
+                    f"matching a row that is already there update it instead?"
                 ),
                 chosen=append_answer.label,
                 options=(append_answer, merge_option()),

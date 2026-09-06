@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from dbtw.core.passes.types import (
@@ -142,3 +144,64 @@ def test_the_variable_question_in_a_real_conversion_has_a_plain_form_too():
         _assert_plain_forms(d)
     (variable_q,) = [d for d in questions if d.question.startswith("Is ")]
     assert variable_q.plain_question
+
+
+# --- the append question's own sentence, against the model written beside it
+
+APPEND_SCRIPT = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+
+# The target named as a destination: rows are *added to* it. The wording this
+# replaced -- "add every row it finds in revenue_events" -- names the same
+# table as the place rows are read from, and fails this.
+_NAMED_AS_DESTINATION = re.compile(
+    r"\b(add|adds|added|append|appended|insert|inserted|write|written)\w*\s+to\s+revenue_events\b"
+)
+
+
+def _append_question():
+    """The append question as a real conversion produces it, with the model
+    built from the same statement. Read off the pipeline rather than rebuilt
+    here, so these assert the sentence a reader is actually shown."""
+    from tests.unit.assemble.helpers import convert
+
+    change = convert(APPEND_SCRIPT)
+    (question,) = [d for d in change.decisions if d.question and d.chosen == "append every row"]
+    (model,) = change.models
+    return model, question
+
+
+def test_the_plain_append_question_names_its_target_as_where_rows_go():
+    """The table in this question is the INSERT's destination, and the model
+    written beside the question proves it: the body reads stg_orders and does
+    not mention revenue_events anywhere. A sentence saying rows are found in
+    revenue_events describes a file this conversion did not write -- and the
+    plain register is the one register whose reader cannot correct for it."""
+    model, question = _append_question()
+    plain = question.plain_question
+
+    # Not vacuous: this is the contradiction the sentence must not create.
+    assert "stg_orders" in model.body
+    assert "revenue_events" not in model.body
+
+    assert "revenue_events" in plain, plain
+    assert _NAMED_AS_DESTINATION.search(plain), plain
+
+
+def test_the_plain_append_question_offers_the_answer_the_merge_option_describes():
+    """The question's second branch is `merge_option()`. Its plain wording,
+    rendered directly below the question, says a match updates the existing
+    row; the worked example below that shows the update happening. A question
+    offering that branch as "only the ones it has not seen before" describes
+    an insert-only skip -- a third behaviour, which neither the option nor the
+    example nor dbt produces."""
+    _, question = _append_question()
+    plain = question.plain_question.lower()
+    (merge,) = [o for o in question.options if o.label.startswith("merge")]
+
+    # Not vacuous: the alternative really is match-and-update, so the question
+    # has to offer it as one. If merge_option stops updating, this fails here
+    # rather than leaving the question quietly describing the wrong thing.
+    assert "update" in merge.plain.lower(), merge.plain
+
+    assert "match" in plain, plain
+    assert "update" in plain, plain
