@@ -2,8 +2,13 @@
 
 Table references that resolved to a ref/source (see `resolve.py`) become
 `{{ ref('name') }}` / `{{ source('source_name', 'table') }}`; parameters
-become `{{ var('name') }}` (or the raw default SQL, inlined, when asked).
-Both rewrites happen in a single sqlglot transform pass.
+become `{{ var('name') }}`, or the raw default SQL inlined, for the
+variables whose entry in `variables` carries one. Both rewrites happen in a
+single sqlglot transform pass.
+
+That map is the only thing deciding a variable's form: a caller keeping one
+as a var passes None for it, and there is no second switch that could
+disagree with the map about which variables were inlined.
 
 A script variable has two reference forms, both rewritten the same way: a
 T-SQL-style `exp.Parameter` (`@name`), and duckdb's `SET VARIABLE`/spark's
@@ -71,7 +76,6 @@ def rewrite_body(
     dialect: str | None,
     resolutions: Mapping[tuple[str, str, str], Resolution],
     variables: Mapping[str, str | None],
-    inline_vars: bool,
 ) -> str:
     try:
         node = sqlglot.parse_one(body, read=dialect)
@@ -102,7 +106,7 @@ def rewrite_body(
         if name not in variables:
             return fallback
         default_sql = variables[name]
-        if inline_vars and default_sql is not None:
+        if default_sql is not None:
             try:
                 return maybe_paren(sqlglot.parse_one(default_sql, read=dialect))
             except SqlglotError:

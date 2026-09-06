@@ -1357,15 +1357,13 @@ def assemble(
         )
         resolutions_by_key = {(r.ref.catalog, r.ref.db, r.ref.name): r for r in resolutions}
         rewritten_body = rewrite_body(
-            # effective_variable_defaults already carries None for every name
-            # this run decided not to inline, so rewrite_body's own inline
-            # gate is passed as always-on: the per-variable decision, not a
-            # single blanket flag, is what must decide it here.
             model.body,
             state.dialect,
             resolutions_by_key,
+            # Carries None for every name this run decided not to inline, so
+            # the map alone decides each variable's form -- the per-variable
+            # decision, never a blanket flag.
             effective_variable_defaults,
-            True,
         )
         rewritten_models.append(dataclasses.replace(model, body=rewritten_body))
 
