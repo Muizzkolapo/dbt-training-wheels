@@ -105,6 +105,44 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
     )
 
 
+def verify_option(keys: tuple[str, ...] = ()) -> Option:
+    """The 'merge, and have dbt check the key' answer. The check is dbt's
+    built-in `unique` test, declared in a .yml file beside the model. It is
+    only offered where it can be honoured: the test checks one column, so a
+    multi-column key never sees this option (a per-column declaration would
+    assert more than the key claim and fail on valid data).
+    """
+    if not keys:
+        return Option(
+            label="merge on a unique key, checked on every run",
+            effect=(
+                "The same merge, plus dbt's unique test on the chosen column: "
+                "declared in a .yml file beside the model, it fails loudly the "
+                "first time two rows share a value."
+            ),
+            columns_prompt="the column(s) that identify a row uniquely",
+            plain=(
+                "The same as merging, plus a check that runs alongside: if two "
+                "rows ever share the same value in that column, it stops and "
+                "tells you which value, instead of quietly picking one row."
+            ),
+        )
+    named = ", ".join(keys)
+    return Option(
+        label=f"merge on {named}, checked on every run",
+        effect=(
+            f"The same merge as 'merge on {named}', plus dbt's unique test on "
+            f"{named}: declared in a .yml file beside the model, it fails "
+            f"loudly the first time two rows share a {named}."
+        ),
+        plain=(
+            f"The same as merging on {named}, plus a check that runs "
+            f"alongside: if two rows ever share the same {named}, it stops "
+            "and tells you which value, instead of quietly picking one row."
+        ),
+    )
+
+
 def inline_option() -> Option:
     """The 'inline the literal' answer to a script variable's question."""
     return Option(

@@ -22,9 +22,13 @@ def _question(out):
 
 def test_an_append_question_describes_both_of_its_answers():
     """The label is the button; the effect is what dbt does if you press it.
-    Both come from the engine so the report and the screen cannot disagree."""
+    Both come from the engine so the report and the screen cannot disagree.
+
+    A third answer -- `verify_option()`, offering to have dbt check the key
+    instead of asking the user to vouch for it -- now rides alongside these
+    two; this test only asserts the original pair is still among them."""
     dec = _question(_run(append_pass, APPEND, "insert_select"))
-    assert len(dec.options) == 2
+    assert len(dec.options) == 3
     labels = [o.label for o in dec.options]
     assert "append every row" in labels
     assert "merge on a unique key" in labels
@@ -124,7 +128,12 @@ def test_the_option_that_needs_columns_says_so_on_the_record():
     """
     dec = _question(_run(append_pass, APPEND, "insert_select"))
     needing = [o for o in dec.options if o.columns_prompt]
-    assert [o.label for o in needing] == ["merge on a unique key"]
+    # Both keyless answers need a column: the plain merge and its checked
+    # sibling (`verify_option()`) ask the same "which column" question.
+    assert [o.label for o in needing] == [
+        "merge on a unique key",
+        "merge on a unique key, checked on every run",
+    ]
     assert "uniquely" in needing[0].columns_prompt
     # The option that settles itself asks for nothing.
     (append_alternative,) = [o for o in dec.options if o.label == "append every row"]
@@ -133,9 +142,11 @@ def test_the_option_that_needs_columns_says_so_on_the_record():
 
 def test_a_merge_option_that_names_its_keys_needs_no_columns():
     """The key is in the label, so there is nothing left for a consumer to
-    ask for."""
+    ask for -- true of the merge answer, the append alternative, and (MERGE's
+    key here is a single column) the checked variant `verify_option` offers
+    alongside it."""
     dec = _question(_run(merge_pass, MERGE, "merge"))
-    assert [o.columns_prompt for o in dec.options] == ["", ""]
+    assert [o.columns_prompt for o in dec.options] == ["", "", ""]
 
 
 def test_no_question_recommends_a_command_line_flag():

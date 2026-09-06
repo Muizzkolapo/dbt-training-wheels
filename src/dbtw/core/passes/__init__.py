@@ -20,6 +20,7 @@ from dbtw.core.passes.types import (
     merge_option,
     statement_index,
     var_option,
+    verify_option,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "truncate_insert_columns_pass",
     "truncate_insert_pass",
     "var_option",
+    "verify_option",
 ]

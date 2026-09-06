@@ -7,6 +7,7 @@ from dbtw.core.passes.types import (
     inline_option,
     merge_option,
     var_option,
+    verify_option,
 )
 
 # Terms the persona walkthroughs recorded as undefined for people who have
@@ -34,6 +35,8 @@ ALL_OPTIONS = [
     append_option(),
     merge_option(),
     merge_option(("order_id",)),
+    verify_option(),
+    verify_option(("order_id",)),
     inline_option(),
     var_option("cutoff"),
 ]
@@ -196,7 +199,11 @@ def test_the_plain_append_question_offers_the_answer_the_merge_option_describes(
     example nor dbt produces."""
     _, question = _append_question()
     plain = question.plain_question.lower()
-    (merge,) = [o for o in question.options if o.label.startswith("merge")]
+    # Not `startswith("merge")`: the append question now also offers
+    # `verify_option()`, whose label ("merge on a unique key, checked on
+    # every run") starts with the same word. This test is about the plain
+    # merge answer specifically, so it is matched on its exact label.
+    (merge,) = [o for o in question.options if o.label == "merge on a unique key"]
 
     # Not vacuous: the alternative really is match-and-update, so the question
     # has to offer it as one. If merge_option stops updating, this fails here

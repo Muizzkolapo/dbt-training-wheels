@@ -27,6 +27,7 @@ from dbtw.core.passes.types import (
     Tier,
     append_option,
     merge_option,
+    verify_option,
 )
 
 
@@ -1247,7 +1248,8 @@ def merge_pass(state: PassState) -> PassState:
                     f"In {table.name}, is there only ever one row for each {key_list}?"
                 ),
                 chosen=merge_answer.label,
-                options=(merge_answer, append_option()),
+                options=(merge_answer, append_option())
+                + ((verify_option(keys),) if len(keys) == 1 else ()),
                 subject=Subject(table=table.name, columns=keys),
             )
         )
@@ -1519,7 +1521,7 @@ def append_pass(state: PassState) -> PassState:
                     f"matching a row that is already there update it instead?"
                 ),
                 chosen=append_answer.label,
-                options=(append_answer, merge_option()),
+                options=(append_answer, merge_option(), verify_option()),
                 subject=Subject(table=draft.name),
             )
         )
