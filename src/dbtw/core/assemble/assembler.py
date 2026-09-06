@@ -25,6 +25,7 @@ from dbtw.core.passes.types import (
     ModelDraft,
     Option,
     PassState,
+    Subject,
     append_option,
     inline_option,
     merge_option,
@@ -1328,6 +1329,7 @@ def assemble(
             question=f"Is {variable.name} a run-time parameter or a constant?",
             chosen=chosen,
             options=(inline_answer, keep_answer),
+            subject=Subject(table=variable.name),
         )
         new_decisions.append(variable_decision)
         answerable_decisions.append(variable_decision)

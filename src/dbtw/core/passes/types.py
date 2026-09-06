@@ -101,6 +101,28 @@ def var_option(name: str = "") -> Option:
 
 
 @dataclass(frozen=True, slots=True)
+class Subject:
+    """What a Tier-2 question is about, as data rather than as prose.
+
+    `table` is the target's name as the source script spelled it -- the
+    spelling a user will recognise, NOT `naming.target_key`'s casefolded
+    identity triple, which exists for comparison and would show them a name
+    their script does not contain.
+
+    `columns` are the columns the question turns on: the key a MERGE's ON
+    clause already names, or empty when the question is precisely which
+    column to use. Empty means "none known", never "none exist".
+
+    A consumer needs these to offer a check query, to label a column input,
+    or to build a worked example. Recovering them by parsing `question`
+    would make every consumer a parser of our own prose.
+    """
+
+    table: str
+    columns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Decision:
     """One recorded pass action: what was found, what was done, and why."""
 
@@ -114,6 +136,7 @@ class Decision:
     question: str = ""  # Tier-2 only: the design question posed to the user
     chosen: str = ""  # Tier-2 only: the label of the option that stands
     options: tuple[Option, ...] = ()  # Tier-2 only: every option, chosen included
+    subject: Subject | None = None  # Tier-2 questions only: what it is about
 
 
 @dataclass(frozen=True, slots=True)

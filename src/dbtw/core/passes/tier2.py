@@ -23,6 +23,7 @@ from dbtw.core.passes.types import (
     ModelDraft,
     Option,
     PassState,
+    Subject,
     Tier,
     append_option,
     merge_option,
@@ -66,6 +67,7 @@ def _decision(
     question: str = "",
     chosen: str = "",
     options: tuple[Option, ...] = (),
+    subject: Subject | None = None,
 ) -> Decision:
     return Decision(
         key=f"tier2.{name}.{stmt.raw.source_file}:{index}",
@@ -78,6 +80,7 @@ def _decision(
         question=question,
         chosen=chosen,
         options=options,
+        subject=subject,
     )
 
 
@@ -1240,6 +1243,7 @@ def merge_pass(state: PassState) -> PassState:
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
                 chosen=merge_answer.label,
                 options=(merge_answer, append_option()),
+                subject=Subject(table=table.name, columns=keys),
             )
         )
         for caveat_name, caveat_action, caveat_reason in _merge_caveats(branches, table.name):
@@ -1493,6 +1497,7 @@ def append_pass(state: PassState) -> PassState:
                 question=("Should rows be appended on every run, or deduplicated on a unique key?"),
                 chosen=append_answer.label,
                 options=(append_answer, merge_option()),
+                subject=Subject(table=draft.name),
             )
         )
     return PassState(
