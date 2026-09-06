@@ -1139,20 +1139,23 @@ def assemble(
 
     declared_var_names = {name for name, _ in ctx.vars_declared}
     variable_defaults: dict[str, str | None] = {}
-    # Whether to inline each variable's default, keyed the same as
-    # variable_defaults but decided once per name (first occurrence) and
-    # never touched by the DECLARE-then-SET backfill below -- see the note
-    # where it is set. Every key ever written to variable_defaults gets a
+    # Whether this run *wants* each variable's default inlined, keyed the
+    # same as variable_defaults but decided once per name (first occurrence)
+    # and never touched by the DECLARE-then-SET backfill below. It records a
+    # preference, not an outcome: whether a variable is actually inlined is
+    # settled after this loop, once variable_defaults holds its final
+    # backfilled value. Every key ever written to variable_defaults gets a
     # matching entry here (both branches below set it before touching
     # variable_defaults), so effective_variable_defaults can index it
     # directly instead of falling back to inline_vars -- a fallback would
     # silently revert to blanket-flag semantics for a future case that adds
-    # to variable_defaults without also recording an inline decision.
+    # to variable_defaults without also recording an inline preference.
     variable_inline: dict[str, bool] = {}
-    kept_variables: list[Variable] = []
-    # name -> its index in kept_variables, so a later fill-in (below) can
-    # replace that entry's default_sql without disturbing its position.
-    kept_variable_index: dict[str, int] = {}
+    # Each name's first occurrence, in the order they were found. The
+    # emission pass below walks this instead of variables_found: it is the
+    # order the Decisions are reported in, and each entry is the spelling
+    # (source file and line) the report attributes that variable to.
+    first_occurrences: list[Variable] = []
     seen_var_names: set[str] = set()
     for variable in variables_found:
         if variable.name in seen_var_names:
@@ -1174,17 +1177,9 @@ def assemble(
                 and variable.default_sql is not None
             ):
                 variable_defaults[variable.name] = variable.default_sql
-                kept_index = kept_variable_index.get(variable.name)
-                if kept_index is not None:
-                    stale = kept_variables[kept_index]
-                    kept_variables[kept_index] = Variable(
-                        name=stale.name,
-                        default_sql=variable.default_sql,
-                        source_file=stale.source_file,
-                        line_start=stale.line_start,
-                    )
             continue
         seen_var_names.add(variable.name)
+        first_occurrences.append(variable)
 
         if variable.name in declared_var_names:
             # Already declared in the target project's own vars — never
@@ -1196,6 +1191,44 @@ def assemble(
             # (FINDING 6 — Decision and disk must agree).
             variable_defaults[variable.name] = None
             variable_inline[variable.name] = False
+            continue
+
+        # A per-decision answer, when one is given for this variable, wins
+        # over the run's blanket --inline-vars default -- it is the same
+        # question, answered one variable at a time instead of for all of
+        # them at once.
+        answer = answers_map.get(f"assemble.variable.{variable.name}")
+        variable_inline[variable.name] = (
+            answer.label == "inline the literal value" if answer else inline_vars
+        )
+        variable_defaults[variable.name] = variable.default_sql
+
+    # variable_defaults holds each variable's best-known literal regardless of
+    # whether it gets inlined -- a DECLARE-then-SET backfill (above) can fill
+    # it in after the preference for that name was already recorded. Fold the
+    # two together only now, once variable_defaults has taken its final
+    # value: a variable this run chose not to inline renders as var() even if
+    # a later statement backfilled a literal for it.
+    effective_variable_defaults = {
+        name: (default_sql if variable_inline[name] else None)
+        for name, default_sql in variable_defaults.items()
+    }
+
+    # Every variable Decision, and every var this change declares, is emitted
+    # here rather than inside the loop above, and reads its outcome off
+    # effective_variable_defaults -- the same map, and the only map,
+    # rewrite_body renders the bodies from. A Decision written inside the
+    # loop had to predict that outcome before the DECLARE-then-SET backfill
+    # could change it, and got it wrong: `DECLARE @cutoff DATE; SET @cutoff =
+    # '2024-06-30';` under --inline-vars spliced the backfilled literal into
+    # the body while the Decision beside it said there was no literal to
+    # inline and the var was kept, and dbt_project.yml then declared a var no
+    # model referenced. Deriving the wording, the declared vars and the body
+    # from one map is what makes that disagreement unrepresentable rather
+    # than merely fixed for this one input.
+    kept_variables: list[Variable] = []
+    for variable in first_occurrences:
+        if variable.name in declared_var_names:
             new_decisions.append(
                 Decision(
                     key=f"assemble.variable.{variable.name}",
@@ -1215,30 +1248,6 @@ def assemble(
             )
             continue
 
-        # A per-decision answer, when one is given for this variable, wins
-        # over the run's blanket --inline-vars default -- it is the same
-        # question, answered one variable at a time instead of for all of
-        # them at once. Recorded in variable_inline (consulted once, after
-        # the loop, when variable_defaults has taken its final backfilled
-        # value) rather than folded into variable_defaults here -- a later
-        # DECLARE-then-SET backfill (above) still needs to tell "no default
-        # known yet" apart from "chosen not to inline", and both are a bare
-        # None in variable_defaults.
-        answer = answers_map.get(f"assemble.variable.{variable.name}")
-        inline_this = answer.label == "inline the literal value" if answer else inline_vars
-        variable_inline[variable.name] = inline_this
-
-        variable_defaults[variable.name] = variable.default_sql
-
-        # --inline-vars (or an answer resolving the same way) only actually
-        # inlines when there is a literal default to inline. A default-less
-        # variable (e.g. `DECLARE @region VARCHAR` with nothing assigned) has
-        # no SQL to splice in — rewrite_body falls back to a var() call
-        # regardless — so claiming "inlined region's literal default value"
-        # would be a lie the body doesn't back up, and skipping
-        # change.variables for it would leave the emitted var() call
-        # undeclared, breaking `dbt compile` on an undefined var (FINDING 5).
-        # Treat it exactly like the keep-as-var case, honestly worded.
         var_option = Option(
             label="keep as a dbt var",
             effect=(
@@ -1253,12 +1262,20 @@ def assemble(
                 "model stops taking the value at run time and always uses this one."
             ),
         )
-        if inline_this and variable.default_sql is not None:
+        if effective_variable_defaults[variable.name] is not None:
             chosen = "inline the literal value"
             action = f"inlined {variable.name}'s literal default value in place of the parameter"
         else:
             chosen = "keep as a dbt var"
-            if inline_this:
+            if variable_inline[variable.name]:
+                # --inline-vars (or an answer resolving the same way) only
+                # actually inlines when there is a literal default to inline.
+                # A default-less variable (e.g. `DECLARE @region VARCHAR`
+                # with nothing assigned, and no later SET) has no SQL to
+                # splice in — rewrite_body renders a var() call regardless —
+                # so claiming "inlined region's literal default value" would
+                # be a lie the body doesn't back up (FINDING 5). Treat it
+                # exactly like the keep-as-var case, honestly worded.
                 action = (
                     f"{variable.name} has no default in the source SQL, so there is no "
                     "literal value to inline; kept as a dbt var instead"
@@ -1267,8 +1284,21 @@ def assemble(
                 action = (
                     f"declared {variable.name} as a dbt var, referenced via var('{variable.name}')"
                 )
-            kept_variable_index[variable.name] = len(kept_variables)
-            kept_variables.append(variable)
+            # The body renders var('<name>') for exactly the variables this
+            # map leaves at None, so exactly those must reach dbt_project.yml:
+            # skipping one would leave the emitted var() call undeclared and
+            # break `dbt compile`, and declaring one the body never calls
+            # would put a var nobody references in the project. The
+            # declaration carries the best-known literal as its default —
+            # the backfilled one, where a later statement supplied it.
+            kept_variables.append(
+                Variable(
+                    name=variable.name,
+                    default_sql=variable_defaults[variable.name],
+                    source_file=variable.source_file,
+                    line_start=variable.line_start,
+                )
+            )
 
         variable_decision = Decision(
             key=f"assemble.variable.{variable.name}",
@@ -1288,17 +1318,6 @@ def assemble(
         )
         new_decisions.append(variable_decision)
         answerable_decisions.append(variable_decision)
-
-    # variable_defaults holds each variable's best-known literal regardless of
-    # whether it gets inlined -- a DECLARE-then-SET backfill (above) can fill
-    # it in after the inline decision for that name was already made. Fold
-    # the two together only now, once variable_defaults has taken its final
-    # value: a variable this loop decided not to inline renders as var() even
-    # if a later statement backfilled a literal for it.
-    effective_variable_defaults = {
-        name: (default_sql if variable_inline[name] else None)
-        for name, default_sql in variable_defaults.items()
-    }
 
     # Step 3: resolution maps, built from the assembled models (their final
     # names), the target project's existing models/sources, and the sources

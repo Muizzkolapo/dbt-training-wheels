@@ -215,6 +215,30 @@ def test_declare_then_set_inlines_the_assigned_value():
     assert "var(" not in change.models[0].body
 
 
+def test_declare_then_set_decision_says_what_the_body_actually_did():
+    """The inline decision was made on the DECLARE's None default and never
+    revisited once the SET backfilled a literal, so the body inlined
+    '2024-06-30' while the Decision beside it read "no literal value to
+    inline; kept as a dbt var instead" and change.variables still declared
+    cutoff in dbt_project.yml -- a var no model references. Decision, report
+    and disk each said something different about the same variable.
+    """
+    change = assemble(
+        _declare_then_set_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True
+    )
+    body = change.models[0].body
+    assert "'2024-06-30'" in body
+    assert "var(" not in body
+
+    (decision,) = [d for d in change.decisions if d.key == "assemble.variable.cutoff"]
+    assert decision.chosen == "inline the literal value"
+    assert "inlined" in decision.action
+    assert "kept as a dbt var" not in decision.action
+
+    # Nothing calls var('cutoff') any more, so nothing may declare it either.
+    assert change.variables == ()
+
+
 def _default_less_variable_state():
     """FINDING 5 probe: --inline-vars on a variable with no default in the
     source. The assembler took the inline branch unconditionally on
