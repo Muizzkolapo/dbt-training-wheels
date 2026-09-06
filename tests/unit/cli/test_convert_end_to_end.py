@@ -613,3 +613,22 @@ def test_a_delete_in_another_file_is_not_ignored_either(tmp_path):
     for body in _models(tmp_path).values():
         assert "incremental_strategy='append'" not in body
     assert "delete and insert" in report
+
+
+def test_report_names_the_source_file_the_output_lands_on(tmp_path):
+    """The whole reproduction, through the CLI: sources_at_root declares
+    raw.orders at models/sources.yml, and the conversion writes its own
+    models/sources.yml declaring raw.customers and raw.events. Copying the
+    output over that project deletes a declaration its models depend on, so
+    the report has to name the file, name raw.orders, and say what happens
+    either way.
+    """
+    project = ROOT / "projects" / "sources_at_root"
+    sql = ROOT / "sql" / "incremental_etl.sql"
+    assert main(["convert", str(sql), "--project", str(project), "--out", str(tmp_path)]) == 0
+    ours = (tmp_path / "models" / "sources.yml").read_text()
+    assert "name: orders" not in ours  # ours really does leave theirs out
+    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
+    assert "models/sources.yml" in report
+    assert "raw.orders" in report
+    assert "replaces that file" in report
