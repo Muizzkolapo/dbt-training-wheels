@@ -1327,6 +1327,10 @@ def assemble(
             line_start=variable.line_start,
             line_end=variable.line_start,
             question=f"Is {variable.name} a run-time parameter or a constant?",
+            plain_question=(
+                f"Should {variable.name} always be the value your script used, or "
+                "something you choose each time you run it?"
+            ),
             chosen=chosen,
             options=(inline_answer, keep_answer),
             subject=Subject(table=variable.name),

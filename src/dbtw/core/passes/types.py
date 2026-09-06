@@ -29,11 +29,15 @@ class Option:
     is written here: a bare boolean would leave every consumer inventing
     its own prompt, which is the label-copying this record exists to
     remove, one step removed.
+
+    `plain` says what `effect` says to a reader who has never used dbt;
+    the two are reviewed together in the report so they cannot drift.
     """
 
     label: str
     effect: str
     columns_prompt: str = ""
+    plain: str = ""  # the same consequence, assuming no dbt knowledge
 
 
 def append_option() -> Option:
@@ -44,6 +48,11 @@ def append_option() -> Option:
             "Every run re-inserts everything this model selects. Rows already in the "
             "table stay where they are, so a second run duplicates them unless the "
             "SELECT filters to new rows itself."
+        ),
+        plain=(
+            "Every time this runs it adds everything it finds, on top of what is "
+            "already there. Run it twice and you get two copies of every row, "
+            "unless the query itself only asks for new ones."
         ),
     )
 
@@ -63,6 +72,11 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
             # The one option whose label leaves its key unsaid, so the one
             # option that needs columns supplied with the answer.
             columns_prompt="the column(s) that identify a row uniquely",
+            plain=(
+                "Each run updates the rows it has seen before and adds the ones it "
+                "has not, so nothing is duplicated. It needs a column whose value "
+                "is different on every row -- an id."
+            ),
         )
     named = ", ".join(keys)
     return Option(
@@ -70,6 +84,10 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
         effect=(
             f"Updates the row whose {named} matches, with every column this model "
             "selects, and inserts rows matching none."
+        ),
+        plain=(
+            f"Each run finds the row whose {named} matches and updates it, and "
+            "adds the rows that match nothing. Rows are not duplicated."
         ),
     )
 
@@ -81,6 +99,11 @@ def inline_option() -> Option:
         effect=(
             "The literal from the source SQL is spliced into the model body. The "
             "model stops taking the value at run time and always uses this one."
+        ),
+        plain=(
+            "The value from your script is written straight into the model, so "
+            "it is the same on every run and cannot be changed without editing "
+            "the file."
         ),
     )
 
@@ -96,6 +119,10 @@ def var_option(name: str = "") -> Option:
         effect=(
             f"The value stays a run-time parameter: the model calls {called} "
             "and dbt supplies it per run, so it can differ between environments."
+        ),
+        plain=(
+            f"The value stays something you set when you run it, so {name or 'it'} "
+            "can be different in testing than in production."
         ),
     )
 
@@ -134,6 +161,7 @@ class Decision:
     line_start: int
     line_end: int
     question: str = ""  # Tier-2 only: the design question posed to the user
+    plain_question: str = ""  # the same question, assuming no dbt knowledge
     chosen: str = ""  # Tier-2 only: the label of the option that stands
     options: tuple[Option, ...] = ()  # Tier-2 only: every option, chosen included
     subject: Subject | None = None  # Tier-2 questions only: what it is about

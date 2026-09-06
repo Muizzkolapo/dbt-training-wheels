@@ -65,6 +65,7 @@ def _decision(
     action: str,
     reason: str,
     question: str = "",
+    plain_question: str = "",
     chosen: str = "",
     options: tuple[Option, ...] = (),
     subject: Subject | None = None,
@@ -78,6 +79,7 @@ def _decision(
         line_start=stmt.raw.line_start,
         line_end=stmt.raw.line_end,
         question=question,
+        plain_question=plain_question,
         chosen=chosen,
         options=options,
         subject=subject,
@@ -1241,6 +1243,9 @@ def merge_pass(state: PassState) -> PassState:
                     f"none; this MERGE {performed}"
                 ),
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
+                plain_question=(
+                    f"In {table.name}, is there only ever one row for each {key_list}?"
+                ),
                 chosen=merge_answer.label,
                 options=(merge_answer, append_option()),
                 subject=Subject(table=table.name, columns=keys),
@@ -1495,6 +1500,10 @@ def append_pass(state: PassState) -> PassState:
                 ),
                 reason=reason,
                 question=("Should rows be appended on every run, or deduplicated on a unique key?"),
+                plain_question=(
+                    f"When this runs again tomorrow, should it add every row it finds in "
+                    f"{draft.name} -- or only the ones it has not seen before?"
+                ),
                 chosen=append_answer.label,
                 options=(append_answer, merge_option()),
                 subject=Subject(table=draft.name),
