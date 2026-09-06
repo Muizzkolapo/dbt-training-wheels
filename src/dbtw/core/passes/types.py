@@ -11,6 +11,55 @@ Tier = Literal[1, 2, 3]
 
 
 @dataclass(frozen=True, slots=True)
+class Option:
+    """One answer a Tier-2 question offers, and what taking it does.
+
+    `label` is the answer as both the report and a button name it; `effect`
+    is what dbt will do if it is taken, in dbt's own terms. The effect is
+    written here rather than by a consumer because the report and the web
+    UI render from the same records and must not explain a choice
+    differently — see RFC section 9.
+    """
+
+    label: str
+    effect: str
+
+
+def append_option() -> Option:
+    """The 'append every row' answer, worded once for every question that offers it."""
+    return Option(
+        label="append every row",
+        effect=(
+            "Every run re-inserts everything this model selects. Rows already in the "
+            "table stay where they are, so a second run duplicates them unless the "
+            "SELECT filters to new rows itself."
+        ),
+    )
+
+
+def merge_option(keys: tuple[str, ...] = ()) -> Option:
+    """The 'merge on a key' answer. Names the keys when they are known — read
+    off a MERGE's ON clause — and stays generic when the user has yet to pick.
+    """
+    if not keys:
+        return Option(
+            label="merge on a unique key",
+            effect=(
+                "Each run updates the row whose key matches and inserts the rows that "
+                "match nothing. Needs a column that identifies a row uniquely."
+            ),
+        )
+    named = ", ".join(keys)
+    return Option(
+        label=f"merge on {named}",
+        effect=(
+            f"Updates the row whose {named} matches, with every column this model "
+            "selects, and inserts rows matching none."
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Decision:
     """One recorded pass action: what was found, what was done, and why."""
 
@@ -22,8 +71,8 @@ class Decision:
     line_start: int
     line_end: int
     question: str = ""  # Tier-2 only: the design question posed to the user
-    chosen: str = ""  # Tier-2 only: what the user chose
-    alternatives: tuple[str, ...] = ()  # Tier-2 only: alternatives presented
+    chosen: str = ""  # Tier-2 only: the label of the option that stands
+    options: tuple[Option, ...] = ()  # Tier-2 only: every option, chosen included
 
 
 @dataclass(frozen=True, slots=True)

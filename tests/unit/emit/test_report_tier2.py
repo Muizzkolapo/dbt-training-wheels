@@ -6,6 +6,7 @@ from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry, Varia
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import render_report
 from dbtw.core.passes import Decision
+from dbtw.core.passes.types import Option
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -109,7 +110,11 @@ def test_question_bearing_decision_renders_question_chosen_and_alternatives():
                 line_end=9,
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
-                alternatives=("append", "full refresh"),
+                options=(
+                    Option(label="merge", effect="updates matching rows and inserts the rest"),
+                    Option(label="append", effect="re-inserts everything selected"),
+                    Option(label="full refresh", effect="rebuilds the table from scratch"),
+                ),
             ),
         )
     )
@@ -269,7 +274,9 @@ def test_question_bearing_decision_with_no_alternatives_omits_the_parenthetical(
                 line_end=9,
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
-                alternatives=(),
+                options=(
+                    Option(label="merge", effect="updates matching rows and inserts the rest"),
+                ),
             ),
         )
     )

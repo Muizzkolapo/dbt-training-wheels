@@ -18,7 +18,15 @@ from sqlglot import exp
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.naming import compare_targets, qualified_name, same_identifier, target_key
 from dbtw.core.passes.collisions import replace_draft, written_earlier
-from dbtw.core.passes.types import Decision, ModelDraft, PassState, Tier
+from dbtw.core.passes.types import (
+    Decision,
+    ModelDraft,
+    Option,
+    PassState,
+    Tier,
+    append_option,
+    merge_option,
+)
 
 
 def _parse(stmt: ClassifiedStatement, dialect: str | None) -> exp.Expr:
@@ -57,7 +65,7 @@ def _decision(
     reason: str,
     question: str = "",
     chosen: str = "",
-    alternatives: tuple[str, ...] = (),
+    options: tuple[Option, ...] = (),
 ) -> Decision:
     return Decision(
         key=f"tier2.{name}.{stmt.raw.source_file}:{index}",
@@ -69,7 +77,7 @@ def _decision(
         line_end=stmt.raw.line_end,
         question=question,
         chosen=chosen,
-        alternatives=alternatives,
+        options=options,
     )
 
 
@@ -1230,7 +1238,7 @@ def merge_pass(state: PassState) -> PassState:
                 ),
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
                 chosen=f"merge on {key_list}",
-                alternatives=("append every row",),
+                options=(merge_option(keys), append_option()),
             )
         )
         for caveat_name, caveat_action, caveat_reason in _merge_caveats(branches, table.name):
@@ -1478,7 +1486,7 @@ def append_pass(state: PassState) -> PassState:
                 reason=reason,
                 question=("Should rows be appended on every run, or deduplicated on a unique key?"),
                 chosen="append every row",
-                alternatives=("merge on a unique key",),
+                options=(append_option(), merge_option()),
             )
         )
     return PassState(

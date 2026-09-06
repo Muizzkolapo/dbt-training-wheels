@@ -33,7 +33,7 @@ def test_the_decision_offers_the_unique_key_alternative():
     assert dec.tier == 2
     assert dec.question
     assert dec.chosen == "append every row"
-    assert any("unique key" in a for a in dec.alternatives)
+    assert any("unique key" in o.label for o in dec.options)
     assert "re-inserts" in dec.reason
 
 

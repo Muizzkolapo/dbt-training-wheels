@@ -57,7 +57,7 @@ def test_the_decision_asks_whether_the_key_is_unique():
     assert dec.tier == 2
     assert dec.question
     assert "id" in dec.chosen
-    assert dec.alternatives
+    assert dec.options
 
 
 def test_merge_without_an_extractable_key_stays_pending():

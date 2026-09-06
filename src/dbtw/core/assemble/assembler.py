@@ -19,7 +19,14 @@ from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry,
 from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ProjectContext
 from dbtw.core.naming import is_qualified, qualified_name, same_identifier
-from dbtw.core.passes.types import Decision, ModelDraft, PassState
+from dbtw.core.passes.types import (
+    Decision,
+    ModelDraft,
+    Option,
+    PassState,
+    append_option,
+    merge_option,
+)
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
 # is always tried first by the caller; this is the order the remaining roles
@@ -368,7 +375,7 @@ def _upgrade_to_merge(
 ) -> Decision:
     """Rewrite an append Decision into the merge upgrade `--unique-key` chose.
 
-    `chosen`/`alternatives` mirror the wording `merge_pass` already uses for
+    `chosen`/`options` mirror the wording `merge_pass` already uses for
     its own script-derived merges ("merge on <keys>" / "append every row"),
     so a model's incremental history reads the same regardless of whether
     the merge came from the script or from this flag. `caveat` is appended
@@ -390,7 +397,7 @@ def _upgrade_to_merge(
             "was switched to a merge on the given key instead" + caveat
         ),
         chosen=f"merge on {keys_str}",
-        alternatives=(dec.chosen,),
+        options=(merge_option(keys), append_option()),
     )
 
 
@@ -876,13 +883,25 @@ def assemble(
         # the emitted var() call undeclared, breaking `dbt compile` on an
         # undefined var (FINDING 5). Treat it exactly like the keep-as-var
         # case, honestly worded.
+        var_option = Option(
+            label="keep as a dbt var",
+            effect=(
+                "The value stays a run-time parameter: the model calls var('name') and "
+                "dbt supplies it per run, so it can differ between environments."
+            ),
+        )
+        inline_option = Option(
+            label="inline the literal value",
+            effect=(
+                "The literal from the source SQL is spliced into the model body. The "
+                "model stops taking the value at run time and always uses this one."
+            ),
+        )
         if inline_vars and variable.default_sql is not None:
             chosen = "inline the literal value"
-            alternatives = ("keep as a dbt var",)
             action = f"inlined {variable.name}'s literal default value in place of the parameter"
         else:
             chosen = "keep as a dbt var"
-            alternatives = ("inline the literal value",)
             if inline_vars:
                 action = (
                     f"{variable.name} has no default in the source SQL, so there is no "
@@ -910,7 +929,7 @@ def assemble(
                 line_end=variable.line_start,
                 question=f"Is {variable.name} a run-time parameter or a constant?",
                 chosen=chosen,
-                alternatives=alternatives,
+                options=(inline_option, var_option),
             )
         )
 
@@ -971,7 +990,6 @@ def assemble(
                 line_start=0,
                 line_end=0,
                 chosen="; ".join(chosen_parts) if chosen_parts else "no rewrite applied",
-                alternatives=tuple(sorted({r.ref.name for r in unresolved_resolutions})),
             )
         )
 

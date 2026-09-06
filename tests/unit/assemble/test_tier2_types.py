@@ -1,5 +1,6 @@
 from dbtw.core.assemble import ProjectChange, Variable
 from dbtw.core.passes import Decision
+from dbtw.core.passes.types import Option
 
 
 def test_decision_defaults_keep_tier1_constructions_working():
@@ -14,10 +15,10 @@ def test_decision_defaults_keep_tier1_constructions_working():
     )
     assert d.question == ""
     assert d.chosen == ""
-    assert d.alternatives == ()
+    assert d.options == ()
 
 
-def test_tier2_decision_carries_question_and_alternatives():
+def test_tier2_decision_carries_question_and_options():
     d = Decision(
         key="k",
         tier=2,
@@ -28,11 +29,14 @@ def test_tier2_decision_carries_question_and_alternatives():
         line_end=1,
         question="Is start_date a run-time parameter or a constant?",
         chosen="keep as a var",
-        alternatives=("inline the literal value",),
+        options=(
+            Option(label="keep as a var", effect="stays a run-time parameter"),
+            Option(label="inline the literal value", effect="splices the literal into the body"),
+        ),
     )
     assert d.question
     assert d.chosen == "keep as a var"
-    assert "inline the literal value" in d.alternatives
+    assert "inline the literal value" in [o.label for o in d.options]
 
 
 def test_variable_carries_its_default_and_origin():

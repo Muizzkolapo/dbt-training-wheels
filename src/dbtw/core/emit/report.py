@@ -174,8 +174,9 @@ def _render_decisions(change: ProjectChange) -> str:
             block_lines.append(f"- **{d.action}** — {d.reason}{location}")
             if d.question:
                 line = f"  - Question: {d.question}  Chose: {d.chosen}"
-                if d.alternatives:
-                    line += f"  (alternatives: {', '.join(d.alternatives)})"
+                not_taken = [o.label for o in d.options if o.label != d.chosen]
+                if not_taken:
+                    line += f"  (alternatives: {', '.join(not_taken)})"
                 block_lines.append(line)
         tier_blocks.append("\n".join(block_lines))
     lines.append("\n\n".join(tier_blocks))

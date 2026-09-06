@@ -95,7 +95,7 @@ def test_variable_becomes_a_var_and_leaves_pending():
     q = [d for d in change.decisions if d.question]
     assert q and "cutoff" in q[0].question
     assert q[0].chosen == "keep as a dbt var"
-    assert q[0].alternatives
+    assert q[0].options
 
 
 def test_inline_vars_substitutes_the_literal_and_declares_nothing():
