@@ -49,9 +49,9 @@ def test_a_merge_question_names_its_key_in_the_option_it_offers():
 def test_the_chosen_label_is_always_one_of_the_offered_options():
     """A `chosen` naming an option that was never offered would render as an
     answer nobody could have given."""
-    for out, _text, _kind in (
-        (_run(append_pass, APPEND, "insert_select"), APPEND, "insert_select"),
-        (_run(merge_pass, MERGE, "merge"), MERGE, "merge"),
+    for out in (
+        _run(append_pass, APPEND, "insert_select"),
+        _run(merge_pass, MERGE, "merge"),
     ):
         dec = _question(out)
         assert dec.chosen in [o.label for o in dec.options]
