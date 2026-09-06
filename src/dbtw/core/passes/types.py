@@ -76,6 +76,19 @@ class Decision:
 
 
 @dataclass(frozen=True, slots=True)
+class Answer:
+    """A user's reply to one Tier-2 question.
+
+    `label` names the `Option` taken. `columns` carries the extra input an
+    option needs when its label alone does not settle it -- "merge on a unique
+    key" says nothing about which key.
+    """
+
+    label: str
+    columns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ModelDraft:
     """A dbt model in the making. Naming/layout finalized at assemble (slice 4)."""
 

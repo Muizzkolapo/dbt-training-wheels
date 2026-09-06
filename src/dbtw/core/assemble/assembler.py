@@ -20,6 +20,7 @@ from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ProjectContext
 from dbtw.core.naming import is_qualified, qualified_name, same_identifier
 from dbtw.core.passes.types import (
+    Answer,
     Decision,
     ModelDraft,
     Option,
@@ -571,12 +572,20 @@ def _apply_unique_key(
     return new_models, tuple(decisions_list), extra_decisions
 
 
+class UnknownAnswerError(ValueError):
+    """An answer names a Decision this run did not produce, or an option that
+    Decision did not offer. Refused rather than ignored: an ignored answer
+    leaves the caller believing a choice was applied that never was.
+    """
+
+
 def assemble(
     state: PassState,
     ctx: ProjectContext,
     *,
     inline_vars: bool = False,
     unique_key: tuple[str, ...] = (),
+    answers: Mapping[str, Answer] | None = None,
 ) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
@@ -808,6 +817,11 @@ def assemble(
 
     declared_var_names = {name for name, _ in ctx.vars_declared}
     variable_defaults: dict[str, str | None] = {}
+    # Whether to inline each variable's default, keyed the same as
+    # variable_defaults but decided once per name (first occurrence) and
+    # never touched by the DECLARE-then-SET backfill below -- see the note
+    # where it is set.
+    variable_inline: dict[str, bool] = {}
     kept_variables: list[Variable] = []
     # name -> its index in kept_variables, so a later fill-in (below) can
     # replace that entry's default_sql without disturbing its position.
@@ -873,17 +887,30 @@ def assemble(
             )
             continue
 
+        # A per-decision answer, when one is given for this variable, wins
+        # over the run's blanket --inline-vars default -- it is the same
+        # question, answered one variable at a time instead of for all of
+        # them at once. Recorded in variable_inline (consulted once, after
+        # the loop, when variable_defaults has taken its final backfilled
+        # value) rather than folded into variable_defaults here -- a later
+        # DECLARE-then-SET backfill (above) still needs to tell "no default
+        # known yet" apart from "chosen not to inline", and both are a bare
+        # None in variable_defaults.
+        answer = (answers or {}).get(f"assemble.variable.{variable.name}")
+        inline_this = answer.label == "inline the literal value" if answer else inline_vars
+        variable_inline[variable.name] = inline_this
+
         variable_defaults[variable.name] = variable.default_sql
 
-        # --inline-vars only actually inlines when there is a literal default
-        # to inline. A default-less variable (e.g. `DECLARE @region VARCHAR`
-        # with nothing assigned) has no SQL to splice in — rewrite_body
-        # falls back to a var() call regardless of inline_vars — so claiming
-        # "inlined region's literal default value" would be a lie the body
-        # doesn't back up, and skipping change.variables for it would leave
-        # the emitted var() call undeclared, breaking `dbt compile` on an
-        # undefined var (FINDING 5). Treat it exactly like the keep-as-var
-        # case, honestly worded.
+        # --inline-vars (or an answer resolving the same way) only actually
+        # inlines when there is a literal default to inline. A default-less
+        # variable (e.g. `DECLARE @region VARCHAR` with nothing assigned) has
+        # no SQL to splice in — rewrite_body falls back to a var() call
+        # regardless — so claiming "inlined region's literal default value"
+        # would be a lie the body doesn't back up, and skipping
+        # change.variables for it would leave the emitted var() call
+        # undeclared, breaking `dbt compile` on an undefined var (FINDING 5).
+        # Treat it exactly like the keep-as-var case, honestly worded.
         var_option = Option(
             label="keep as a dbt var",
             effect=(
@@ -898,12 +925,12 @@ def assemble(
                 "model stops taking the value at run time and always uses this one."
             ),
         )
-        if inline_vars and variable.default_sql is not None:
+        if inline_this and variable.default_sql is not None:
             chosen = "inline the literal value"
             action = f"inlined {variable.name}'s literal default value in place of the parameter"
         else:
             chosen = "keep as a dbt var"
-            if inline_vars:
+            if inline_this:
                 action = (
                     f"{variable.name} has no default in the source SQL, so there is no "
                     "literal value to inline; kept as a dbt var instead"
@@ -934,6 +961,17 @@ def assemble(
             )
         )
 
+    # variable_defaults holds each variable's best-known literal regardless of
+    # whether it gets inlined -- a DECLARE-then-SET backfill (above) can fill
+    # it in after the inline decision for that name was already made. Fold
+    # the two together only now, once variable_defaults has taken its final
+    # value: a variable this loop decided not to inline renders as var() even
+    # if a later statement backfilled a literal for it.
+    effective_variable_defaults = {
+        name: (default_sql if variable_inline.get(name, inline_vars) else None)
+        for name, default_sql in variable_defaults.items()
+    }
+
     # Step 3: resolution maps, built from the assembled models (their final
     # names), the target project's existing models/sources, and the sources
     # this change itself proposes.
@@ -959,7 +997,15 @@ def assemble(
         )
         resolutions_by_key = {(r.ref.catalog, r.ref.db, r.ref.name): r for r in resolutions}
         rewritten_body = rewrite_body(
-            model.body, state.dialect, resolutions_by_key, variable_defaults, inline_vars
+            # effective_variable_defaults already carries None for every name
+            # this run decided not to inline, so rewrite_body's own inline
+            # gate is passed as always-on: the per-variable decision, not a
+            # single blanket flag, is what must decide it here.
+            model.body,
+            state.dialect,
+            resolutions_by_key,
+            effective_variable_defaults,
+            True,
         )
         rewritten_models.append(dataclasses.replace(model, body=rewritten_body))
 
@@ -1011,10 +1057,29 @@ def assemble(
                 )
             )
 
+    all_decisions = inherited_decisions + tuple(new_decisions)
+
+    # Validated last, once all_decisions is complete: an answer names a
+    # Decision key from a *previous* run of this same conversion, and that
+    # run's keys are deterministic, so this run's all_decisions is the right
+    # set to check them against. Checking earlier (as each Decision is built)
+    # would mean checking against a partial list and could let a stale or
+    # mistyped key slip through unnoticed rather than refused.
+    if answers:
+        answerable = {d.key: {o.label for o in d.options} for d in all_decisions if d.question}
+        for key, answer in answers.items():
+            if key not in answerable:
+                raise UnknownAnswerError(f"no question with key {key} in this conversion")
+            if answer.label not in answerable[key]:
+                offered = ", ".join(sorted(answerable[key]))
+                raise UnknownAnswerError(
+                    f"{key} does not offer {answer.label!r}; it offers {offered}"
+                )
+
     return ProjectChange(
         models=tuple(rewritten_models),
         sources=source_entries,
-        decisions=inherited_decisions + tuple(new_decisions),
+        decisions=all_decisions,
         pending=remaining_pending,
         dialect=state.dialect,
         project_name=ctx.project_name,
