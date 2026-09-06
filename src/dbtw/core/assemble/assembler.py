@@ -1376,8 +1376,11 @@ def assemble(
     # An option that cannot settle its own key says so with a
     # `columns_prompt` -- "merge on a unique key" is the one that does today
     # -- and it is the only kind that reads `columns`: without them it would
-    # write `unique_key=[]`, which fails at dbt run time, and the report would
-    # meanwhile claim a merge that cannot run. Every other option settles
+    # write `unique_key=[]`, which leaves the merge nothing to match on, and
+    # the report would meanwhile claim rows are matched and updated when every
+    # one of them would simply be added. (Not "fails at dbt run time": that
+    # was the wording here and on the option itself, and this engine never
+    # runs dbt to establish it -- see `merge_option`.) Every other option settles
     # itself, so columns handed to one would be discarded -- silently, and
     # leaving the caller believing a key was recorded somewhere. Read off the
     # option rather than compared against its label, so a consumer rendering

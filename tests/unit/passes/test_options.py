@@ -46,22 +46,56 @@ def test_a_merge_question_names_its_key_in_the_option_it_offers():
     assert "id" in merge_option.effect
 
 
+# A claim about *how* dbt breaks is one this engine cannot make: it never
+# runs dbt. Both registers of the keyless merge option used to say the run
+# "fails"; dbt-core's merge macro appears instead to substitute a false join
+# predicate and drop the matched branch, i.e. to append. Neither reading was
+# checkable here, so neither ships.
+UNSUPPORTABLE = ("fail", "error", "crash")
+
+
+def _empty_key_consequence(text: str, anchor: str) -> str:
+    """The clause about leaving the key empty, cut away from the sentence
+    before it. That sentence describes what a merge WITH a key does, in the
+    same two verbs, and would satisfy every assertion below on its own."""
+    assert anchor in text, text
+    return text.split(anchor, 1)[1].lower()
+
+
 def test_the_keyless_merge_option_names_the_cost_of_leaving_the_key_empty():
-    """`merge_option()` with no keys is the one an option a reader can still
-    answer with nothing to key on -- the refusal for that used to carry this
+    """`merge_option()` with no keys is the one option a reader can answer
+    with nothing to key on -- the refusal for that used to carry this
     consequence only as a code comment at the validation site, invisible to
-    anyone reading the report or the screen. It belongs on the option
-    itself, in dbt's own terms."""
+    anyone reading the report or the screen. It belongs on the option itself.
+
+    What it may say has narrowed: not that the run fails, which this engine
+    cannot establish, but the consequence that holds whichever way dbt
+    behaves -- with no key there is nothing to match on, so every row is
+    added rather than any being updated. Both registers carry it, because
+    they sit one under the other in the report and must not disagree.
+    """
     dec = _question(_run(append_pass, APPEND, "insert_select"))
     merge_option = next(o for o in dec.options if o.label == "merge on a unique key")
-    assert "fails at dbt run time" in merge_option.effect
+
+    effect = _empty_key_consequence(merge_option.effect, "empty unique_key")
+    assert "nothing to match" in effect, merge_option.effect
+    assert "added" in effect and "updated" in effect, merge_option.effect
+
+    plain = _empty_key_consequence(merge_option.plain, "without")
+    assert "nothing to compare" in plain, merge_option.plain
+    assert "added" in plain and "updated" in plain, merge_option.plain
+
+    for claim in UNSUPPORTABLE:
+        assert claim not in merge_option.effect.lower(), merge_option.effect
+        assert claim not in merge_option.plain.lower(), merge_option.plain
 
     # The keyed variant can't have an empty key by construction -- its
     # caller always supplies one read off the SQL -- so the same warning
-    # would describe a failure this option can never produce.
+    # would describe a cost this option can never carry.
     keyed_dec = _question(_run(merge_pass, MERGE, "merge"))
     keyed_option = next(o for o in keyed_dec.options if o.label == "merge on id")
-    assert "fails at dbt run time" not in keyed_option.effect
+    assert "empty unique_key" not in keyed_option.effect
+    assert "nothing to match" not in keyed_option.effect.lower()
 
 
 def test_the_chosen_label_is_always_one_of_the_offered_options():
