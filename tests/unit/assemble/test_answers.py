@@ -2,7 +2,8 @@ import pytest
 from tests.unit.assemble.helpers import context_for, convert, state_with_variable
 
 from dbtw.core.assemble import UnknownAnswerError, assemble
-from dbtw.core.passes import Decision, PassState, append_option, merge_option
+from dbtw.core.assemble import assembler as assembler_module
+from dbtw.core.passes import Decision, Option, PassState, append_option, merge_option
 from dbtw.core.passes.types import Answer
 
 TWO_APPENDS = (
@@ -75,6 +76,32 @@ def test_an_answer_to_keep_as_a_var_keeps_the_body_a_var_under_inline_vars():
     assert "var('cutoff')" in answered.models[0].body
     assert "'2024-01-01'" not in answered.models[0].body
     assert [v.name for v in answered.variables] == ["cutoff"]
+
+
+def test_the_inline_answer_is_recognised_by_the_label_the_question_offered(monkeypatch):
+    """The gate accepts any label the question offers; the assembler then has
+    to recognise that same label to apply it. A second, hand-spelled copy of
+    the label lets the two drift: rename the offered option alone and the
+    answer is still accepted, still reported back -- as "keep as a dbt var",
+    the option nobody chose -- and the var quietly stays a var. Renaming the
+    factory renames both at once, so this stays green only while the offer
+    and the match come from it.
+    """
+    renamed = Option(label="splice the literal in", effect="the literal goes into the body")
+    monkeypatch.setattr(assembler_module, "inline_option", lambda: renamed, raising=False)
+    state, ctx = state_with_variable(), context_for()
+    offered = _variable_decision(assemble(state, ctx)).options
+    assert [o.label for o in offered] == ["splice the literal in", "keep as a dbt var"]
+
+    answered = assemble(
+        state,
+        ctx,
+        answers={_variable_decision(assemble(state, ctx)).key: Answer("splice the literal in")},
+    )
+    assert "'2024-01-01'" in answered.models[0].body
+    assert "var('cutoff')" not in answered.models[0].body
+    assert _variable_decision(answered).chosen == "splice the literal in"
+    assert answered.variables == ()
 
 
 def test_an_answer_naming_an_option_that_was_not_offered_is_refused():

@@ -23,10 +23,11 @@ from dbtw.core.passes.types import (
     Answer,
     Decision,
     ModelDraft,
-    Option,
     PassState,
     append_option,
+    inline_option,
     merge_option,
+    var_option,
 )
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
@@ -1151,6 +1152,14 @@ def assemble(
     # silently revert to blanket-flag semantics for a future case that adds
     # to variable_defaults without also recording an inline preference.
     variable_inline: dict[str, bool] = {}
+    # The same Option the questions below offer, built once: it is what an
+    # answer is recognised by here and what the question offers there, and a
+    # second hand-spelled copy of its label would let those two drift. The
+    # gate accepts any label the question offers, so a rename that reached
+    # only one of them would leave the answer accepted and then quietly
+    # unapplied -- reported as the option nobody chose. Nothing about it
+    # varies per variable, so it is built outside the loop.
+    inline_answer = inline_option()
     # Each name's first occurrence, in the order they were found. The
     # emission pass below walks this instead of variables_found: it is the
     # order the Decisions are reported in, and each entry is the spelling
@@ -1199,7 +1208,7 @@ def assemble(
         # them at once.
         answer = answers_map.get(f"assemble.variable.{variable.name}")
         variable_inline[variable.name] = (
-            answer.label == "inline the literal value" if answer else inline_vars
+            answer.label == inline_answer.label if answer else inline_vars
         )
         variable_defaults[variable.name] = variable.default_sql
 
@@ -1248,25 +1257,12 @@ def assemble(
             )
             continue
 
-        var_option = Option(
-            label="keep as a dbt var",
-            effect=(
-                f"The value stays a run-time parameter: the model calls var('{variable.name}') "
-                "and dbt supplies it per run, so it can differ between environments."
-            ),
-        )
-        inline_option = Option(
-            label="inline the literal value",
-            effect=(
-                "The literal from the source SQL is spliced into the model body. The "
-                "model stops taking the value at run time and always uses this one."
-            ),
-        )
+        keep_answer = var_option(variable.name)
         if effective_variable_defaults[variable.name] is not None:
-            chosen = "inline the literal value"
+            chosen = inline_answer.label
             action = f"inlined {variable.name}'s literal default value in place of the parameter"
         else:
-            chosen = "keep as a dbt var"
+            chosen = keep_answer.label
             if variable_inline[variable.name]:
                 # --inline-vars (or an answer resolving the same way) only
                 # actually inlines when there is a literal default to inline.
@@ -1314,7 +1310,7 @@ def assemble(
             line_end=variable.line_start,
             question=f"Is {variable.name} a run-time parameter or a constant?",
             chosen=chosen,
-            options=(inline_option, var_option),
+            options=(inline_answer, keep_answer),
         )
         new_decisions.append(variable_decision)
         answerable_decisions.append(variable_decision)

@@ -59,6 +59,32 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
     )
 
 
+def inline_option() -> Option:
+    """The 'inline the literal' answer to a script variable's question."""
+    return Option(
+        label="inline the literal value",
+        effect=(
+            "The literal from the source SQL is spliced into the model body. The "
+            "model stops taking the value at run time and always uses this one."
+        ),
+    )
+
+
+def var_option(name: str = "") -> Option:
+    """The 'keep it a dbt var' answer. Names the var when the variable it is
+    offered for is known, and stays generic when it is not -- the same
+    keys-known/keys-unknown shape `merge_option` uses.
+    """
+    called = f"var('{name}')" if name else "var() with the variable's own name"
+    return Option(
+        label="keep as a dbt var",
+        effect=(
+            f"The value stays a run-time parameter: the model calls {called} "
+            "and dbt supplies it per run, so it can differ between environments."
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Decision:
     """One recorded pass action: what was found, what was done, and why."""

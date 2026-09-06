@@ -15,7 +15,9 @@ from dbtw.core.passes.types import (
     PassState,
     Tier,
     append_option,
+    inline_option,
     merge_option,
+    var_option,
 )
 
 __all__ = [
@@ -33,9 +35,11 @@ __all__ = [
     "drop_ddl_pass",
     "drop_session_pass",
     "grants_pass",
+    "inline_option",
     "merge_option",
     "merge_pass",
     "run_passes",
     "truncate_insert_columns_pass",
     "truncate_insert_pass",
+    "var_option",
 ]
