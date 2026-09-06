@@ -7,8 +7,9 @@ from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble import ProjectChange
 from dbtw.core.context import ProjectContext
+from dbtw.core.emit.example import Example, worked_example
 from dbtw.core.naming import is_atomic_sql
-from dbtw.core.passes.types import Decision
+from dbtw.core.passes.types import Decision, statement_index
 
 _NOT_DONE_YET = """\
 ## Not done yet
@@ -156,6 +157,109 @@ def _render_vars(change: ProjectChange) -> str:
     return "\n".join(lines)
 
 
+# The two labels the worked example's row blocks carry. Neither is a fact
+# about the reader's warehouse and neither describes their script.
+#
+# "suppose" is doing the work in the first: `Example.before` is a premise the
+# reader is asked to grant, not a row this engine read -- it reads no rows at
+# all. "in your table" would claim knowledge the conversion does not have.
+#
+# The second names *this model* as what acts. It is the model's own strategy
+# and unique_key that decide the rows below it, and both are in the change
+# being reported. Attributing them to the script instead would be inventing
+# evidence: `worked_example` is handed a model and a Decision, never the
+# statement, which is why the "and here is what your script did" block was
+# deleted in Task 3 after it rendered a false comparison against this
+# project's own fixture.
+_SUPPOSED_ROW = "suppose this row is already there"
+_AFTER_RUN = "after this model runs"
+
+# A pipe inside a table cell, escaped so Markdown reads it as content rather
+# than as the end of the cell. Named rather than inlined because a backslash
+# is not allowed inside an f-string expression before Python 3.12, and this
+# package supports 3.11.
+_ESCAPED_PIPE = "\\|"
+
+
+def _escaped(text: str) -> str:
+    """`text` with any pipe escaped, so a quoted alias that contains one
+    (`SELECT email AS "a|b"`) stays inside its cell instead of ending it and
+    shifting every later cell in the row one column left. Applies to the
+    header as much as to the body: the column names come from the same SQL.
+    """
+    return text.replace("|", _ESCAPED_PIPE)
+
+
+def _example_cell(text: str) -> str:
+    """One value cell: escaped, and wrapped as inline code.
+
+    The backticks are not decoration. A placeholder like `<event_id>` is an
+    HTML tag to a Markdown renderer, and GitHub drops it -- the cell arrives
+    empty on the page the team actually reads.
+    """
+    return f"`{_escaped(text)}`"
+
+
+def _example_row(label: str, cells: tuple[str, ...]) -> str:
+    """One table row, indented to sit inside the Decision's list item."""
+    return "    | " + " | ".join([label, *cells]) + " |"
+
+
+def _render_example(example: Example) -> list[str]:
+    """The worked example as a single Markdown table with two labelled row
+    blocks, preceded by the sentence that says what the values are not.
+
+    The label column carries the label on the first row of a block and is
+    blank on the rest, which is the table convention for "same as above" --
+    repeating "after this model runs" three times says nothing more.
+    """
+    intro = (
+        "  - Worked example. The values below are placeholders -- this "
+        "conversion has not read your data."
+    )
+    lines = [intro]
+    if example.key:
+        lines.append(f"    Rows are matched on {example.key}.")
+    lines.extend(
+        [
+            "",
+            _example_row("", tuple(map(_escaped, example.columns))),
+            _example_row("---", ("---",) * len(example.columns)),
+        ]
+    )
+    for i, row in enumerate(example.before):
+        lines.append(_example_row(_SUPPOSED_ROW if i == 0 else "", tuple(map(_example_cell, row))))
+    for i, row in enumerate(example.model_after):
+        lines.append(_example_row(_AFTER_RUN if i == 0 else "", tuple(map(_example_cell, row))))
+    lines.append("")
+    return lines
+
+
+def _example_for(decision: Decision, change: ProjectChange) -> Example | None:
+    """The worked example for `decision`, drawn against the model built from
+    the statement it came from, or None when there is no such model.
+
+    The pairing is statement index against `AssembledModel.source_indices`,
+    which is the match `assemble._find_incremental_decision_index` makes in
+    the other direction and for the reason recorded there: a name collision
+    gives two statements one model name, so `Subject.table` against
+    `model.name` cannot tell two Decisions apart -- and `Subject.table` is
+    the script's spelling of the target, while `model.name` is the renamed
+    model, so the two do not even agree in the ordinary case.
+
+    `worked_example` refuses a mismatched pair itself, but it should never be
+    handed one: a caller that guesses at the model is asking for a confident
+    picture of the wrong table.
+    """
+    index = statement_index(decision)
+    if index is None:
+        return None
+    for model in change.models:
+        if index in model.source_indices:
+            return worked_example(decision, model, change.dialect)
+    return None
+
+
 def _render_decisions(change: ProjectChange) -> str:
     lines = ["## Decisions", ""]
     if not change.decisions:
@@ -174,15 +278,38 @@ def _render_decisions(change: ProjectChange) -> str:
             block_lines.append(f"- **{d.action}** — {d.reason}{location}")
             if d.question:
                 block_lines.append(f"  - Question: {d.question}  Chose: {d.chosen}")
+                # The plain register, beside the dbt one rather than instead
+                # of it -- two readers, two wordings, both engine-owned so
+                # the report and a later screen cannot explain the same
+                # choice differently. Each restatement is its own list item
+                # one level under what it restates: Markdown folds
+                # consecutive lines in a list item into one paragraph, so an
+                # unbulleted continuation would run "Chose: append every row"
+                # straight into the plain question as a single sentence.
+                if d.plain_question:
+                    block_lines.append(f"  - In plain words: {d.plain_question}")
                 # Every option, chosen one included, with the effect the
                 # engine wrote for it. A reader deciding whether to change
                 # the answer needs to know what the other one would do, and
                 # the record already says -- rendering only the labels left
                 # the report explaining the choice less than the screen
                 # beside it, from the same Decision.
-                for option in d.options:
-                    taken = " (chosen)" if option.label == d.chosen else ""
-                    block_lines.append(f"    - {option.label}{taken} — {option.effect}")
+                if d.options:
+                    block_lines.append("  - Answers:")
+                    for option in d.options:
+                        taken = " (chosen)" if option.label == d.chosen else ""
+                        block_lines.append(f"    - {option.label}{taken} — {option.effect}")
+                        if option.plain:
+                            block_lines.append(f"      - In plain words: {option.plain}")
+                example = _example_for(d, change)
+                if example is not None:
+                    block_lines.extend(_render_example(example))
+        # The example ends on a blank line so the table it closes is not run
+        # into the next bullet. When it is the last thing in the tier, that
+        # blank would meet the one `render_report` puts between sections and
+        # leave a two-line gap under the last Decision.
+        while block_lines and not block_lines[-1]:
+            block_lines.pop()
         tier_blocks.append("\n".join(block_lines))
     lines.append("\n\n".join(tier_blocks))
     return "\n".join(lines)
