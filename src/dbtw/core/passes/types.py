@@ -32,12 +32,23 @@ class Option:
 
     `plain` says what `effect` says to a reader who has never used dbt;
     the two are reviewed together in the report so they cannot drift.
+
+    `declares_test` names the dbt test taking this option asks for on the
+    columns it is answered with — empty for an option that asks for none.
+    It travels on the Option for the same reason `columns_prompt` does: the
+    alternative is every consumer, and the assembler applying the answer,
+    carrying its own copy of the one label that means "and have dbt check
+    it", which is the label-copying these records exist to remove. It also
+    pins *which* test: a run can only record the test an option put on the
+    table, so no test the user was never offered can be written beside
+    their model.
     """
 
     label: str
     effect: str
     columns_prompt: str = ""
     plain: str = ""  # the same consequence, assuming no dbt knowledge
+    declares_test: str = ""  # dbt test this option asks for, e.g. "unique"
 
 
 def append_option() -> Option:
@@ -121,6 +132,7 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
                 "first time two rows share a value."
             ),
             columns_prompt="the column(s) that identify a row uniquely",
+            declares_test="unique",
             plain=(
                 "The same as merging, plus a check that runs alongside: if "
                 "two rows ever share the same value in that column, the "
@@ -136,6 +148,7 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
             f"{named}: declared in a .yml file beside the model, it fails "
             f"loudly the first time two rows share the same {named}."
         ),
+        declares_test="unique",
         plain=(
             f"The same as merging on {named}, plus a check that runs "
             f"alongside: if two rows ever share the same {named}, the check "
@@ -178,6 +191,26 @@ def var_option(name: str = "") -> Option:
             "can be different in testing than in production."
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaTest:
+    """One dbt test to declare beside a model, because an answer asked for it.
+
+    `model` is the model's FINAL name — the name the .yml's `models:` entry
+    carries, and the name the file is written beside. dbt resolves that entry
+    by name, so a test recorded against the pre-rename draft name would
+    declare a check on a model dbt has never heard of.
+
+    `test` is the dbt test's own name, and it is copied from the `Option`
+    that offered it (`Option.declares_test`) rather than spelled at the
+    point a test is recorded: nothing can then declare a test that no
+    question ever put on the table.
+    """
+
+    model: str
+    column: str
+    test: str = "unique"
 
 
 @dataclass(frozen=True, slots=True)

@@ -281,7 +281,15 @@ def test_an_upgrade_from_an_answer_says_so_instead_of_blaming_the_flag():
     )
     upgraded = next(d for d in answered.decisions if d.key == revenue_q.key)
     assert upgraded.chosen == merge_option(("order_id",)).label
-    assert [o.label for o in upgraded.options] == ["merge on order_id", "append every row"]
+    # The upgrade names the key in both merge answers, and keeps the checked
+    # one on offer -- the rewritten question is what the next screen renders,
+    # so an answer this run did not take has to still be takeable on the next
+    # (see test_verify_answer.py).
+    assert [o.label for o in upgraded.options] == [
+        "merge on order_id",
+        "append every row",
+        "merge on order_id, checked on every run",
+    ]
     assert "--unique-key" not in upgraded.reason
     assert "--unique-key" not in upgraded.action
     assert "order_id" in upgraded.reason

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from dbtw.core.assemble.variables import Variable
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.passes.types import Decision
+from dbtw.core.passes.types import Decision, SchemaTest
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,3 +55,7 @@ class ProjectChange:
     dialect: str | None
     project_name: str
     variables: tuple[Variable, ...] = ()  # variables referenced in the models
+    # The dbt tests this run's answers asked for, each naming the final model
+    # name it belongs to. Empty unless an answer chose an option that declares
+    # one -- a test nobody asked for is a claim about the data nobody made.
+    tests: tuple[SchemaTest, ...] = ()
