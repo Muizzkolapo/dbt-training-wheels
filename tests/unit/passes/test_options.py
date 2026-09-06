@@ -46,6 +46,24 @@ def test_a_merge_question_names_its_key_in_the_option_it_offers():
     assert "id" in merge_option.effect
 
 
+def test_the_keyless_merge_option_names_the_cost_of_leaving_the_key_empty():
+    """`merge_option()` with no keys is the one an option a reader can still
+    answer with nothing to key on -- the refusal for that used to carry this
+    consequence only as a code comment at the validation site, invisible to
+    anyone reading the report or the screen. It belongs on the option
+    itself, in dbt's own terms."""
+    dec = _question(_run(append_pass, APPEND, "insert_select"))
+    merge_option = next(o for o in dec.options if o.label == "merge on a unique key")
+    assert "fails at dbt run time" in merge_option.effect
+
+    # The keyed variant can't have an empty key by construction -- its
+    # caller always supplies one read off the SQL -- so the same warning
+    # would describe a failure this option can never produce.
+    keyed_dec = _question(_run(merge_pass, MERGE, "merge"))
+    keyed_option = next(o for o in keyed_dec.options if o.label == "merge on id")
+    assert "fails at dbt run time" not in keyed_option.effect
+
+
 def test_the_chosen_label_is_always_one_of_the_offered_options():
     """A `chosen` naming an option that was never offered would render as an
     answer nobody could have given."""

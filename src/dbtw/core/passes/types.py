@@ -57,7 +57,8 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
             label="merge on a unique key",
             effect=(
                 "Each run updates the row whose key matches and inserts the rows that "
-                "match nothing. Needs a column that identifies a row uniquely."
+                "match nothing. Needs a column that identifies a row uniquely — a merge "
+                "with an empty unique_key fails at dbt run time."
             ),
             # The one option whose label leaves its key unsaid, so the one
             # option that needs columns supplied with the answer.
