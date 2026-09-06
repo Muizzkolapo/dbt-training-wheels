@@ -367,8 +367,13 @@ def _upgrade_to_merge(
         by = "--unique-key"
         because = "--unique-key was supplied on the command line"
     if declared_test:
-        # Only an option naming a single key declares a test, so the checked
-        # option this answer took is the one rebuilt just above.
+        # Only an option naming a single key declares a test -- an answer
+        # resolving one to more than one key is refused by
+        # `_incremental_answers` before it reaches here, and one resolving to
+        # no key at all never gets past the empty-key branch in
+        # `_apply_unique_key` -- so `checked` holds the option this answer
+        # took. The assertion narrows the tuple for the type checker; it is
+        # not what makes a bad answer safe.
         assert checked
         chosen_option = checked[0]
         also = f", which also declares dbt's {declared_test} test on {keys[0]}"
@@ -877,6 +882,11 @@ def _incremental_answers(
     collision) is neither registered nor applied, and the two can't drift
     into the two failure modes that matter: a legitimate answer refused, or
     an answer accepted for a question nothing acts on.
+
+    This is also where an answer is refused for asking a checked option to
+    check more than the one column dbt's built-in test can check. That
+    refusal cannot wait for assemble()'s validation gate, which runs once the
+    answers collected here have already been applied.
     """
     answered_keys: dict[str, _AnsweredKey] = {}
     questions: list[Decision] = []
@@ -919,6 +929,25 @@ def _incremental_answers(
             # ever offers for the key the model it belongs to already carries
             # -- so the label names the key and `columns` has nothing to add.
             keys = model.unique_key
+        if chosen_option.declares_test and len(keys) > 1:
+            # Refused here, where the answer is resolved, and not in
+            # assemble()'s validation gate with the other two column rules:
+            # that gate runs at the end, after `_apply_unique_key` has already
+            # applied everything collected here, and an option that declares
+            # dbt's one-column test has no check to build for a two-column
+            # key. Applied first and refused afterwards, this input is a crash
+            # rather than a refusal -- so the rule has to sit in front of the
+            # application, not behind it.
+            #
+            # Only the upper bound is checked here. An answer with no columns
+            # at all is the `columns_prompt` rule's, and the gate refuses it
+            # with the prompt naming what is missing, which is the more useful
+            # of the two messages for a caller who supplied nothing.
+            raise UnknownAnswerError(
+                f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}; that "
+                f"option declares dbt's {chosen_option.declares_test} test, which checks "
+                "one column, so it can only be answered with one column"
+            )
         answered_keys[model.name] = _AnsweredKey(option=chosen_option, keys=keys)
     return answered_keys, questions
 
@@ -1548,20 +1577,13 @@ def assemble(
                         f"option needs {chosen_option.columns_prompt}, and cannot be "
                         "applied without them"
                     )
-                # An option that also asks dbt to check the key it is given is
-                # bounded by what dbt's built-in test can check: one column.
-                # Declaring it per column on a two-column key would assert
-                # each column is unique on its own -- a stronger claim than
-                # the key's, and one that fails on valid data. Read off the
-                # option, like the requirement above it, so the rule follows
-                # the option that carries it rather than a label spelled here.
-                if chosen_option.declares_test and len(answer.columns) != 1:
-                    raise UnknownAnswerError(
-                        f"{key} was answered {answer.label!r} with "
-                        f"{_keys_str(answer.columns)}; that option declares dbt's "
-                        f"{chosen_option.declares_test} test, which checks one column, so "
-                        "it can only be answered with one column"
-                    )
+                # The upper bound on those columns -- an option that also
+                # asks dbt to check them can only be answered with the one
+                # column dbt's built-in test checks -- is enforced in
+                # `_incremental_answers` rather than here, because this gate
+                # runs after the answers have been applied and that input has
+                # no single-column check to apply. Named here because this is
+                # where a reader comes looking for the column rules.
             elif answer.columns:
                 raise UnknownAnswerError(
                     f"{key} was answered {answer.label!r} with columns "

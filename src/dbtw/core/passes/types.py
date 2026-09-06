@@ -48,7 +48,11 @@ class Option:
     effect: str
     columns_prompt: str = ""
     plain: str = ""  # the same consequence, assuming no dbt knowledge
-    declares_test: str = ""  # dbt test this option asks for, e.g. "unique"
+    # Literal rather than str: this value is copied onto a SchemaTest and
+    # rendered into a .yml as a dbt test name, so a typo would be a file dbt
+    # rejects. Widen it deliberately when a second test is offered, so
+    # adding one is a decision rather than a spelling.
+    declares_test: Literal["", "unique"] = ""
 
 
 def append_option() -> Option:

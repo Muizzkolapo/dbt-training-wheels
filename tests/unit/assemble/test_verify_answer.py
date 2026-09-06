@@ -24,6 +24,11 @@ TWO_APPENDS = (
     "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
     "INSERT INTO page_views SELECT order_id, ts FROM stg_views;\n"
 )
+# A model that really does select both columns of a two-column key, so a
+# two-column checked answer reaches the application instead of being turned
+# back by the body check first.
+TWO_KEY_APPEND = "INSERT INTO order_lines SELECT order_id, line_no, amount FROM stg_lines;\n"
+STAR_APPEND = "INSERT INTO revenue_events SELECT * FROM stg_orders;\n"
 
 
 def _question_for(change, table):
@@ -126,6 +131,63 @@ def test_only_the_model_whose_question_asked_for_a_check_gets_one():
 
 
 def test_a_checked_answer_with_two_columns_is_refused_with_the_reason():
+    """Both columns are ones the model selects, so the body check has no
+    reason to turn the answer back and the refusal has to come from the
+    one-column rule itself. A two-column key whose second column the model
+    does not project is declined earlier for an unrelated reason and proves
+    nothing about this rule -- and hid a crash on the path that matters,
+    where a test-declaring answer resolved to two applicable keys and reached
+    an application that can only build a single-column check.
+    """
+    with pytest.raises(UnknownAnswerError, match="one column"):
+        convert(
+            APPEND_SQL,
+            answers=answers_for_append(Answer(verify_option().label, ("order_id", "amount"))),
+        )
+
+
+def test_a_two_column_checked_answer_a_model_fully_selects_is_refused_not_crashed():
+    """The same rule at the input that reaches furthest: every key column is
+    projected, so nothing declines it before the merge is applied. The refusal
+    is the documented one for a bad answer -- UnknownAnswerError -- and not an
+    AssertionError or an IndexError from an application that has no
+    single-column check to build.
+    """
+    key = _key_for(TWO_KEY_APPEND, "order_lines")
+    with pytest.raises(UnknownAnswerError, match="one column"):
+        convert(
+            TWO_KEY_APPEND, answers={key: Answer(verify_option().label, ("order_id", "line_no"))}
+        )
+
+
+def test_the_one_column_refusal_says_why_dbt_can_only_check_one():
+    """A caller told only "one column" cannot tell whether this engine is
+    being fussy or dbt is. The reason is dbt's: its built-in test takes a
+    single column, and declaring it per column on a two-column key asserts
+    something stronger than the key claim."""
+    key = _key_for(TWO_KEY_APPEND, "order_lines")
+    with pytest.raises(UnknownAnswerError) as refused:
+        convert(
+            TWO_KEY_APPEND, answers={key: Answer(verify_option().label, ("order_id", "line_no"))}
+        )
+    message = str(refused.value)
+    assert "unique" in message  # the test it declares, named
+    assert "checks one column" in message
+    assert "order_id, line_no" in message  # what was sent, so the caller can fix it
+    # And the plain merge answer with the same two columns is untouched by the
+    # rule: only the option that declares a test is bounded by what dbt can
+    # check.
+    merged = convert(
+        TWO_KEY_APPEND, answers={key: Answer(merge_option().label, ("order_id", "line_no"))}
+    )
+    assert _model(merged, "order_lines").unique_key == ("order_id", "line_no")
+    assert merged.tests == ()
+
+
+def test_a_checked_answer_with_two_columns_one_unprojected_is_still_refused():
+    """The other two-column shape: the body check would decline this key
+    anyway, and the answer still has to be refused for what it asked for
+    rather than silently landing as a keyless append."""
     with pytest.raises(UnknownAnswerError, match="one column"):
         convert(
             APPEND_SQL,
@@ -188,6 +250,12 @@ def test_a_checked_answer_naming_a_column_the_model_does_not_select_records_no_t
     (model,) = change.models
     assert (model.incremental_strategy, model.unique_key) == ("append", ())
     assert change.tests == ()
+    # The decline is recorded, not silent -- the same Decision the plain merge
+    # answer gets, since the body check does not care which answer asked.
+    (declined,) = [
+        d for d in change.decisions if d.key == "assemble.unique_key_not_selected.revenue_events"
+    ]
+    assert "customer_id" in declined.action
 
 
 def test_answering_merge_leaves_the_check_on_offer_for_the_next_run():
@@ -195,7 +263,16 @@ def test_answering_merge_leaves_the_check_on_offer_for_the_next_run():
     Decision is what the next screen renders, and the answer not taken has to
     still be there to take. An option that disappears once any answer is
     applied can only ever be chosen by a caller who never saw the first
-    result -- and the run that re-sends it must be accepted, not refused.
+    result.
+
+    Two separate claims, and the second is narrower than it looks. The
+    rewritten question still shows the checked answer; and a second run that
+    asks for the check is accepted and records the test. That second run
+    sends the *keyless* label with its column -- the vocabulary the question
+    `run_passes` hands out uses, which is what every run validates against.
+    Sending back the keyed label this rewritten Decision displays is refused
+    today; that boundary is pinned directly below rather than papered over
+    here.
     """
     key = _key_for(APPEND_SQL, "revenue_events")
     merged = convert(APPEND_SQL, answers={key: Answer(merge_option().label, ("order_id",))})
@@ -207,6 +284,62 @@ def test_answering_merge_leaves_the_check_on_offer_for_the_next_run():
     checked = convert(APPEND_SQL, answers={key: Answer(verify_option().label, ("order_id",))})
     assert checked.models == merged.models
     assert len(checked.tests) == 1
+
+
+def test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today():
+    """A known boundary, pinned so it is a documented edge rather than a
+    surprise. An append question is asked in keyless vocabulary ("merge on a
+    unique key, checked on every run" plus a column); once answered, the
+    rewritten Decision names the key in its labels ("merge on order_id,
+    checked on every run"). Every run validates answers against the question
+    the passes hand out, which is always the keyless one -- so a caller that
+    echoes back the label it was just shown is refused.
+
+    Not a defect this task hides: the refusal is explicit and names what the
+    question does offer. It is a translation the session in front of these
+    runs has to do -- keep the keyed label for display, send the keyless label
+    and the column back -- and it is deferred to B3. The merge question has no
+    such gap, because its labels name the key from the start (see the
+    downgrade test below, where the same echo is accepted).
+    """
+    key = _key_for(APPEND_SQL, "revenue_events")
+    merged = convert(APPEND_SQL, answers={key: Answer(merge_option().label, ("order_id",))})
+    (displayed,) = [
+        o.label
+        for o in _question_for(merged, "revenue_events").options
+        if o.label == verify_option(("order_id",)).label
+    ]
+
+    # Matched on the message: the same call raises for a stale key too, and
+    # this refusal has to be the one that says the label is not on offer.
+    with pytest.raises(UnknownAnswerError, match="does not offer"):
+        convert(APPEND_SQL, answers={key: Answer(displayed)})
+    with pytest.raises(UnknownAnswerError, match="does not offer"):
+        convert(APPEND_SQL, answers={key: Answer(displayed, ("order_id",))})
+
+    # The translation that does work, so the boundary comes with its way out.
+    translated = convert(APPEND_SQL, answers={key: Answer(verify_option().label, ("order_id",))})
+    assert len(translated.tests) == 1
+
+
+def test_a_checked_answer_on_a_star_model_merges_with_the_caveat_and_records_the_test():
+    """SELECT * is the case the body check cannot settle: the key may or may
+    not be projected, and the merge is applied with a caveat saying so rather
+    than blocked or confidently claimed. The test is recorded alongside it --
+    which is the honest outcome for a feature whose whole point is asking dbt
+    to check the claim this conversion could not, but it is behaviour nobody
+    would guess from the code, so it is pinned here.
+    """
+    key = _key_for(STAR_APPEND, "revenue_events")
+    change = convert(STAR_APPEND, answers={key: Answer(verify_option().label, ("order_id",))})
+
+    model = _model(change, "revenue_events")
+    assert (model.incremental_strategy, model.unique_key) == ("merge", ("order_id",))
+    (test,) = change.tests
+    assert test == SchemaTest(model=model.name, column="order_id", test="unique")
+    dec = _question_for(change, "revenue_events")
+    assert "could not be verified" in dec.reason
+    assert dec.chosen == verify_option(("order_id",)).label
 
 
 def test_answering_append_on_a_merge_leaves_the_check_on_offer_too():
@@ -223,6 +356,10 @@ def test_answering_append_on_a_merge_leaves_the_check_on_offer_too():
         verify_option(("id",)).label,
     ]
 
-    # And coming back to the checked answer on the next run is accepted.
+    # And coming back to the checked answer on the next run is accepted --
+    # here the label the rewritten Decision displays and the label the passes
+    # offer are the same string, because a MERGE's key is known from the
+    # start. This is the case the append question cannot reach; see the
+    # boundary test above.
     checked = convert(MERGE_SQL, answers={key: Answer(verify_option(("id",)).label)})
     assert len(checked.tests) == 1
