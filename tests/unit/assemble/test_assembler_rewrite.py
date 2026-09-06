@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import yaml
+from tests.unit.assemble.helpers import state_with_variable
 
 from dbtw.core.assemble import assemble
 from dbtw.core.context import read_project
@@ -65,30 +66,8 @@ def test_unresolved_reference_is_left_as_written_with_a_decision():
     assert any("left as written" in d.action for d in change.decisions)
 
 
-def _variable_state():
-    raw = RawStatement(
-        source_file="e.sql",
-        index=0,
-        text="DECLARE @cutoff DATE = '2024-01-01'",
-        line_start=1,
-        line_end=1,
-    )
-    stmt = ClassifiedStatement(raw=raw, kind="variable", reason="t")
-    draft = ModelDraft(
-        name="m",
-        qualified_name="m",
-        identity=("", "", "m"),
-        body="SELECT a FROM raw.t WHERE d >= @cutoff",
-        materialization="table",
-        grants=(),
-        source_indices=(1,),
-        leading_comments=(),
-    )
-    return PassState(pending=((0, stmt),), drafts=(draft,), decisions=(), dialect="tsql")
-
-
 def test_variable_becomes_a_var_and_leaves_pending():
-    change = assemble(_variable_state(), read_project(PROJECTS / "jaffle_shop"))
+    change = assemble(state_with_variable(), read_project(PROJECTS / "jaffle_shop"))
     assert "{{ var('cutoff') }}" in change.models[0].body
     assert change.pending == ()
     assert [v.name for v in change.variables] == ["cutoff"]
@@ -102,7 +81,9 @@ def test_variable_becomes_a_var_and_leaves_pending():
 
 
 def test_inline_vars_substitutes_the_literal_and_declares_nothing():
-    change = assemble(_variable_state(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True)
+    change = assemble(
+        state_with_variable(), read_project(PROJECTS / "jaffle_shop"), inline_vars=True
+    )
     assert "'2024-01-01'" in change.models[0].body
     assert "var(" not in change.models[0].body
     assert change.variables == ()

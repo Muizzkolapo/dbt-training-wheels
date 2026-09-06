@@ -816,12 +816,28 @@ def assemble(
     remaining_pending = tuple(item for item in state.pending if item[0] not in consumed)
 
     declared_var_names = {name for name, _ in ctx.vars_declared}
+    # Read once, not per iteration below.
+    answers_map = answers or {}
     variable_defaults: dict[str, str | None] = {}
     # Whether to inline each variable's default, keyed the same as
     # variable_defaults but decided once per name (first occurrence) and
     # never touched by the DECLARE-then-SET backfill below -- see the note
-    # where it is set.
+    # where it is set. Every key ever written to variable_defaults gets a
+    # matching entry here (both branches below set it before touching
+    # variable_defaults), so effective_variable_defaults can index it
+    # directly instead of falling back to inline_vars -- a fallback would
+    # silently revert to blanket-flag semantics for a future case that adds
+    # to variable_defaults without also recording an inline decision.
     variable_inline: dict[str, bool] = {}
+    # Decisions an answer can actually be validated and applied against this
+    # run -- the variable ones this loop builds, and only those. Collected
+    # structurally, as each one is built, rather than picked out of
+    # all_decisions afterwards by key shape: an inherited Decision (e.g. a
+    # tier2 incremental one from an earlier pass) can carry a `question` and
+    # `options` too, but assemble() has no branch that consumes an answer for
+    # it, so it must never validate as answerable -- Task 3 widens this list
+    # when it wires the incremental questions up to actually be answered.
+    answerable_decisions: list[Decision] = []
     kept_variables: list[Variable] = []
     # name -> its index in kept_variables, so a later fill-in (below) can
     # replace that entry's default_sql without disturbing its position.
@@ -868,6 +884,7 @@ def assemble(
             # renders var(), matching what this Decision actually says
             # (FINDING 6 — Decision and disk must agree).
             variable_defaults[variable.name] = None
+            variable_inline[variable.name] = False
             new_decisions.append(
                 Decision(
                     key=f"assemble.variable.{variable.name}",
@@ -896,7 +913,7 @@ def assemble(
         # DECLARE-then-SET backfill (above) still needs to tell "no default
         # known yet" apart from "chosen not to inline", and both are a bare
         # None in variable_defaults.
-        answer = (answers or {}).get(f"assemble.variable.{variable.name}")
+        answer = answers_map.get(f"assemble.variable.{variable.name}")
         inline_this = answer.label == "inline the literal value" if answer else inline_vars
         variable_inline[variable.name] = inline_this
 
@@ -942,24 +959,24 @@ def assemble(
             kept_variable_index[variable.name] = len(kept_variables)
             kept_variables.append(variable)
 
-        new_decisions.append(
-            Decision(
-                key=f"assemble.variable.{variable.name}",
-                tier=2,
-                action=action,
-                reason=(
-                    f"{variable.name} is a script parameter with no fixed value in the "
-                    "source SQL; it can be kept as a run-time dbt var or inlined as a "
-                    "literal constant"
-                ),
-                source_file=variable.source_file,
-                line_start=variable.line_start,
-                line_end=variable.line_start,
-                question=f"Is {variable.name} a run-time parameter or a constant?",
-                chosen=chosen,
-                options=(inline_option, var_option),
-            )
+        variable_decision = Decision(
+            key=f"assemble.variable.{variable.name}",
+            tier=2,
+            action=action,
+            reason=(
+                f"{variable.name} is a script parameter with no fixed value in the "
+                "source SQL; it can be kept as a run-time dbt var or inlined as a "
+                "literal constant"
+            ),
+            source_file=variable.source_file,
+            line_start=variable.line_start,
+            line_end=variable.line_start,
+            question=f"Is {variable.name} a run-time parameter or a constant?",
+            chosen=chosen,
+            options=(inline_option, var_option),
         )
+        new_decisions.append(variable_decision)
+        answerable_decisions.append(variable_decision)
 
     # variable_defaults holds each variable's best-known literal regardless of
     # whether it gets inlined -- a DECLARE-then-SET backfill (above) can fill
@@ -968,7 +985,7 @@ def assemble(
     # value: a variable this loop decided not to inline renders as var() even
     # if a later statement backfilled a literal for it.
     effective_variable_defaults = {
-        name: (default_sql if variable_inline.get(name, inline_vars) else None)
+        name: (default_sql if variable_inline[name] else None)
         for name, default_sql in variable_defaults.items()
     }
 
@@ -1059,14 +1076,16 @@ def assemble(
 
     all_decisions = inherited_decisions + tuple(new_decisions)
 
-    # Validated last, once all_decisions is complete: an answer names a
-    # Decision key from a *previous* run of this same conversion, and that
-    # run's keys are deterministic, so this run's all_decisions is the right
-    # set to check them against. Checking earlier (as each Decision is built)
-    # would mean checking against a partial list and could let a stale or
-    # mistyped key slip through unnoticed rather than refused.
+    # Validated last, once answerable_decisions is complete: an answer names
+    # a Decision key from a *previous* run of this same conversion, and that
+    # run's keys are deterministic, so this run's own answerable_decisions is
+    # the right set to check them against. Checked against answerable_decisions
+    # rather than all_decisions -- an inherited tier2 incremental Decision can
+    # also carry a question, but this run has no branch that would act on an
+    # answer to it, so it must not validate as an answerable key (Task 3
+    # widens answerable_decisions when that becomes true).
     if answers:
-        answerable = {d.key: {o.label for o in d.options} for d in all_decisions if d.question}
+        answerable = {d.key: {o.label for o in d.options} for d in answerable_decisions}
         for key, answer in answers.items():
             if key not in answerable:
                 raise UnknownAnswerError(f"no question with key {key} in this conversion")
