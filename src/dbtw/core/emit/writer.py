@@ -45,6 +45,20 @@ class EmitResult:
     decisions: tuple[Decision, ...]
 
 
+class DuplicateSourceEntryError(ValueError):
+    """A proposed SourceEntry repeats a (source, table) the target project
+    already declares.
+
+    Unreachable through the pipeline: `assemble._source_entries` skips every
+    such pair before any of them reach `change.sources`, and that disjointness
+    is the whole reason our sources file and the project's can stand side by
+    side. A ValueError subclass like UnsafeOutputPathError, but unlike that
+    one it is NOT a usage error and is deliberately absent from the CLI's
+    _USAGE_ERRORS: an input cannot produce it, so reaching it means a dbtw
+    bug, and a bug should surface as one.
+    """
+
+
 class UnsafeOutputPathError(ValueError):
     """A model's path would resolve outside out_dir. Input-driven — the model
     name came from the source SQL (e.g. a quoted identifier like
@@ -59,15 +73,22 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResul
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
+    # Decided before anything is written: _sources_placement refuses a change
+    # whose entries repeat the project's own declarations, and a refusal that
+    # fires after three model files have landed has already left half an
+    # out_dir behind for the caller to clean up.
+    sources_rel = ""
+    placement: tuple[Decision, ...] = ()
+    if change.sources:
+        sources_rel, placement = _sources_placement(change, ctx)
+
     for model in change.models:
         model_path = _safe_join(out_dir, model.path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model_path.write_text(render_model(model), encoding="utf-8")
         written.append(model_path)
 
-    placement: tuple[Decision, ...] = ()
     if change.sources:
-        sources_rel, placement = _sources_placement(change, ctx)
         sources_path = _safe_join(out_dir, sources_rel)
         sources_path.parent.mkdir(parents=True, exist_ok=True)
         sources_path.write_text(render_sources_yaml(change.sources), encoding="utf-8")
@@ -214,12 +235,19 @@ def _sources_placement(
     # legal side by side, and it is `_source_entries`' guarantee, not ours. If
     # it ever stops holding, the Decision below starts telling users a pair of
     # files is fine when dbt would reject it, which is the failure this whole
-    # rewrite exists to remove.
-    assert not (theirs & ours), (
-        "assemble._source_entries skips every (source, table) the target project "
-        "already declares, so a proposed entry can never repeat one of theirs; "
-        f"{sorted(theirs & ours)} did"
-    )
+    # rewrite exists to remove. A raise rather than an assert for exactly that
+    # reason: `python -O` strips an assert, and what is left is emit writing
+    # the self-contradicting Decision to disk and returning as if all were
+    # well — the defect, restored, in the build most likely to be a container.
+    overlap = sorted(f"{name}.{table}" for name, table in theirs & ours)
+    if overlap:
+        raise DuplicateSourceEntryError(
+            "assemble._source_entries skips every (source, table) the target project "
+            "already declares, so a proposed entry can never repeat one of theirs; "
+            f"{_listed(overlap)} did. Refusing rather than writing a placement "
+            "Decision that says two files stand side by side, beside a file that "
+            "declares a table the project already declares."
+        )
 
     named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
     named_ours = _listed(sorted(f"{name}.{table}" for name, table in ours))

@@ -851,3 +851,46 @@ def test_a_source_declared_in_seeds_is_not_proposed_again(tmp_path):
     report = (out / "CONVERSION_REPORT.md").read_text()
     assert "seeds/schema.yml" in report
     assert "already declared as a source" in report
+
+
+def test_refuses_an_out_symlink_pointing_into_a_project_subdirectory(tmp_path):
+    """A symlink's .parents are the link's own, not its target's, so walking
+    the unresolved path never reaches the project. The existing symlink test
+    points at the project *root*, where the equality check catches it before
+    the walk matters; this one points one level in, which is where the walk is
+    the only thing that can answer.
+    """
+    project = _victim(tmp_path)
+    (project / "sub").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(project / "sub", target_is_directory=True)
+    before = _snapshot(project)
+    assert _convert_into(project, link) == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_a_relative_out_resolved_from_a_cwd_inside_the_project(tmp_path, monkeypatch):
+    """Path('out').parents is (Path('.'),) — a relative --out has no ancestors
+    to walk, so the chain stops at '.' and never sees the project two levels
+    up. The existing relative test chdirs to the project root, where '.' *is*
+    the project and equality answers it.
+    """
+    project = _victim(tmp_path)
+    (project / "sub").mkdir()
+    monkeypatch.chdir(project / "sub")
+    before = _snapshot(project)
+    assert _convert_into(project, "out") == 2
+    assert _snapshot(project) == before
+
+
+def test_refuses_dot_as_out_from_inside_a_model_path(tmp_path, monkeypatch):
+    """The worst of the three: '.' from inside models/ writes
+    models/models/staging/*.sql — under a model-path, where dbt compiles them
+    as real models on the next run. Path('.').parents is empty, so nothing is
+    walked at all.
+    """
+    project = _victim(tmp_path)
+    monkeypatch.chdir(project / "models")
+    before = _snapshot(project)
+    assert _convert_into(project, ".") == 2
+    assert _snapshot(project) == before

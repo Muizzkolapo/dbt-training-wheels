@@ -4,7 +4,7 @@ import pytest
 
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import ProjectContext, SourceInfo, read_project
-from dbtw.core.emit import emit
+from dbtw.core.emit import DuplicateSourceEntryError, emit
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -308,3 +308,50 @@ def test_emit_returns_the_placement_decision_it_recorded(tmp_path):
     assert "models/sources_dbtw.yml" in decision.action
     assert "models/sources.yml" in decision.action
     assert decision.action in (tmp_path / "CONVERSION_REPORT.md").read_text()
+
+
+def test_the_landing_name_bumps_past_a_sources_dbtw_the_project_already_has(tmp_path):
+    """A previous run's output, copied into the project, leaves a
+    sources_dbtw.yml declaring sources of its own. Landing on that is the same
+    replacement as landing on sources.yml, one name along — so the name bumps
+    until it is one the project does not declare in.
+    """
+    project = tmp_path / "project"
+    (project / "models").mkdir(parents=True)
+    (project / "dbt_project.yml").write_text("name: p\nconfig-version: 2\n")
+    (project / "models" / "a.sql").write_text("select 1 as id")
+    (project / "models" / "sources.yml").write_text(
+        "version: 2\nsources:\n  - name: raw\n    tables:\n"
+        "      - name: orders\n      - name: refunds\n"
+    )
+    (project / "models" / "sources_dbtw.yml").write_text(
+        "version: 2\nsources:\n  - name: raw\n    tables:\n      - name: shipments\n"
+    )
+    out = tmp_path / "out"
+    emit(
+        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
+        read_project(project),
+        out,
+    )
+    assert (out / "models" / "sources_dbtw_2.yml").is_file()
+    assert not (out / "models" / "sources.yml").exists()
+    assert not (out / "models" / "sources_dbtw.yml").exists()
+
+
+def test_emit_refuses_a_source_entry_the_project_already_declares(tmp_path):
+    """`assemble._source_entries` skips every (source, table) the project
+    declares, so this state cannot come out of the pipeline. If it ever does,
+    the placement Decision would tell the user both files stand side by side —
+    beside a file that repeats one of the project's tables, which is the one
+    duplicate dbt really rejects. An assert would say the same thing and then
+    vanish under `python -O`, leaving the self-contradicting Decision written
+    to disk; a raise says it in every build.
+    """
+    ctx = read_project(FIXTURES / "sources_at_root")  # declares raw.orders
+    with pytest.raises(DuplicateSourceEntryError, match="raw.orders"):
+        emit(
+            _change(sources=(SourceEntry(source_name="raw", schema="raw", table="orders"),)),
+            ctx,
+            tmp_path,
+        )
+    assert list(tmp_path.rglob("*")) == []  # refused before anything was written

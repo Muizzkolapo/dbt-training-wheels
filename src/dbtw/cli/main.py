@@ -127,15 +127,25 @@ def _expanded(value: str, argument: str) -> Path:
 
 
 def _existing_chain(path: Path) -> list[Path]:
-    """`path` and its ancestors, keeping only the ones that exist.
+    """`path` resolved, then it and its ancestors, keeping the ones that exist.
 
     An --out that has not been created yet still has to be placed, and a
     stat-based comparison needs something on disk to stat: the nearest
     ancestor that does exist is the first entry, and everything above it
     exists too. `mkdir -p` would put the new directory inside that ancestor,
     so an ancestor that is the project is an --out that is inside the project.
+
+    The resolve() is the point of this function rather than a detail of it.
+    Path("out").parents is (Path("."),), Path(".").parents is empty, and a
+    symlink's parents are the link's own rather than its target's — so walking
+    the path as given stops short of the project for an --out that is
+    relative, that is ".", or that is a symlink into a project subdirectory,
+    which is three of the ordinary ways to write "inside the project". It
+    costs nothing that matters: resolve() expands symlinks but leaves case
+    unfolded, and `_same_dir` is what answers for case anyway.
     """
-    return [candidate for candidate in (path, *path.parents) if candidate.exists()]
+    resolved = path.resolve()
+    return [candidate for candidate in (resolved, *resolved.parents) if candidate.exists()]
 
 
 def _same_dir(one: Path, other: Path) -> bool:
@@ -214,7 +224,9 @@ def _refuse_output_inside_project(
     for ancestor in _existing_chain(out_dir):
         if _same_dir(ancestor, project_root):
             preposition = (
-                "is the dbt project at" if ancestor == out_dir else "is inside the dbt project at"
+                "is the dbt project at"
+                if ancestor == out_resolved
+                else "is inside the dbt project at"
             )
             _refuse(
                 given_out,
