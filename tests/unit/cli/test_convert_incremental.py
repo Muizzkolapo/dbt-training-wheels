@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from dbtw.cli.main import _build_parser, main
+from dbtw.core.passes import append_option, merge_option
 
 ROOT = Path(__file__).parents[2] / "fixtures"
 PROJECT = ROOT / "projects" / "jaffle_shop"
@@ -63,7 +64,10 @@ def test_without_the_flag_append_model_is_unchanged(tmp_path):
     assert "merge" not in body
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "Chose: append every row" in report
-    assert "(alternatives: merge on a unique key)" in report
+    # Both answers, each with the effect the engine wrote for it, so the
+    # report explains the choice the way the screen does.
+    assert f"    - append every row (chosen) — {append_option().effect}" in report
+    assert f"    - merge on a unique key — {merge_option().effect}" in report
 
 
 def test_flag_upgrades_append_but_leaves_a_script_derived_merge_key_alone(tmp_path):
@@ -82,7 +86,8 @@ def test_flag_upgrades_append_but_leaves_a_script_derived_merge_key_alone(tmp_pa
     # the upgraded model's Decision: chosen becomes "merge on <keys>", the
     # append option demoted to an alternative
     assert "Chose: merge on order_id" in report
-    assert "(alternatives: append every row)" in report
+    assert f"    - merge on order_id (chosen) — {merge_option(('order_id',)).effect}" in report
+    assert f"    - append every row — {append_option().effect}" in report
     # the untouched model's Decision names both keys and says the flag lost
     assert (
         "dim_customers kept its script-derived unique_key (customer_id); "

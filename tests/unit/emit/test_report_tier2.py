@@ -96,7 +96,7 @@ def test_no_default_variable_renders_placeholder_comment():
     assert "  region:  # no default in the source; set one" in out
 
 
-def test_question_bearing_decision_renders_question_chosen_and_alternatives():
+def test_question_bearing_decision_renders_question_chosen_and_every_effect():
     out = _report(
         decisions=(
             Decision(
@@ -120,7 +120,15 @@ def test_question_bearing_decision_renders_question_chosen_and_alternatives():
     assert "chose incremental strategy" in out
     assert "Question: How should late-arriving rows be handled?" in out
     assert "Chose: merge" in out
-    assert "(alternatives: append, full refresh)" in out
+    # Every option, with the effect the engine wrote for it: the report and
+    # the screen render from the same records and must not explain a choice
+    # differently, which labels alone cannot do. Each line names one option
+    # and its whole effect, so dropping either fails here.
+    assert "    - merge (chosen) — updates matching rows and inserts the rest" in out
+    assert "    - append — re-inserts everything selected" in out
+    assert "    - full refresh — rebuilds the table from scratch" in out
+    # Only the option that stands is marked as taken.
+    assert out.count("(chosen)") == 1
 
 
 def test_decision_without_question_renders_as_before():
@@ -260,7 +268,7 @@ def test_vars_block_falls_back_to_unwrapped_when_the_default_will_not_parse():
     assert "SELEC garbage NOPE (" in out
 
 
-def test_question_bearing_decision_with_no_alternatives_omits_the_parenthetical():
+def test_question_bearing_decision_with_one_option_renders_only_that_option():
     out = _report(
         decisions=(
             Decision(
@@ -280,4 +288,6 @@ def test_question_bearing_decision_with_no_alternatives_omits_the_parenthetical(
         )
     )
     assert "Chose: merge" in out
-    assert "(alternatives:" not in out
+    assert "    - merge (chosen) — updates matching rows and inserts the rest" in out
+    # One option offered, one option rendered -- nothing invented beside it.
+    assert len([line for line in out.splitlines() if line.startswith("    - ")]) == 1

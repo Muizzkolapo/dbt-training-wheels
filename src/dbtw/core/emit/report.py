@@ -173,11 +173,16 @@ def _render_decisions(change: ProjectChange) -> str:
             location = f" ({d.source_file}:{d.line_start})" if d.source_file else ""
             block_lines.append(f"- **{d.action}** — {d.reason}{location}")
             if d.question:
-                line = f"  - Question: {d.question}  Chose: {d.chosen}"
-                not_taken = [o.label for o in d.options if o.label != d.chosen]
-                if not_taken:
-                    line += f"  (alternatives: {', '.join(not_taken)})"
-                block_lines.append(line)
+                block_lines.append(f"  - Question: {d.question}  Chose: {d.chosen}")
+                # Every option, chosen one included, with the effect the
+                # engine wrote for it. A reader deciding whether to change
+                # the answer needs to know what the other one would do, and
+                # the record already says -- rendering only the labels left
+                # the report explaining the choice less than the screen
+                # beside it, from the same Decision.
+                for option in d.options:
+                    taken = " (chosen)" if option.label == d.chosen else ""
+                    block_lines.append(f"    - {option.label}{taken} — {option.effect}")
         tier_blocks.append("\n".join(block_lines))
     lines.append("\n\n".join(tier_blocks))
     return "\n".join(lines)
