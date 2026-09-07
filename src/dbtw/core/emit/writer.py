@@ -357,8 +357,11 @@ def _sources_placement(
         )
 
     named_ours = _listed(sorted(f"{name}.{table}" for name, table in ours))
+    # Membership, not truthiness: the question is whether one of this run's
+    # schema files lands on `preferred`, and `model` answers that only because
+    # an empty model name happens to be unproducible.
     model = model_yml_at.get(preferred, "")
-    if at_preferred and model:
+    if at_preferred and preferred in model_yml_at:
         # Two different things hold the ordinary name, for two different
         # reasons, and a Decision naming one of them describes half of what
         # happened. The project's file would be lost on `cp -r`; the tests

@@ -351,9 +351,11 @@ def _upgrade_to_merge(
     ("merge on order_id, checked on every run") while the pristine question
     `answers` are validated against spells the same options without one, so
     re-sending a label read off THIS Decision is refused. That is a real
-    boundary, pinned by
+    boundary, still open, pinned by
     `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`
-    and closed by giving `Option` a stable kind so no caller matches on prose.
+    and deferred to the guided-walk slice, which would close it by giving
+    `Option` a stable kind so that no caller has to match on prose. `Option`
+    has no such field today.
     """
     merge_answer = merge_option(keys)
     # dbt's built-in `unique` test checks one column, so the checked answer
