@@ -5,11 +5,12 @@ from dbtw.core.emit.example import (
     Example,
     worked_example,
 )
-from dbtw.core.emit.render import render_model, render_sources_yaml
+from dbtw.core.emit.render import render_model, render_schema_yaml, render_sources_yaml
 from dbtw.core.emit.report import render_report
 from dbtw.core.emit.writer import (
     DuplicateSourceEntryError,
     EmitResult,
+    OrphanSchemaTestError,
     UnsafeOutputPathError,
     emit,
 )
@@ -21,10 +22,12 @@ __all__ = [
     "DuplicateSourceEntryError",
     "EmitResult",
     "Example",
+    "OrphanSchemaTestError",
     "UnsafeOutputPathError",
     "emit",
     "render_model",
     "render_report",
+    "render_schema_yaml",
     "render_sources_yaml",
     "worked_example",
 ]

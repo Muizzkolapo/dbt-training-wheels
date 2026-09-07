@@ -22,12 +22,14 @@ from dbtw.core.passes.types import (
     ModelDraft,
     Option,
     PassState,
+    SchemaTest,
     Subject,
     append_option,
     inline_option,
     merge_option,
     statement_index,
     var_option,
+    verify_option,
 )
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
@@ -320,7 +322,7 @@ def _upgrade_to_merge(
     keys: tuple[str, ...],
     *,
     caveat: str,
-    answered_label: str | None,
+    answered: _AnsweredKey | None,
 ) -> Decision:
     """Rewrite an append Decision into the merge upgrade that was chosen.
 
@@ -335,34 +337,76 @@ def _upgrade_to_merge(
     callers own its exact wording, so this function never has to guess (and
     can never fabricate) what's actually true of the model's body
     (FINDING 6).
+
+    The rewritten `options` carry the checked merge alongside the plain one
+    wherever it can be honoured, exactly as the question that was answered
+    offered it. This Decision is what the next screen renders, so an option
+    dropped here is an answer that vanishes the moment any other answer is
+    applied -- unreachable for every caller but the one that never saw the
+    first result. It is also what keeps `chosen` accounted for when the answer
+    was the checked one: a `chosen` naming an option the question does not
+    offer reads as an answer nobody could have given.
+
+    "Accounted for", not "answerable": these rewritten labels name the key
+    ("merge on order_id, checked on every run") while the pristine question
+    `answers` are validated against spells the same options without one, so
+    re-sending a label read off THIS Decision is refused. That is a real
+    boundary, still open, pinned by
+    `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`
+    and deferred to the guided-walk slice, which would close it by giving
+    `Option` a stable kind so that no caller has to match on prose. `Option`
+    has no such field today.
     """
     merge_answer = merge_option(keys)
-    if answered_label is not None:
+    # dbt's built-in `unique` test checks one column, so the checked answer
+    # exists only for a single-column key -- the same rule the tier-2
+    # questions offer it under.
+    checked = (verify_option(keys),) if len(keys) == 1 else ()
+    declared_test = answered.option.declares_test if answered is not None else ""
+    if answered is not None:
         by = "an answer to this question"
         # The label as the answer sent it, not one re-derived from `keys`:
         # the option that asks for columns is the one that does not name
         # them, so naming it from the key it was given would report a
         # question the user was never asked.
         because = (
-            f"this question was answered {answered_label!r}, naming {_keys_str(keys)} as that key"
+            f"this question was answered {answered.option.label!r}, naming "
+            f"{_keys_str(keys)} as that key"
         )
     else:
         by = "--unique-key"
         because = "--unique-key was supplied on the command line"
+    if declared_test:
+        # Only an option naming a single key declares a test -- an answer
+        # resolving one to more than one key is refused by
+        # `_incremental_answers` before it reaches here, and one resolving to
+        # no key at all never gets past the empty-key branch in
+        # `_apply_unique_key` -- so `checked` holds the option this answer
+        # took. The assertion narrows the tuple for the type checker; it is
+        # not what makes a bad answer safe.
+        assert checked
+        chosen_option = checked[0]
+        also = f", which also declares dbt's {declared_test} test on {keys[0]}"
+        check_note = (
+            f"; the answer asks dbt to check that key too, so a {declared_test} test on "
+            f"{keys[0]} is declared beside this model"
+        )
+    else:
+        chosen_option, also, check_note = merge_answer, "", ""
     return dataclasses.replace(
         dec,
         action=(
             f"INSERT INTO {draft_name} became an incremental model "
             f"(incremental_strategy='merge', unique_key={list(keys)!r}) — upgraded "
-            f"from append by {by}"
+            f"from append by {by}{also}"
         ),
         reason=(
             f"{because}; an append incremental re-inserts everything the model "
             "selects on every run, so this model was switched to a merge on the "
-            "given key instead" + caveat
+            "given key instead" + caveat + check_note
         ),
-        chosen=merge_answer.label,
-        options=(merge_answer, append_option()),
+        chosen=chosen_option.label,
+        options=(merge_answer, append_option()) + checked,
     )
 
 
@@ -374,7 +418,10 @@ def _downgrade_to_append(dec: Decision, draft_name: str, keys: tuple[str, ...]) 
     keyed merge stays on offer as the alternative -- worded with the columns
     it actually named rather than as the keyless "merge on a unique key", so
     the report keeps a record of which key the script proposed and the
-    answer turned down.
+    answer turned down. Both merges it turned down stay on offer, the
+    checked one included where it can be honoured: an answer is a choice
+    this run made, not one the next run is held to, and the question the
+    next screen renders is this rewritten one.
     """
     append_answer = append_option()
     keys_str = _keys_str(keys)
@@ -392,7 +439,40 @@ def _downgrade_to_append(dec: Decision, draft_name: str, keys: tuple[str, ...]) 
             "on that key"
         ),
         chosen=append_answer.label,
-        options=(append_answer, merge_option(keys)),
+        options=(append_answer, merge_option(keys))
+        + ((verify_option(keys),) if len(keys) == 1 else ()),
+    )
+
+
+def _confirm_with_check(
+    dec: Decision, draft_name: str, keys: tuple[str, ...], option: Option
+) -> Decision:
+    """Rewrite a merge Decision for the answer that keeps its key and asks
+    dbt to check it.
+
+    The model is untouched -- this answer agrees with the merge the script's
+    ON clause already built -- so only the record moves: `chosen` becomes the
+    option that was taken, and the action names the test now declared beside
+    the model, since a .yml gets written for it. `options` are left exactly
+    as the question offered them: the answer was validated against that
+    offer, so the option it took is already among them, and rebuilding a set
+    that is already right is how the two spellings drift apart.
+    """
+    test = option.declares_test
+    return dataclasses.replace(
+        dec,
+        action=(
+            f"MERGE INTO {draft_name} became an incremental model "
+            f"(incremental_strategy='merge', unique_key={list(keys)!r}), with dbt's "
+            f"{test} test declared on {keys[0]}"
+        ),
+        reason=(
+            f"this question was answered {option.label!r}: {_keys_str(keys)} came off the "
+            "MERGE's ON clause and the answer keeps it as the unique key, and asks dbt to "
+            f"check that claim -- a {test} test on {keys[0]}, declared beside this model, "
+            "which fails once two rows share a value"
+        ),
+        chosen=option.label,
     )
 
 
@@ -501,7 +581,7 @@ def _apply_unique_key(
     final_to_draft_name: Mapping[str, str],
     dialect: str | None,
     answered_keys: Mapping[str, _AnsweredKey],
-) -> tuple[list[AssembledModel], tuple[Decision, ...], list[Decision]]:
+) -> tuple[list[AssembledModel], tuple[Decision, ...], list[Decision], list[SchemaTest]]:
     """Settle each incremental model's unique key from the two inputs that
     can name one: `answered_keys`, this run's answers to the models' own
     incremental questions, and `unique_key`, the blanket `--unique-key`.
@@ -534,11 +614,23 @@ def _apply_unique_key(
     differs. Naming in every new Decision kind here uses the pre-rename
     draft name -- matching the convention every surrounding tier-2 Decision
     already uses (FINDING 3).
+
+    An answer can also ask for the key to be checked rather than taken on
+    trust ("...checked on every run"). It resolves to the same key the plain
+    merge answer resolves to and takes the same path through here -- the
+    model that comes out is the same file either way -- and adds one
+    `SchemaTest` to the returned list, which is what Task 3 writes as a .yml
+    beside the model. That test names the model by its FINAL name, which is
+    what these models carry: the .yml's `models:` entry has to name a model
+    dbt can resolve. It is recorded only where the merge was actually
+    applied, so an answer the body check declined leaves no test claiming a
+    check on a model that stayed an append.
     """
     keys_str = _keys_str(unique_key)
     decisions_list = list(decisions)
     extra_decisions: list[Decision] = []
     new_models: list[AssembledModel] = []
+    schema_tests: list[SchemaTest] = []
     found_incremental = False
 
     for model in models:
@@ -556,7 +648,6 @@ def _apply_unique_key(
                 # the script already produced, so it stays as it is.
                 new_models.append(model)
                 continue
-            answered_label = answered.option.label if answered is not None else None
             model_keys_str = _keys_str(model_keys)
             requested = _requested_phrase(model_keys, answered is not None)
             known = known_projections(model.body, dialect)
@@ -647,19 +738,71 @@ def _apply_unique_key(
                 draft_name,
                 model_keys,
                 caveat=caveat,
-                answered_label=answered_label,
+                answered=answered,
             )
-            new_models.append(
-                dataclasses.replace(model, incremental_strategy="merge", unique_key=model_keys)
+            upgraded = dataclasses.replace(
+                model, incremental_strategy="merge", unique_key=model_keys
             )
+            # Recorded here, past every branch that declines the key, so a
+            # test is only ever declared beside a model that really did come
+            # out merged on the column it names. The name comes off the model
+            # that is being appended -- the final, renamed one the .yml has to
+            # name -- rather than off `draft_name`, which is the pre-rename
+            # spelling the Decisions around it use.
+            if answered is not None and answered.option.declares_test:
+                schema_tests.append(
+                    SchemaTest(
+                        model=upgraded.name,
+                        column=model_keys[0],
+                        test=answered.option.declares_test,
+                    )
+                )
+            new_models.append(upgraded)
         elif model.incremental_strategy == "merge":
             found_incremental = True
             draft_name = final_to_draft_name[model.name]
             if answered is not None:
                 if answered.keys:
-                    # The only keyed merge label a merge question ever offers is
-                    # its own script-derived one, so an answer that keeps the
-                    # merge keeps exactly the key the model already carries.
+                    # The only keyed merge labels a merge question ever offers
+                    # are its own script-derived one and the checked variant of
+                    # it, so an answer that keeps the merge keeps exactly the
+                    # key the model already carries. The two differ in one
+                    # thing: whether dbt is asked to check that key.
+                    if answered.option.declares_test:
+                        # Offered only for a single-column key, since that is
+                        # all dbt's built-in test can check.
+                        #
+                        # A raise, not an assert, and for the reason the
+                        # writer's duplicate-source check gives: `python -O`
+                        # strips an assert, and what an assert leaves behind
+                        # here is the worst outcome available -- a test
+                        # declared on keys[0] alone, recording a single-column
+                        # claim the user never made, written to disk beside a
+                        # model merged on more. `_incremental_answers` refuses
+                        # a multi-column checked answer before anything is
+                        # applied, so this is unreachable; that is why it is a
+                        # bug rather than a usage error when it is reached.
+                        if len(answered.keys) != 1:
+                            raise MulticolumnCheckedAnswerError(
+                                f"{model.name} took a checked answer naming "
+                                f"{_keys_str(answered.keys)}; dbt's unique test checks one "
+                                "column, and _incremental_answers refuses more than one "
+                                "before applying anything, so reaching here is a dbtw bug."
+                            )
+                        index = _find_incremental_decision_index(
+                            decisions, model.source_indices, merge_option(model.unique_key).label
+                        )
+                        assert index is not None  # registered by _incremental_answers
+                        decisions_list[index] = _confirm_with_check(
+                            decisions_list[index], draft_name, answered.keys, answered.option
+                        )
+                        schema_tests.append(
+                            SchemaTest(
+                                model=model.name,
+                                column=answered.keys[0],
+                                test=answered.option.declares_test,
+                            )
+                        )
                     new_models.append(model)
                     continue
                 index = _find_incremental_decision_index(
@@ -744,7 +887,7 @@ def _apply_unique_key(
             )
         )
 
-    return new_models, tuple(decisions_list), extra_decisions
+    return new_models, tuple(decisions_list), extra_decisions, schema_tests
 
 
 def _incremental_answers(
@@ -766,6 +909,11 @@ def _incremental_answers(
     collision) is neither registered nor applied, and the two can't drift
     into the two failure modes that matter: a legitimate answer refused, or
     an answer accepted for a question nothing acts on.
+
+    This is also where an answer is refused for asking a checked option to
+    check more than the one column dbt's built-in test can check. That
+    refusal cannot wait for assemble()'s validation gate, which runs once the
+    answers collected here have already been applied.
     """
     answered_keys: dict[str, _AnsweredKey] = {}
     questions: list[Decision] = []
@@ -808,6 +956,25 @@ def _incremental_answers(
             # ever offers for the key the model it belongs to already carries
             # -- so the label names the key and `columns` has nothing to add.
             keys = model.unique_key
+        if chosen_option.declares_test and len(keys) > 1:
+            # Refused here, where the answer is resolved, and not in
+            # assemble()'s validation gate with the other two column rules:
+            # that gate runs at the end, after `_apply_unique_key` has already
+            # applied everything collected here, and an option that declares
+            # dbt's one-column test has no check to build for a two-column
+            # key. Applied first and refused afterwards, this input is a crash
+            # rather than a refusal -- so the rule has to sit in front of the
+            # application, not behind it.
+            #
+            # Only the upper bound is checked here. An answer with no columns
+            # at all is the `columns_prompt` rule's, and the gate refuses it
+            # with the prompt naming what is missing, which is the more useful
+            # of the two messages for a caller who supplied nothing.
+            raise UnknownAnswerError(
+                f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}; that "
+                f"option declares dbt's {chosen_option.declares_test} test, which checks "
+                "one column, so it can only be answered with one column"
+            )
         answered_keys[model.name] = _AnsweredKey(option=chosen_option, keys=keys)
     return answered_keys, questions
 
@@ -829,6 +996,21 @@ class UnknownAnswerError(ValueError):
     them is refused here. A caller that stages uploads (a web layer, say) must
     give a conversion one durable path and reuse it across runs, not copy the
     file somewhere new each time an answer comes back.
+    """
+
+
+class MulticolumnCheckedAnswerError(ValueError):
+    """A checked answer reached application naming more than one column.
+
+    Unreachable: `_incremental_answers` refuses a multi-column checked answer
+    before any of them are applied, so this guards the gap between that gate
+    and the code that trusts it. Unlike `UnknownAnswerError` it is NOT a usage
+    error and is deliberately absent from the CLI's `_USAGE_ERRORS` -- no
+    input produces it, so reaching it means a dbtw bug and should surface as
+    one. A raise rather than an assert because `python -O` strips asserts,
+    and what silence leaves here is a `unique` test declared on one column of
+    a key made of several: a claim about the user's data that the user never
+    made, written to disk.
     """
 
 
@@ -1068,8 +1250,12 @@ def assemble(
         ordered, inherited_decisions, answers_map
     )
     answerable_decisions.extend(incremental_questions)
+    # The dbt tests this run's answers asked for. Only an answer can ask for
+    # one, so a run with no answers carries none -- `--unique-key` takes a key
+    # on trust exactly as it always has.
+    schema_tests: list[SchemaTest] = []
     if unique_key or incremental_answers:
-        ordered, inherited_decisions, unique_key_decisions = _apply_unique_key(
+        ordered, inherited_decisions, unique_key_decisions, schema_tests = _apply_unique_key(
             ordered,
             inherited_decisions,
             unique_key,
@@ -1433,6 +1619,13 @@ def assemble(
                         f"option needs {chosen_option.columns_prompt}, and cannot be "
                         "applied without them"
                     )
+                # The upper bound on those columns -- an option that also
+                # asks dbt to check them can only be answered with the one
+                # column dbt's built-in test checks -- is enforced in
+                # `_incremental_answers` rather than here, because this gate
+                # runs after the answers have been applied and that input has
+                # no single-column check to apply. Named here because this is
+                # where a reader comes looking for the column rules.
             elif answer.columns:
                 raise UnknownAnswerError(
                     f"{key} was answered {answer.label!r} with columns "
@@ -1448,4 +1641,5 @@ def assemble(
         dialect=state.dialect,
         project_name=ctx.project_name,
         variables=tuple(kept_variables),
+        tests=tuple(schema_tests),
     )

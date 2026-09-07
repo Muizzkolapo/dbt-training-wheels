@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from dbtw.core.assemble import AssembledModel, SourceEntry
+from dbtw.core.passes import SchemaTest
 
 
 class _IndentedDumper(yaml.SafeDumper):
@@ -79,4 +80,55 @@ def render_sources_yaml(sources: Sequence[SourceEntry]) -> str:
         ],
     }
 
+    return yaml.dump(doc, Dumper=_IndentedDumper, sort_keys=False, default_flow_style=False)
+
+
+def render_schema_yaml(tests: Sequence[SchemaTest]) -> str:
+    """The .yml content declaring the dbt tests an answer asked for.
+
+    One argument, not `(model_name, tests)`: a separate name parameter could
+    disagree with what `tests` actually names, which is a representable lie
+    this function should not be able to tell. The model name is derived from
+    the entries themselves instead. `tests` naming more than one model is a
+    caller bug -- `writer.emit()` groups `change.tests` by model before ever
+    calling this -- so it is refused loudly rather than silently rendered
+    under whichever model happened to come first.
+
+    `tests:` rather than `data_tests:`. dbt 1.8 introduced the second spelling
+    and kept the first working; older versions know only the first. Emitting
+    `tests:` is therefore the spelling every version in use accepts, and it is
+    the one to change if a floor above 1.8 is ever set. Checked against a real
+    dbt (fusion 2.0 preview): the file parses with no deprecation warning and
+    the test registers as a node (`unique_<model>_<column>`), rather than
+    being read and ignored.
+
+    One column entry per test, not merged by column, the way
+    `render_sources_yaml` merges tables under one source. Two `SchemaTest`s
+    naming the same (model, column) would render two `columns:` entries under
+    one name, which dbt rejects, so the merge would be needed the moment two
+    could exist. Two cannot: `SchemaTest.test` is `Literal["unique"]`,
+    mirroring `Option.declares_test`, and `assemble` records at most one test
+    per model -- one per branch of its own loop over its own models, and a
+    model takes one branch. Widen that Literal, or record a second test for
+    one model, and this needs the merge first.
+    """
+    if not tests:
+        return ""
+    models = {t.model for t in tests}
+    if len(models) > 1:
+        raise ValueError(
+            "render_schema_yaml renders one model's tests per call, and its "
+            f"model name is derived from the entries themselves; got tests naming "
+            f"{sorted(models)}. Group change.tests by model before calling this."
+        )
+    (model_name,) = models
+    doc: dict[str, Any] = {
+        "version": 2,
+        "models": [
+            {
+                "name": model_name,
+                "columns": [{"name": t.column, "tests": [t.test]} for t in tests],
+            }
+        ],
+    }
     return yaml.dump(doc, Dumper=_IndentedDumper, sort_keys=False, default_flow_style=False)
