@@ -412,6 +412,16 @@ def _upgrade_to_merge(
         ),
         chosen=chosen_option.label,
         options=(merge_answer, append_option()) + checked,
+        # The key this question now turns on. Every other field here says the
+        # model merges on `keys`; a Subject still reporting no key would put
+        # the rewritten Decision in the one shape `Subject`'s docstring
+        # describes as an append that has not been answered yet -- and a
+        # screen reading it that way renders a column picker on a question the
+        # user has already answered. `candidates` is left alone: it is what the
+        # model projects, which answering did not change.
+        subject=(
+            dataclasses.replace(dec.subject, columns=keys) if dec.subject is not None else None
+        ),
     )
 
 

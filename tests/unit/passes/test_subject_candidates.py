@@ -6,7 +6,7 @@ off the Decision instead of inventing one.
 from tests.unit.assemble.helpers import convert
 
 from dbtw.core.assemble import ProjectChange
-from dbtw.core.passes import Decision, answer_for
+from dbtw.core.passes import Answer, Decision, answer_for, append_option, merge_option
 from dbtw.core.passes.tier2 import _projected_columns
 
 PLAIN = "INSERT INTO revenue_events SELECT order_id, amount FROM raw.orders;\n"
@@ -153,11 +153,52 @@ def test_the_merge_question_names_its_key_and_offers_no_picker():
     assert decision.subject.candidates == ()
 
 
-def test_a_body_that_does_not_parse_offers_nothing_rather_than_claiming_a_star():
+def test_an_unparseable_body_returns_empty_without_raising():
     """`known_projections` returns None for a body it cannot parse as a query,
     which is a different unknown from a star and must not be folded into one.
-    An append draft's body is always the INSERT's own SELECT re-rendered with
-    the dialect it was parsed under, so the pipeline cannot reach this branch;
-    it is exercised here rather than left as the one path with no test.
+
+    What this checks is only the None branch: that it returns empty instead of
+    unpacking None and crashing. It cannot tell "returned () because parsed is
+    None" from "returned () after folding None into the star case", because
+    both produce (). An append draft's body is always the INSERT's own SELECT
+    re-rendered with the dialect it was parsed under, so the pipeline cannot
+    reach this branch; it is exercised here rather than left as the one path
+    with no test.
     """
     assert _projected_columns("not a query at all ((", None) == ()
+
+
+def test_an_answered_append_names_the_key_the_answer_supplied():
+    """After an answer upgrades an append to a merge, the rebuilt Decision is
+    what a screen renders next -- and it has a key now, named in `chosen` and
+    in every option's label. `Subject` has to say so too.
+
+    Leaving `columns` empty there put the rebuilt Decision in the one shape
+    `Subject`'s own docstring calls an append with no key named yet, on a
+    question that is neither. A consumer trusting that reading renders a
+    column picker on a question the user has already answered.
+    """
+    baseline = convert(PLAIN)
+    question = _question(baseline, "revenue_events")
+    answered = convert(PLAIN, answers={question.key: Answer(merge_option().label, ("order_id",))})
+
+    rebuilt = [d for d in answered.decisions if d.key == question.key][0]
+    assert rebuilt.subject is not None
+    assert rebuilt.subject.columns == ("order_id",)
+    # And the projections are still the model's own, unchanged by answering.
+    assert rebuilt.subject.candidates == ("order_id", "amount")
+    assert "order_id" in rebuilt.chosen
+
+
+def test_declining_the_key_leaves_the_subject_naming_no_key():
+    """The mirror case, so the assertion above is about the answer and not
+    about rebuilding in general: answering "append every row" names no key, so
+    there is none for `columns` to carry.
+    """
+    baseline = convert(PLAIN)
+    question = _question(baseline, "revenue_events")
+    answered = convert(PLAIN, answers={question.key: Answer(append_option().label)})
+
+    rebuilt = [d for d in answered.decisions if d.key == question.key][0]
+    assert rebuilt.subject is not None
+    assert rebuilt.subject.columns == ()

@@ -271,14 +271,24 @@ class Subject:
     `candidates` are the columns this model *projects* -- what a picker
     offers when the question is which column to use. It is not another
     spelling of `columns` and the two are never interchangeable: `columns`
-    is what the script already named, `candidates` is what this question
-    could be answered with. A question can carry both empty, `candidates`
-    alone (an append: no key named yet, and these are the choices), or
-    `columns` alone (a merge, whose every option is already spelled with
-    the key its ON clause named, so it offers no picker to fill). Empty
-    means "none known", never "none exist" -- a picker handed an empty list
-    must offer free text rather than tell a user their model has no
-    columns.
+    is the key this question turns on, `candidates` is what it could be
+    answered with. Every combination occurs, and none of them identifies
+    which question this is:
+
+    - both empty -- nothing known about either;
+    - `candidates` alone -- an unanswered append: no key named yet, and
+      these are the choices;
+    - `columns` alone -- a merge, whose key its ON clause named and whose
+      projections are not all knowable (a `USING` over a plain table
+      renders as `SELECT *`);
+    - both -- an append that has been answered, carrying the key the answer
+      supplied alongside the projections it was chosen from.
+
+    Ask the options, not this record, whether to render a picker: an option
+    carrying a `columns_prompt` is one whose answer needs columns, and it is
+    the only reliable signal. Empty means "none known", never "none exist"
+    -- a picker handed an empty list must offer free text rather than tell a
+    user their model has no columns.
 
     A consumer needs these to offer a check query, to label a column input,
     to fill a column picker, or to build a worked example. Recovering them
