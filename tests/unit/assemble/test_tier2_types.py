@@ -29,8 +29,12 @@ def test_tier2_decision_carries_question_and_options():
         question="Is start_date a run-time parameter or a constant?",
         chosen="keep as a var",
         options=(
-            Option(label="keep as a var", effect="stays a run-time parameter"),
-            Option(label="inline the literal value", effect="splices the literal into the body"),
+            Option(label="keep as a var", kind="var", effect="stays a run-time parameter"),
+            Option(
+                label="inline the literal value",
+                kind="inline",
+                effect="splices the literal into the body",
+            ),
         ),
     )
     assert d.question

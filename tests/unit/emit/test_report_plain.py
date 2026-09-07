@@ -230,7 +230,10 @@ def _decision(
     index: int = 1,
     options: tuple[Option, ...] = (
         Option(
-            label="merge on customer_id", effect="updates the matched row", plain="says it again"
+            label="merge on customer_id",
+            kind="merge",
+            effect="updates the matched row",
+            plain="says it again",
         ),
     ),
 ) -> Decision:

@@ -116,10 +116,23 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
                 line_end=9,
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
+                # Three options the renderer is handed, one of which ("full
+                # refresh") is not an answer this tool offers at all -- the
+                # point being that the renderer prints what it is given rather
+                # than anything it knows. `kind` is required on the record and
+                # never read by the renderer, so these are placeholders too.
                 options=(
-                    Option(label="merge", effect="updates matching rows and inserts the rest"),
-                    Option(label="append", effect="re-inserts everything selected"),
-                    Option(label="full refresh", effect="rebuilds the table from scratch"),
+                    Option(
+                        label="merge",
+                        kind="merge",
+                        effect="updates matching rows and inserts the rest",
+                    ),
+                    Option(label="append", kind="append", effect="re-inserts everything selected"),
+                    Option(
+                        label="full refresh",
+                        kind="merge_checked",
+                        effect="rebuilds the table from scratch",
+                    ),
                 ),
             ),
         )
@@ -289,7 +302,11 @@ def test_question_bearing_decision_with_one_option_renders_only_that_option():
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
                 options=(
-                    Option(label="merge", effect="updates matching rows and inserts the rest"),
+                    Option(
+                        label="merge",
+                        kind="merge",
+                        effect="updates matching rows and inserts the rest",
+                    ),
                 ),
             ),
         )

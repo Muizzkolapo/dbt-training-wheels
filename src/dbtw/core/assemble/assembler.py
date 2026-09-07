@@ -350,12 +350,17 @@ def _upgrade_to_merge(
     "Accounted for", not "answerable": these rewritten labels name the key
     ("merge on order_id, checked on every run") while the pristine question
     `answers` are validated against spells the same options without one, so
-    re-sending a label read off THIS Decision is refused. That is a real
-    boundary, still open, pinned by
-    `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`
-    and deferred to the guided-walk slice, which would close it by giving
-    `Option` a stable kind so that no caller has to match on prose. `Option`
-    has no such field today.
+    re-sending a label read off THIS Decision is still refused, and is pinned
+    by
+    `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`.
+    The engine's side of that has not changed and is not wrong: it cannot know
+    that two spellings are one answer. What changed is the caller's side --
+    `Option.kind` is that stable identity now, and `passes.answer_for` turns a
+    kind back into the label whichever question is being answered offers. A
+    consumer reads `kind` off this rewritten Decision and resolves it against
+    the pristine one, so no label text crosses between two runs. The round
+    trip is
+    `test_answer_for_is_how_a_caller_re_sends_an_answer_across_a_rebuild`.
     """
     merge_answer = merge_option(keys)
     # dbt's built-in `unique` test checks one column, so the checked answer

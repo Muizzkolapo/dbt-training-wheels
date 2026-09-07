@@ -98,7 +98,9 @@ def test_the_inline_answer_is_recognised_by_the_label_the_question_offered(monke
     factory renames both at once, so this stays green only while the offer
     and the match come from it.
     """
-    renamed = Option(label="splice the literal in", effect="the literal goes into the body")
+    renamed = Option(
+        label="splice the literal in", kind="inline", effect="the literal goes into the body"
+    )
     monkeypatch.setattr(assembler_module, "inline_option", lambda: renamed, raising=False)
     state, ctx = state_with_variable(), context_for()
     offered = _variable_decision(assemble(state, ctx)).options
@@ -307,6 +309,7 @@ def test_the_columns_requirement_is_read_off_the_option_not_its_label(monkeypatc
     """
     renamed = Option(
         label="key it on a column",
+        kind="merge",
         effect="Each run updates the row whose key matches and inserts the rest.",
         columns_prompt="the column(s) that identify a row uniquely",
     )
