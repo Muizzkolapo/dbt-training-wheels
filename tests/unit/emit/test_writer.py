@@ -395,20 +395,22 @@ def test_two_tests_for_one_model_produce_one_yml_with_two_columns(tmp_path):
     assert {c["name"] for c in model_doc["columns"]} == {"order_id", "line_id"}
 
 
-def test_a_models_schema_yml_never_lands_on_a_declared_sources_file():
-    """The reasoning writer.py records beside `_schema_yaml_rel`: a per-model
-    schema.yml lands at the model's own final name, one suffix removed from
-    its .sql file, so a project file already at that path would mean the
-    model's *name* already collides -- which `assemble` already reports as
-    its own "collision" Decision (assembler.py, `existing_by_name.get`).
-    There is no separate clash for this file to have, unlike sources.yml,
-    whose landing name is a fixed constant no earlier stage vouches for.
+def test_a_models_schema_yml_never_lands_on_a_projects_declared_sources_file():
+    """A model's schema .yml lands at the model's own final name, one suffix
+    removed from its .sql file. For an *existing* project file to sit at that
+    path, the model's name would already have to collide with something the
+    project has -- which `assemble` reports as its own "collision" Decision
+    (assembler.py, `existing_by_name.get`).
 
-    Checked over every model already in every fixture project that declares
-    sources at all: for a model here to become the target of a new
-    conversion under its own name (the only way our .yml would ever land on
-    an existing file), the .yml computed the same way emit computes it must
-    not already be where the project declares its sources.
+    Scope, stated because the name of this test used to promise more than it
+    checks: `ProjectContext` carries the project's models and the files it
+    declares sources in, not a listing of the project directory, so this
+    checks our .yml against the paths ctx does know. A project .yml that ctx
+    never sees (a `schema.yml` declaring no sources, say) is invisible to it
+    and to emit alike -- the same gap `_sources_placement` has, tracked with
+    it. What emit *can* prove is the collision between two files it writes
+    itself, which is
+    `test_a_models_schema_yml_and_the_sources_file_never_take_one_path`.
     """
     for project in ("with_sources", "sources_at_root"):
         ctx = read_project(FIXTURES / project)
@@ -417,6 +419,146 @@ def test_a_models_schema_yml_never_lands_on_a_declared_sources_file():
         for model in ctx.existing_models:
             candidate = Path(model.path).with_suffix(".yml").as_posix()
             assert candidate not in declared
+
+
+def _named_model_change(name: str, path: str, *, sources=(), tests=()) -> ProjectChange:
+    return ProjectChange(
+        models=(
+            AssembledModel(
+                name=name,
+                path=path,
+                body="SELECT 1 AS order_id",
+                materialization="table",
+                grants=(),
+                layer="staging",
+                depends_on=(),
+                leading_comments=(),
+                source_indices=(0,),
+            ),
+        ),
+        sources=sources,
+        decisions=(),
+        pending=(),
+        dialect=None,
+        project_name="jaffle_shop",
+        tests=tests,
+    )
+
+
+def test_a_models_schema_yml_and_the_sources_file_never_take_one_path(tmp_path):
+    """A model named `sources` puts its schema .yml exactly where the sources
+    file wants to land, and emit writes the models first -- so the sources
+    write replaced the test file the user chose, silently, while the report
+    went on counting the test and listing both paths.
+
+    The sources file moves, not the model's: its name is a constant this
+    module picks, while the .yml's is derived from the model's own final name.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")  # declares no sources of its own
+    change = _named_model_change(
+        "sources",
+        "models/staging/sources.sql",
+        sources=(SourceEntry(source_name="raw", schema="raw", table="orders"),),
+        tests=(SchemaTest("sources", "order_id"),),
+    )
+
+    result = emit(change, ctx, tmp_path)
+
+    schema_file = tmp_path / "models" / "staging" / "sources.yml"
+    schema_doc = yaml.safe_load(schema_file.read_text())
+    assert schema_doc["models"] == [
+        {"name": "sources", "columns": [{"name": "order_id", "tests": ["unique"]}]}
+    ]
+
+    # The sources file still got written, under a name of its own.
+    sources_files = [
+        p for p in tmp_path.rglob("*.yml") if "sources" in yaml.safe_load(p.read_text())
+    ]
+    (sources_file,) = sources_files
+    assert sources_file != schema_file
+    assert yaml.safe_load(sources_file.read_text())["sources"][0]["tables"] == [{"name": "orders"}]
+
+    assert len(set(result.paths)) == len(result.paths)  # no path reported twice
+
+
+def test_the_moved_sources_file_says_why_it_moved(tmp_path):
+    """Nothing silent: the rename gets a Decision naming the model whose test
+    file holds the ordinary name, not the project-already-uses-it reason,
+    which would describe a conflict that did not happen here.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = _named_model_change(
+        "sources",
+        "models/staging/sources.sql",
+        sources=(SourceEntry(source_name="raw", schema="raw", table="orders"),),
+        tests=(SchemaTest("sources", "order_id"),),
+    )
+
+    result = emit(change, ctx, tmp_path)
+
+    (moved,) = [d for d in result.decisions if d.key.startswith("emit.sources_placed")]
+    assert "models/staging/sources.yml" in moved.reason
+    assert "sources" in moved.action
+    # The project's own file is not what pushed ours aside here.
+    assert "already" not in moved.reason.split("this conversion")[0]
+
+    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
+    assert moved.action in report
+
+
+def test_no_move_when_the_colliding_model_has_no_test(tmp_path):
+    """The .yml only exists for a model with a test, so a model named
+    `sources` without one leaves the ordinary name free. Moving anyway would
+    rename a file for a conflict that is not there.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    change = _named_model_change(
+        "sources",
+        "models/staging/sources.sql",
+        sources=(SourceEntry(source_name="raw", schema="raw", table="orders"),),
+    )
+
+    result = emit(change, ctx, tmp_path)
+
+    assert (tmp_path / "models" / "staging" / "sources.yml").is_file()
+    assert "sources" in yaml.safe_load(
+        (tmp_path / "models" / "staging" / "sources.yml").read_text()
+    )
+    assert not [d for d in result.decisions if d.key.startswith("emit.sources_placed")]
+
+
+def test_the_alternate_sources_name_is_bumped_past_a_models_schema_yml(tmp_path):
+    """A model named `sources_dbtw` takes the alternate name too. The bump
+    loop has to count both kinds of taken name or it lands right back on one.
+    """
+    ctx = read_project(FIXTURES / "with_sources")  # declares models/staging/sources.yml
+    change = ProjectChange(
+        models=(
+            AssembledModel(
+                name="sources_dbtw",
+                path="models/staging/sources_dbtw.sql",
+                body="SELECT 1 AS order_id",
+                materialization="table",
+                grants=(),
+                layer="staging",
+                depends_on=(),
+                leading_comments=(),
+                source_indices=(0,),
+            ),
+        ),
+        sources=(SourceEntry(source_name="raw", schema="raw", table="widgets"),),
+        decisions=(),
+        pending=(),
+        dialect=None,
+        project_name="jaffle_shop",
+        tests=(SchemaTest("sources_dbtw", "order_id"),),
+    )
+
+    emit(change, ctx, tmp_path)
+
+    schema_doc = yaml.safe_load((tmp_path / "models" / "staging" / "sources_dbtw.yml").read_text())
+    assert "models" in schema_doc  # ours, not overwritten by the sources file
+    assert (tmp_path / "models" / "staging" / "sources_dbtw_2.yml").is_file()
 
 
 APPEND_SQL = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
@@ -450,6 +592,41 @@ def test_end_to_end_the_yml_lands_beside_the_model_and_parses_clean(tmp_path):
 
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "**Tests**: 1" in report
+
+
+COLLIDING_SQL = "INSERT INTO sources SELECT order_id, amount FROM raw.orders;\n"
+
+
+def test_end_to_end_a_model_named_sources_keeps_the_test_the_user_chose(tmp_path):
+    """The whole path, on a project with no layer prefix to rename the model
+    out of the way: a table named `sources` stays `sources`, and its test file
+    takes `models/sources.yml` -- where the sources file also wants to go.
+
+    The report's count and the tree have to agree. A run that says
+    `**Tests**: 1` with no file declaring that test is the report contradicting
+    the artifact beside it.
+    """
+    baseline = convert(COLLIDING_SQL, project="no_conventions")
+    key = _question_key(baseline, "sources")
+    change = convert(
+        COLLIDING_SQL,
+        project="no_conventions",
+        answers={key: Answer(verify_option().label, ("order_id",))},
+    )
+    ctx = context_for("no_conventions")
+
+    result = emit(change, ctx, tmp_path)
+
+    schema_doc = yaml.safe_load((tmp_path / "models" / "sources.yml").read_text())
+    assert schema_doc == {
+        "version": 2,
+        "models": [{"name": "sources", "columns": [{"name": "order_id", "tests": ["unique"]}]}],
+    }
+    assert len(set(result.paths)) == len(result.paths)
+
+    report = (tmp_path / "CONVERSION_REPORT.md").read_text()
+    assert "**Tests**: 1" in report
+    assert [p for p in tmp_path.rglob("*.yml") if "sources" in yaml.safe_load(p.read_text())]
 
 
 def test_end_to_end_an_unanswered_conversion_emits_no_yml_and_reports_zero_tests(tmp_path):

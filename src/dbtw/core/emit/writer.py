@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 from dbtw.core.assemble import AssembledModel, ProjectChange
@@ -149,25 +150,53 @@ def _schema_yaml_rel(model: AssembledModel) -> str:
     with `.sql` swapped for `.yml`, so the file sits in the same directory as
     the model it tests, under the model's own final name.
 
-    This file class gets no `_sources_placement`-style collision Decision of
-    its own, and that is a considered choice, not an oversight. Sources.yml's
-    landing name is a fixed constant ("sources.yml") that nothing upstream
-    vouches for -- any project could already have a file at that exact path,
-    which is the whole reason `_sources_placement` exists. A schema .yml's
-    landing name is different in kind: it is *derived from* `model.name`, the
-    model's own final name, which `assemble._final_name` already resolves
-    against the target project before this module ever sees it. If a project
-    file already sits at this exact path, that file sits at the model's own
-    name one suffix removed -- and a project file at a NEW model's name is
-    precisely what `assemble` already calls a "collision" and records as its
-    own Decision (assembler.py: `existing_by_name.get(final_name)`, that
-    module's own `_decision("collision", ...)`). There is no separate clash
-    for this function to discover that the model-naming pass has not already
-    reported; inventing one here would just restate that Decision in a
-    second, easier to drift, sentence. (Proven for the fixture projects in
-    test_writer.py::test_a_models_schema_yml_never_lands_on_a_declared_sources_file.)
+    Against the target *project*, this name needs no collision Decision of its
+    own. Sources.yml's landing name is a fixed constant ("sources.yml") that
+    nothing upstream vouches for -- any project could already have a file at
+    that exact path, which is the whole reason `_sources_placement` exists. A
+    schema .yml's landing name is different in kind: it is *derived from*
+    `model.name`, the model's own final name, which `assemble._final_name`
+    already resolves against the target project before this module ever sees
+    it. A project file at a NEW model's name is precisely what `assemble`
+    already calls a "collision" and records as its own Decision (assembler.py:
+    `existing_by_name.get(final_name)`), so restating it here would be a
+    second, drift-prone sentence about one choice.
+
+    That reasoning covers the project's files and stops there -- it says
+    nothing about the other file *this run* writes into the same directory,
+    and that is where the two do meet. `_sources_placement` puts our sources
+    file at `<dir>/sources.yml`, so a model named `sources` lands its tests on
+    exactly that path; emit writes models before sources, so the sources write
+    replaced the test file the user chose, silently, while the report went on
+    counting the test. `_sources_placement` treats these paths as taken names
+    for that reason, and moves itself rather than the model's file: its own
+    name is a constant this module picks, while the .yml's is the model's.
     """
     return Path(model.path).with_suffix(".yml").as_posix()
+
+
+def _schema_yaml_paths(change: ProjectChange) -> dict[str, str]:
+    """Where this run's per-model schema .yml files land, by path, naming the
+    model whose chosen tests put each one there.
+
+    Only a model with a test gets a file, so only those names are taken --
+    moving the sources file for a model whose .yml is never written would
+    rename it around a conflict that is not there.
+    """
+    tested = {test.model for test in change.tests}
+    return {_schema_yaml_rel(model): model.name for model in change.models if model.name in tested}
+
+
+def _holds(path: str, declared_at: set[str], model_yml_at: Mapping[str, str]) -> str:
+    """What already occupies `path`, named in the words the Decision uses."""
+    if path in declared_at and path in model_yml_at:
+        return (
+            f"the target project declares sources there and this conversion's tests "
+            f"for {model_yml_at[path]} are written there"
+        )
+    if path in declared_at:
+        return "the target project declares sources there"
+    return f"this conversion's tests for {model_yml_at[path]} are written there"
 
 
 def _sources_dir(ctx: ProjectContext) -> Path:
@@ -256,16 +285,25 @@ def _sources_placement(
     The alternate name is bumped if the project declares sources under it too
     (a previous run's output, copied in): a fixed second name that is already
     taken is the same overwrite one step along.
+
+    A name this run's own schema .yml files take counts the same way, and for
+    a sharper reason: those files land inside out_dir, so the clash is not a
+    risk taken on `cp -r` but an overwrite this function would cause by
+    itself. See `_schema_yaml_rel`.
     """
     directory = _sources_dir(ctx)
     preferred = (directory / _SOURCES_NAME).as_posix()
     declared_at = {existing.declared_in for existing in ctx.existing_sources}
-    if preferred not in declared_at:
+    model_yml_at = _schema_yaml_paths(change)
+    taken = declared_at | set(model_yml_at)
+    if preferred not in taken:
         return preferred, ()
 
     landing = (directory / _ALT_SOURCES_NAME).as_posix()
     bump = 1
-    while landing in declared_at:
+    stepped_over: list[str] = []
+    while landing in taken:
+        stepped_over.append(landing)
         bump += 1
         landing = (directory / f"sources_dbtw_{bump}.yml").as_posix()
 
@@ -290,14 +328,11 @@ def _sources_placement(
             "declares a table the project already declares."
         )
 
-    named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
     named_ours = _listed(sorted(f"{name}.{table}" for name, table in ours))
-    return landing, (
-        _decision(
-            "sources_placed",
-            landing,
-            f"wrote this conversion's sources as {landing}, not {preferred}, "
-            "which the target project already uses",
+    if at_preferred:
+        named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
+        held = "which the target project already uses"
+        why = (
             f"{preferred} in the target project declares {named_theirs}; this "
             f"conversion declares {named_ours}. Writing ours at that path would "
             "replace their file and take their declarations with it, so ours is a "
@@ -306,6 +341,30 @@ def _sources_placement(
             "the same source name as long as the tables differ, and this conversion "
             "skips every table the project already declares. Copy both across as they "
             f"are, or merge our entries into {preferred} by hand if you would rather "
-            "keep one file.",
+            "keep one file."
+        )
+    else:
+        model = model_yml_at[preferred]
+        held = f"which holds the tests this conversion declares for {model}"
+        why = (
+            f"a model's schema file takes the model's own name, so {preferred} is "
+            f"where the tests this conversion was asked to declare for {model} are "
+            f"written; this conversion declares {named_ours} as sources. The sources "
+            "file is written after the models, so putting ours at that path would "
+            f"replace the tests declared for {model} with source declarations — and "
+            "the run would report a test whose file it had just overwritten. Ours is a separate "
+            "file instead, and both are copied across together. dbt reads both."
+        )
+    if stepped_over:
+        also = _listed(
+            [f"{path} ({_holds(path, declared_at, model_yml_at)})" for path in stepped_over]
+        )
+        why += f" The name taken when the ordinary one is occupied was occupied too: {also}."
+    return landing, (
+        _decision(
+            "sources_placed",
+            landing,
+            f"wrote this conversion's sources as {landing}, not {preferred}, {held}",
+            why,
         ),
     )

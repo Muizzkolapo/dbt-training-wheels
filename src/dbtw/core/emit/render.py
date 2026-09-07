@@ -94,6 +94,14 @@ def render_schema_yaml(tests: Sequence[SchemaTest]) -> str:
     calling this -- so it is refused loudly rather than silently rendered
     under whichever model happened to come first.
 
+    `tests:` rather than `data_tests:`. dbt 1.8 introduced the second spelling
+    and kept the first working; older versions know only the first. Emitting
+    `tests:` is therefore the spelling every version in use accepts, and it is
+    the one to change if a floor above 1.8 is ever set. Checked against a real
+    dbt (fusion 2.0 preview): the file parses with no deprecation warning and
+    the test registers as a node (`unique_<model>_<column>`), rather than
+    being read and ignored.
+
     One column entry per test, not merged by column, the way
     `render_sources_yaml` merges tables under one source. Two `SchemaTest`s
     naming the same column would need that kind of merge into a single
