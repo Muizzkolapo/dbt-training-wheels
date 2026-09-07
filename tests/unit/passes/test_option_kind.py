@@ -9,6 +9,7 @@ wording, and `answer_for` turns that kind back into the label the Decision in
 front of it actually offers.
 """
 
+import inspect
 from typing import get_args
 
 import pytest
@@ -28,19 +29,50 @@ from dbtw.core.passes import (
     verify_option,
 )
 
-# Every Option the five factories can build, both branches of each factory
-# that has two. The invariants below hold of all of them, so a sixth factory
-# -- or a sixth branch -- has to be added here to be covered.
-EVERY_OPTION = (
-    append_option(),
-    merge_option(),
-    merge_option(("order_id",)),
-    verify_option(),
-    verify_option(("order_id",)),
-    inline_option(),
-    var_option(),
-    var_option("cutoff"),
-)
+# Every Option the five factories can build, grouped by the factory that
+# builds it, because the *number* of branches per factory has to be a claim
+# something checks rather than a count kept by hand. A factory whose optional
+# argument changes the option it returns has two; one taking no argument has
+# one. `test_every_factory_branch_is_covered` derives that from each
+# factory's own signature, so a factory gaining an argument fails until its
+# second branch is listed here.
+#
+# Written this way because the flat tuple was wrong once already: the first
+# version of this file missed `var_option()`'s no-name branch, and the
+# `set(get_args(OptionKind))` check below did not notice, since the other
+# branch still built the "var" kind. Dropping a branch has to fail on its
+# own, not only when it takes a whole kind with it.
+OPTIONS_BY_FACTORY = {
+    append_option: (append_option(),),
+    merge_option: (merge_option(), merge_option(("order_id",))),
+    verify_option: (verify_option(), verify_option(("order_id",))),
+    inline_option: (inline_option(),),
+    var_option: (var_option(), var_option("cutoff")),
+}
+EVERY_OPTION = tuple(option for options in OPTIONS_BY_FACTORY.values() for option in options)
+
+
+def test_every_factory_branch_is_covered():
+    """`EVERY_OPTION` must hold every option each factory can build, and the
+    parametrised invariants below are only worth what its coverage is worth.
+
+    The expected count comes off the factory's signature rather than a list
+    kept beside it: a factory taking an optional argument returns a different
+    option with and without it, so it has two branches, and one taking no
+    argument has one. Two hand-written lists agreeing with each other would
+    prove nothing -- they would be wrong together, which is exactly how
+    `var_option()`'s second branch went uncovered the first time.
+    """
+    for factory, options in OPTIONS_BY_FACTORY.items():
+        expected = 2 if inspect.signature(factory).parameters else 1
+        assert len(options) == expected, factory.__name__
+        # And the branches must actually differ, or covering "both" is one
+        # option listed twice. Compared whole rather than on `label`, because
+        # which field carries the difference is the factory's business:
+        # `merge_option` and `verify_option` vary the label and the columns
+        # prompt, while `var_option` keeps one label ("keep as a dbt var") and
+        # varies only `effect` and `plain`, naming the variable it was given.
+        assert len(set(options)) == expected, factory.__name__
 
 
 def test_every_factory_stamps_its_kind():

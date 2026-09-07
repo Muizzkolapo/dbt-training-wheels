@@ -136,6 +136,14 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
                         label="merge, and check the key",
                         kind="merge_checked",
                         effect="the same merge, and dbt checks the chosen column",
+                        # Set, not defaulted: this option says in its effect
+                        # that dbt checks the column, and `declares_test` is
+                        # the field that makes that true. Leaving it "" would
+                        # be a record contradicting its own text, which is the
+                        # thing this file's renderer exists to never do -- and
+                        # the invariant test over the factories cannot reach a
+                        # hand-built option like this one.
+                        declares_test="unique",
                     ),
                 ),
             ),
