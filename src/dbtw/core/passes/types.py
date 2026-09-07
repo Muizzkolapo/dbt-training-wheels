@@ -268,13 +268,27 @@ class Subject:
     clause already names, or empty when the question is precisely which
     column to use. Empty means "none known", never "none exist".
 
+    `candidates` are the columns this model *projects* -- what a picker
+    offers when the question is which column to use. It is not another
+    spelling of `columns` and the two are never interchangeable: `columns`
+    is what the script already named, `candidates` is what this question
+    could be answered with. A question can carry both empty, `candidates`
+    alone (an append: no key named yet, and these are the choices), or
+    `columns` alone (a merge, whose every option is already spelled with
+    the key its ON clause named, so it offers no picker to fill). Empty
+    means "none known", never "none exist" -- a picker handed an empty list
+    must offer free text rather than tell a user their model has no
+    columns.
+
     A consumer needs these to offer a check query, to label a column input,
-    or to build a worked example. Recovering them by parsing `question`
-    would make every consumer a parser of our own prose.
+    to fill a column picker, or to build a worked example. Recovering them
+    by parsing `question` would make every consumer a parser of our own
+    prose.
     """
 
     table: str
     columns: tuple[str, ...] = ()
+    candidates: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

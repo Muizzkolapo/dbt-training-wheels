@@ -1,4 +1,19 @@
-"""What columns a query body puts out, read off the body itself. No I/O."""
+"""What columns a query body puts out, read off the body itself. No I/O.
+
+A leaf of `core` beside `naming`, rather than a member of any one package,
+because three of them read it now: `assemble` matches a `--unique-key`
+value against a model's output columns, `emit.example` names every column
+of a worked row, and `passes.tier2` collects the columns an append question
+could be answered with. It used to sit inside `assemble`, which `passes`
+must not import: `assemble` imports `passes.types` in three of its own
+modules, so reaching back the other way makes the two packages import each
+other. That does not raise today -- `passes.types` is a leaf that happens
+to be loaded by the time the cycle closes -- which is the argument for
+moving rather than against it: an import graph that holds on load order
+holds until someone reorders it, and a leaf both packages read belongs
+under neither. It imports sqlglot and nothing of ours, so anything can
+import it.
+"""
 
 from __future__ import annotations
 
@@ -31,7 +46,8 @@ def known_projections(
     match. `emit.example` reads the list for the opposite purpose -- to name
     every column of a row -- and must honour the flag, since a list missing
     one of the row's columns describes a narrower table than the model
-    builds.
+    builds. `tier2._projected_columns` reads it to fill a column picker and
+    honours both flags for that same reason.
 
     None means the body couldn't be parsed as a query at all -- should not
     happen for an append draft's body (always exactly the INSERT's own

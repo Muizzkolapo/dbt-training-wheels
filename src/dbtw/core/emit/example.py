@@ -20,10 +20,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from dbtw.core.assemble.projections import known_projections
 from dbtw.core.assemble.types import AssembledModel
 from dbtw.core.naming import same_identifier
 from dbtw.core.passes.types import Decision, statement_index
+from dbtw.core.projections import known_projections
 
 Row = tuple[str, ...]
 

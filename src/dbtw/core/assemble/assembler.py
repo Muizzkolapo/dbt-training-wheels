@@ -8,7 +8,6 @@ from collections.abc import Mapping
 from typing import Literal
 
 from dbtw.core.assemble.layers import layer_roles, role_for
-from dbtw.core.assemble.projections import known_projections
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.resolve import resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
@@ -31,6 +30,7 @@ from dbtw.core.passes.types import (
     var_option,
     verify_option,
 )
+from dbtw.core.projections import known_projections
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
 # is always tried first by the caller; this is the order the remaining roles
