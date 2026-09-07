@@ -209,12 +209,15 @@ class SchemaTest:
     `test` is the dbt test's own name, and it is copied from the `Option`
     that offered it (`Option.declares_test`) rather than spelled at the
     point a test is recorded: nothing can then declare a test that no
-    question ever put on the table.
+    question ever put on the table. It carries the same `Literal` as that
+    field, one test wide, because `render_schema_yaml` reasons from exactly
+    that to skip merging two entries for one column -- a claim that was
+    written before this annotation existed and was not true of `str`.
     """
 
     model: str
     column: str
-    test: str = "unique"
+    test: Literal["unique"] = "unique"
 
 
 @dataclass(frozen=True, slots=True)

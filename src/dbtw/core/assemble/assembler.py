@@ -343,9 +343,17 @@ def _upgrade_to_merge(
     offered it. This Decision is what the next screen renders, so an option
     dropped here is an answer that vanishes the moment any other answer is
     applied -- unreachable for every caller but the one that never saw the
-    first result. It is also what keeps `chosen` answerable when the answer
+    first result. It is also what keeps `chosen` accounted for when the answer
     was the checked one: a `chosen` naming an option the question does not
     offer reads as an answer nobody could have given.
+
+    "Accounted for", not "answerable": these rewritten labels name the key
+    ("merge on order_id, checked on every run") while the pristine question
+    `answers` are validated against spells the same options without one, so
+    re-sending a label read off THIS Decision is refused. That is a real
+    boundary, pinned by
+    `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`
+    and closed by giving `Option` a stable kind so no caller matches on prose.
     """
     merge_answer = merge_option(keys)
     # dbt's built-in `unique` test checks one column, so the checked answer
@@ -761,7 +769,24 @@ def _apply_unique_key(
                     if answered.option.declares_test:
                         # Offered only for a single-column key, since that is
                         # all dbt's built-in test can check.
-                        assert len(answered.keys) == 1
+                        #
+                        # A raise, not an assert, and for the reason the
+                        # writer's duplicate-source check gives: `python -O`
+                        # strips an assert, and what an assert leaves behind
+                        # here is the worst outcome available -- a test
+                        # declared on keys[0] alone, recording a single-column
+                        # claim the user never made, written to disk beside a
+                        # model merged on more. `_incremental_answers` refuses
+                        # a multi-column checked answer before anything is
+                        # applied, so this is unreachable; that is why it is a
+                        # bug rather than a usage error when it is reached.
+                        if len(answered.keys) != 1:
+                            raise MulticolumnCheckedAnswerError(
+                                f"{model.name} took a checked answer naming "
+                                f"{_keys_str(answered.keys)}; dbt's unique test checks one "
+                                "column, and _incremental_answers refuses more than one "
+                                "before applying anything, so reaching here is a dbtw bug."
+                            )
                         index = _find_incremental_decision_index(
                             decisions, model.source_indices, merge_option(model.unique_key).label
                         )
@@ -969,6 +994,21 @@ class UnknownAnswerError(ValueError):
     them is refused here. A caller that stages uploads (a web layer, say) must
     give a conversion one durable path and reuse it across runs, not copy the
     file somewhere new each time an answer comes back.
+    """
+
+
+class MulticolumnCheckedAnswerError(ValueError):
+    """A checked answer reached application naming more than one column.
+
+    Unreachable: `_incremental_answers` refuses a multi-column checked answer
+    before any of them are applied, so this guards the gap between that gate
+    and the code that trusts it. Unlike `UnknownAnswerError` it is NOT a usage
+    error and is deliberately absent from the CLI's `_USAGE_ERRORS` -- no
+    input produces it, so reaching it means a dbtw bug and should surface as
+    one. A raise rather than an assert because `python -O` strips asserts,
+    and what silence leaves here is a `unique` test declared on one column of
+    a key made of several: a claim about the user's data that the user never
+    made, written to disk.
     """
 
 

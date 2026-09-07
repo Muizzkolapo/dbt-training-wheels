@@ -6,7 +6,7 @@ from tests.unit.assemble.helpers import context_for, convert
 
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import ProjectContext, SourceInfo, read_project
-from dbtw.core.emit import DuplicateSourceEntryError, emit
+from dbtw.core.emit import DuplicateSourceEntryError, OrphanSchemaTestError, emit
 from dbtw.core.passes import Answer, SchemaTest, verify_option
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
@@ -498,12 +498,57 @@ def test_the_moved_sources_file_says_why_it_moved(tmp_path):
 
     (moved,) = [d for d in result.decisions if d.key.startswith("emit.sources_placed")]
     assert "models/staging/sources.yml" in moved.reason
-    assert "sources" in moved.action
-    # The project's own file is not what pushed ours aside here.
-    assert "already" not in moved.reason.split("this conversion")[0]
+    # The clause naming what holds the ordinary name, specifically -- not just
+    # the word "sources", which the action template always contains.
+    assert "holds the tests this conversion declares for sources" in moved.action
+    # The project declares no sources at all here, so blaming it would describe
+    # a conflict that did not happen.
+    assert "the target project already uses" not in moved.action
+    assert "replace their file" not in moved.reason
 
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert moved.action in report
+
+
+def test_the_decision_names_both_holders_when_a_model_and_the_project_share_the_path(tmp_path):
+    """`with_sources` declares models/staging/sources.yml, and a model named
+    `sources` puts its test file at that same path. Two different things hold
+    the ordinary name, for two different reasons -- one would cost the user
+    their own declarations on `cp -r`, the other would cost them the test they
+    just chose, inside out_dir, before they copied anything. A Decision naming
+    only one of them describes half of what happened.
+    """
+    ctx = read_project(FIXTURES / "with_sources")
+    change = _named_model_change(
+        "sources",
+        "models/staging/sources.sql",
+        sources=(SourceEntry(source_name="raw", schema="raw", table="widgets"),),
+        tests=(SchemaTest("sources", "order_id"),),
+    )
+
+    result = emit(change, ctx, tmp_path)
+
+    (moved,) = [d for d in result.decisions if d.key.startswith("emit.sources_placed")]
+    assert "declares sources there" in moved.reason
+    assert "tests for sources" in moved.reason
+
+    # And both files survive, under names of their own.
+    schema_doc = yaml.safe_load((tmp_path / "models" / "staging" / "sources.yml").read_text())
+    assert "models" in schema_doc
+    assert (tmp_path / "models" / "staging" / "sources_dbtw.yml").is_file()
+
+
+def test_a_test_naming_a_model_this_change_does_not_carry_is_refused(tmp_path):
+    """Dropping it silently is the failure: the model loop simply never asks
+    for it, so no .yml is written -- while the report goes on counting it, and
+    says `Tests: 1` beside an out_dir holding none. Nothing upstream can
+    produce this today, which is exactly why it is a bug when it appears, and
+    the same reason DuplicateSourceEntryError raises rather than asserts.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    with pytest.raises(OrphanSchemaTestError, match="stg_ghost"):
+        emit(_change(tests=(SchemaTest("stg_ghost", "order_id"),)), ctx, tmp_path)
+    assert list(tmp_path.rglob("*")) == []  # refused before anything was written
 
 
 def test_no_move_when_the_colliding_model_has_no_test(tmp_path):

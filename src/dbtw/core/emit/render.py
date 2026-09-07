@@ -104,12 +104,13 @@ def render_schema_yaml(tests: Sequence[SchemaTest]) -> str:
 
     One column entry per test, not merged by column, the way
     `render_sources_yaml` merges tables under one source. Two `SchemaTest`s
-    naming the same column would need that kind of merge into a single
-    `tests: [...]` list, but it cannot happen today: `SchemaTest.test` is
-    typed `Literal["unique"]` (mirroring `Option.declares_test`), the only
-    test this engine can offer, so no two entries can ever differ only in
-    which test they declare for one (model, column) pair. Widen that Literal
-    when a second test is offered, and build the merge then.
+    naming the same (model, column) would render two `columns:` entries under
+    one name, which dbt rejects, so the merge would be needed the moment two
+    could exist. Two cannot: `SchemaTest.test` is `Literal["unique"]`,
+    mirroring `Option.declares_test`, and `assemble` records at most one test
+    per model -- one per branch of its own loop over its own models, and a
+    model takes one branch. Widen that Literal, or record a second test for
+    one model, and this needs the merge first.
     """
     if not tests:
         return ""

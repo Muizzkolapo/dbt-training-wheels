@@ -10,6 +10,7 @@ from dbtw.core.emit.report import render_report
 from dbtw.core.emit.writer import (
     DuplicateSourceEntryError,
     EmitResult,
+    OrphanSchemaTestError,
     UnsafeOutputPathError,
     emit,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "DuplicateSourceEntryError",
     "EmitResult",
     "Example",
+    "OrphanSchemaTestError",
     "UnsafeOutputPathError",
     "emit",
     "render_model",

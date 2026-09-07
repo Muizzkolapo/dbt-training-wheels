@@ -60,6 +60,21 @@ class DuplicateSourceEntryError(ValueError):
     """
 
 
+class OrphanSchemaTestError(ValueError):
+    """A SchemaTest names a model this change does not carry.
+
+    Unreachable through the pipeline: `assemble` records a test only inside
+    the loop over its own models, naming the model it is standing on, and
+    settles final names before that loop begins. Raising rather than
+    dropping, for the same reason `DuplicateSourceEntryError` raises: the
+    model loop simply never asks for an orphan's file, so what silence buys
+    is a run that writes no .yml and a report that counts one anyway --
+    `Tests: 1` beside an out_dir holding none. Not in the CLI's
+    `_USAGE_ERRORS`: no input can produce it, so reaching it is a dbtw bug
+    and should surface as one.
+    """
+
+
 class UnsafeOutputPathError(ValueError):
     """A model's path would resolve outside out_dir. Input-driven — the model
     name came from the source SQL (e.g. a quoted identifier like
@@ -84,12 +99,25 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResul
         sources_rel, placement = _sources_placement(change, ctx)
 
     # Grouped once, up front, rather than filtered per model in the loop
-    # below: a SchemaTest naming a model absent from this dict is exactly the
-    # caller bug render_schema_yaml refuses loudly if two models' tests ever
-    # reach one call -- this grouping is what keeps that from happening.
+    # below, so that `render_schema_yaml` is never handed two models' tests in
+    # one call -- the caller bug it refuses loudly.
+    #
+    # Checked here too, and before anything is written: a test naming a model
+    # this change does not carry would be dropped by the loop below without a
+    # word, since the loop asks each model for its tests and no model asks for
+    # an orphan's. The report counts `change.tests` regardless, so the silence
+    # costs a run that says `Tests: 1` over an out_dir with no .yml in it.
     tests_by_model: dict[str, list[SchemaTest]] = {}
     for test in change.tests:
         tests_by_model.setdefault(test.model, []).append(test)
+    orphans = sorted(set(tests_by_model) - {model.name for model in change.models})
+    if orphans:
+        raise OrphanSchemaTestError(
+            f"change.tests names {_listed(orphans)}, which change.models does not "
+            "carry, so no file would be written for the test(s) and the report "
+            "would count them anyway. A test is recorded against the model it was "
+            "chosen for; one naming no model is a dbtw bug."
+        )
 
     for model in change.models:
         model_path = _safe_join(out_dir, model.path)
@@ -329,7 +357,31 @@ def _sources_placement(
         )
 
     named_ours = _listed(sorted(f"{name}.{table}" for name, table in ours))
-    if at_preferred:
+    model = model_yml_at.get(preferred, "")
+    if at_preferred and model:
+        # Two different things hold the ordinary name, for two different
+        # reasons, and a Decision naming one of them describes half of what
+        # happened. The project's file would be lost on `cp -r`; the tests
+        # would be lost here, in out_dir, before anything was copied at all.
+        named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
+        held = (
+            "which the target project already uses and which also holds the tests "
+            f"this conversion declares for {model}"
+        )
+        why = (
+            f"{preferred} is taken twice over: "
+            f"{_holds(preferred, declared_at, model_yml_at)}. The project's file there "
+            f"declares {named_theirs}; this conversion declares {named_ours} as sources. "
+            "The sources file is written after the models, so putting ours at that path "
+            f"would overwrite the tests for {model} in this output directory, and then "
+            "replace the project's declarations as well once the directory is copied "
+            f"across. Ours is a separate file instead: the tests for {model} keep their "
+            "file here, and the project keeps its own. dbt reads them all — its "
+            "duplicate check is per source and table, so two files may declare the same "
+            "source name as long as the tables differ, and this conversion skips every "
+            "table the project already declares."
+        )
+    elif at_preferred:
         named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
         held = "which the target project already uses"
         why = (
@@ -344,7 +396,6 @@ def _sources_placement(
             "keep one file."
         )
     else:
-        model = model_yml_at[preferred]
         held = f"which holds the tests this conversion declares for {model}"
         why = (
             f"a model's schema file takes the model's own name, so {preferred} is "
