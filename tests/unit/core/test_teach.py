@@ -59,14 +59,68 @@ def test_the_four_commands_are_defined_and_related_to_each_other():
     assert _mentions(by_name["dbt build"].plain, "test")
 
 
+# The ordering claim, pinned by what the definition must *say* rather than by
+# what it may not. A blacklist cannot carry this fact: a blind review rewrote
+# `dbt test` to "it reads tables that have not been written yet: it tells you
+# a table would hold bad data after the check runs" -- the exact reversal 3/5
+# personas got wrong -- and every test passed, because the word "after" was
+# still in the string and no banned word had been used.
+#
+# `have|has|... already ... written` and not a bare search for "already": the
+# verb has to sit directly against it, so "have *not* already been written"
+# does not match either.
+_ALREADY_WRITTEN = re.compile(
+    r"\b(?:have|has|had|is|are|was|were)\s+already\s+(?:been\s+)?written\b", re.IGNORECASE
+)
+_CANNOT_UNDO = re.compile(
+    r"\b(?:cannot|can ?not|can't|could not|does not|do not|will not|never)\s+"
+    r"(?:\w+\s+){0,2}undo\b",
+    re.IGNORECASE,
+)
+
+
 def test_a_test_is_described_as_reporting_not_blocking():
     """3/5 could not tell whether a failing check stops the write. It does
-    not: it evaluates when separately invoked, after the write. No wording
-    here may imply otherwise."""
+    not: it evaluates when separately invoked, after the write.
+
+    This is the one sentence on the branch carrying that fact, so it is
+    pinned by what it states, not only by what it avoids. What the positive
+    assertions buy: the mechanism cannot be removed or reversed in place
+    while incidental words survive. What they do not buy, and no regex over
+    prose can: a definition that states the mechanism correctly and then
+    contradicts it in a further sentence. `_HOLDS_BACK` below is the cheap
+    half of that, and the `before` check is one phrasing of it, not the
+    class.
+    """
     (test_term,) = [term for term in GLOSSARY if term.name == "dbt test"]
-    assert _mentions(test_term.plain, "after")
-    for forbidden in ("stops", "prevents", "blocks", "rejects"):
-        assert forbidden not in test_term.plain.lower()
+    plain = test_term.plain
+    assert _ALREADY_WRITTEN.search(plain), plain
+    assert _CANNOT_UNDO.search(plain), plain
+    assert _mentions(plain, "after")
+    # Nothing in a true description of this command needs to put the check
+    # ahead of the write, so the word is refused here rather than reasoned
+    # about. One phrasing closed, not the class -- see the docstring.
+    assert "before" not in plain.lower(), plain
+
+
+def test_the_ordering_check_rejects_the_reversal_it_exists_to_catch():
+    """The reversal a blind review found surviving, verbatim, beside the
+    affirmative form it replaced. A check matching both would be no check,
+    and this is where that is proven rather than assumed."""
+    reversed_claim = (
+        "it reads tables that have not been written yet: it tells you a table "
+        "would hold bad data after the check runs, and it cannot undo the write."
+    )
+    truthful = (
+        "it reads tables that have already been written: it tells you a table "
+        "contains bad data after that data is in it, and it cannot undo the write."
+    )
+    assert _ALREADY_WRITTEN.search(truthful)
+    assert not _ALREADY_WRITTEN.search(reversed_claim)
+    # The negation cannot be smuggled in beside the word the check looks for.
+    assert not _ALREADY_WRITTEN.search("tables that have not already been written")
+    assert _CANNOT_UNDO.search(truthful)
+    assert not _CANNOT_UNDO.search("and a failing check can undo the write")
 
 
 # Stems, not the four plural forms the brief listed: "it does not stop the
@@ -74,7 +128,20 @@ def test_a_test_is_described_as_reporting_not_blocking():
 # exists to forbid. Swept over the whole glossary rather than `dbt test`
 # alone, because the constraint is that no wording *anywhere* may imply a
 # check holds a write back.
-_HOLDS_BACK = re.compile(r"\b(stop|prevent|block|reject|refuse|halt|abort)\w*", re.IGNORECASE)
+#
+# `hold` and `keep` are here because a blind review got both past the first
+# list -- "a failure holds the write back", "it keeps the bad rows out" --
+# and `hold` is the stem this sweep's own test is named after. They are
+# deliberately over-broad: they also refuse "a table holds bad data" and
+# "dbt keeps no data of its own", which are true sentences. That is the
+# trade taken on purpose. An over-broad stem costs a rewording, caught at
+# the moment the definition is written; a missing one costs a wrong fact
+# shipped to the reader who cannot check it. Five definitions were reworded
+# to take it.
+_HOLDS_BACK = re.compile(
+    r"\b(stop|prevent|block|reject|refuse|halt|abort|hold|keep|forbid|deny|veto|guard)\w*",
+    re.IGNORECASE,
+)
 
 
 def test_no_definition_says_a_check_holds_a_write_back():
@@ -91,6 +158,14 @@ def test_the_holds_back_check_is_able_to_fail():
     pass for every glossary, including one that said the wrong thing."""
     assert _HOLDS_BACK.findall("a failing check prevents the write")
     assert _HOLDS_BACK.findall("it will stop the model being written")
+    # The two paraphrases a blind review found surviving the first stem list.
+    assert _HOLDS_BACK.findall("a failure holds the write back until you fix it")
+    assert _HOLDS_BACK.findall("it keeps the bad rows out")
+    # The brief's four exact words, proven subsumed here rather than
+    # re-asserted against the glossary, where the sweep already covers them
+    # and a second loop could never fail on its own.
+    for forbidden in ("stops", "prevents", "blocks", "rejects"):
+        assert _HOLDS_BACK.findall(f"a failing check {forbidden} the write"), forbidden
     assert not _HOLDS_BACK.findall("it reports what it found afterwards")
 
 
@@ -102,6 +177,20 @@ def test_the_words_the_personas_could_not_read_are_defined(name: str):
     assert name in {term.name for term in GLOSSARY}
 
 
+# The denial has to attach an indefinite article to the thing being denied:
+# "not *a* deployment environment" is a denial of the category, while "not
+# *the* production environment" is a denial of one environment and leaves
+# staging as another -- which is the misreading. A blind review got the looser
+# form ("The staging environment, not the production environment.") past the
+# first version of this.
+#
+# The residual limit, which no regex closes: "not a production environment,
+# but the staging one" would still pass. What is pinned is that the sentence
+# denies the category, not that nothing elsewhere in the definition re-asserts
+# it.
+_DENIES_THE_CATEGORY = re.compile(r"\b(?:not|never)\s+an?\s+[^.]{0,30}\benvironment\b")
+
+
 def test_staging_is_not_defined_as_an_environment():
     """A backend engineer read it as staging-vs-production and finished the
     walk still wrong about it. Asserting the word `environment` appears is
@@ -109,10 +198,16 @@ def test_staging_is_not_defined_as_an_environment():
     the denial has to be the thing that is pinned."""
     (staging,) = [term for term in GLOSSARY if term.name == "staging"]
     assert _mentions(staging.plain, "layer")
-    denied = re.search(
-        r"\b(not|never|nothing to do with)\b[^.]{0,80}\benvironment\b", staging.plain
+    assert _DENIES_THE_CATEGORY.search(staging.plain), staging.plain
+
+
+def test_the_environment_denial_check_is_able_to_fail():
+    assert _DENIES_THE_CATEGORY.search("A layer of models, not a deployment environment.")
+    # Verbatim, the looser form a blind review got past the first version.
+    assert not _DENIES_THE_CATEGORY.search(
+        "The staging environment, not the production environment."
     )
-    assert denied, staging.plain
+    assert not _DENIES_THE_CATEGORY.search("The environment models are deployed into.")
 
 
 def test_every_jargon_word_is_defined_by_exactly_one_term():
@@ -219,8 +314,10 @@ def test_terms_in_finds_only_the_terms_a_string_uses():
     """Exact, not a membership check: a `terms_in` that returned the whole
     glossary would satisfy "materialized is in there" and is precisely the
     round-1 behaviour the walkthroughs found does not work."""
+    # One assertion, not two: the membership check this replaced -- `"dbt
+    # build" not in _names(...)` -- is a logical consequence of the exact list
+    # above it, and no implementation can fail one while passing the other.
     assert _names("this model is materialized as a table") == ["materialized"]
-    assert "dbt build" not in _names("this model is materialized as a table")
 
 
 def test_terms_in_finds_a_term_by_the_spelling_it_actually_appears_as():
@@ -261,11 +358,24 @@ def test_terms_in_finds_nothing_in_text_that_uses_none_of_the_words():
     assert terms_in("the rows already in the table stay where they are") == ()
 
 
-def test_a_command_is_not_found_inside_a_longer_word():
-    """The commands are named with their `dbt ` prefix, which is also how
-    they are written everywhere this tool recommends one. Naming the term
-    `run` would define it over "rerun", "running" and "a run of the job"."""
+def test_no_term_is_named_a_word_that_occurs_inside_other_words():
+    """`terms_in` matches on plain substrings and has no word boundaries, on
+    purpose -- `materialized` has to be found inside `materialized='table'`,
+    and `ref(` inside a rewritten body. So this is a property of the
+    *glossary*, not of the matcher: it is safe only because every term is
+    named with a prefix (`dbt run`) or punctuation (`ref(`, `{{`) that does
+    not recur inside ordinary words. A term named `run` or `test` or `build`
+    would be found in every string below.
+
+    The limit, stated so nobody reads more into this than it says: substring
+    matching does return `incremental` for "incrementally", `Jinja` for
+    "Jinja2" and `staging` for "restaging". Those are the same word or a
+    near-enough one, so they are wanted; a bare `run` inside "rerun" is a
+    different word, and that is what the naming rule refuses.
+    """
     assert _names("rerun the staging models") == ["staging"]
+    assert _names("a nightly job that is still running") == []
+    assert _names("the team builds and tests every night") == []
 
 
 def test_no_term_s_spelling_is_hidden_inside_another_s():

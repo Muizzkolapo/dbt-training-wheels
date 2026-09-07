@@ -88,7 +88,7 @@ GLOSSARY: tuple[Term, ...] = (
         plain=(
             "Evaluates the checks declared in the .yml files beside your models and "
             "reports which ones failed. You invoke it yourself, and it reads tables "
-            "that have already been written: it tells you a table holds bad data "
+            "that have already been written: it tells you a table contains bad data "
             "after that data is in it, and it cannot undo the write. build is the "
             "command that does this alongside the writing, one model at a time."
         ),
@@ -121,7 +121,7 @@ GLOSSARY: tuple[Term, ...] = (
     Term(
         name="incremental",
         plain=(
-            "A way of keeping a table up to date by adding to what is in it rather "
+            "A way of bringing a table up to date by adding to what is in it rather "
             "than building it again from nothing. The first time, dbt writes the "
             "whole table; after that it writes only the rows the model's own filter "
             "selects, adding them or updating the rows they match. Quicker on a large "
@@ -134,7 +134,7 @@ GLOSSARY: tuple[Term, ...] = (
         plain=(
             "The column dbt matches rows on when it updates a table in place. A row "
             "the model produces whose value in that column is already in the table "
-            "replaces the row holding it; a row whose value is not there is added. "
+            "replaces the row that has it; a row whose value is not there is added. "
             "Name a column whose values repeat and rows that should have stayed "
             "separate overwrite one another."
         ),
@@ -143,7 +143,7 @@ GLOSSARY: tuple[Term, ...] = (
         name="staging",
         plain=(
             "A layer of models, not a deployment environment. `staging` here is the "
-            "folder holding the models that tidy raw tables one for one -- renamed "
+            "folder of models that tidy raw tables one for one -- renamed "
             "columns, corrected types, no joins -- so that the models built after "
             "them start from something clean. It has nothing to do with "
             "staging-versus-production: the same folder exists wherever the project "
@@ -206,7 +206,7 @@ GLOSSARY: tuple[Term, ...] = (
         name="warehouse",
         plain=(
             "The database the SQL actually runs in -- Snowflake, BigQuery, Redshift, "
-            "Postgres and so on. dbt keeps no data of its own: it sends SQL to the "
+            "Postgres and so on. dbt stores no data of its own: it sends SQL to the "
             "warehouse, and every table this conversion talks about lives there."
         ),
     ),
@@ -226,6 +226,16 @@ def terms_in(text: str) -> tuple[Term, ...]:
     of one and "dbt Jinja" inside another. Each term is returned once however
     many times it occurs, and each is matched independently of the others,
     which is sound only because no term's spelling nests inside another's.
+
+    Plain substrings, with no word boundary: `materialized` has to be found
+    inside `materialized='table'` and `ref(` inside a rewritten body, and a
+    boundary would lose both. What that costs is that a term named with a
+    bare common word would be found inside longer ones -- a `run` inside
+    "rerun", a `test` inside "latest". So it is safe because of how the terms
+    are *named*, not because of anything this function does: every one of
+    them carries a prefix (`dbt run`) or punctuation (`ref(`, `{{`) that does
+    not recur inside ordinary words. `terms_in` cannot enforce that, so
+    test_no_term_is_named_a_word_that_occurs_inside_other_words does.
     """
     haystack = text.lower()
     found: list[tuple[int, int, Term]] = []
