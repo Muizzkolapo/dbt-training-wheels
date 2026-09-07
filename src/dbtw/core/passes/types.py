@@ -355,27 +355,39 @@ def answer_for(decision: Decision, kind: str, columns: tuple[str, ...] = ()) -> 
     columns quietly dropped or quietly supplied is an answer the user did not
     give.
     """
-    for option in decision.options:
-        if option.kind != kind:
-            continue
-        if columns and not option.columns_prompt:
-            raise ValueError(
-                f"{decision.key}'s {kind!r} option ({option.label!r}) names its own "
-                f"key, so it takes no columns; got {columns!r}. Send columns only "
-                "for an option carrying a columns_prompt."
-            )
-        if option.columns_prompt and not columns:
-            raise ValueError(
-                f"{decision.key}'s {kind!r} option asks {option.columns_prompt!r} "
-                "and got no columns."
-            )
-        return Answer(label=option.label, columns=columns)
-    offered = ", ".join(sorted({option.kind for option in decision.options}))
-    raise ValueError(
-        f"{decision.key} offers no {kind!r} option "
-        f"(it offers {offered or 'no options at all'}); an answer of a kind the "
-        "question never asked is a caller bug."
-    )
+    matched = [option for option in decision.options if option.kind == kind]
+    if not matched:
+        offered = ", ".join(sorted({option.kind for option in decision.options}))
+        raise ValueError(
+            f"{decision.key} offers no {kind!r} option "
+            f"(it offers {offered or 'no options at all'}); an answer of a kind the "
+            "question never asked is a caller bug."
+        )
+    if len(matched) > 1:
+        # One kind is one answer, so this question cannot be answered by kind
+        # at all. Returning the first would choose between them by the order
+        # they were built in, and hand a user back an answer they did not
+        # give -- the same silent pick every other exit here refuses to make.
+        # No site builds such a question today; this is what keeps that a
+        # property rather than an assumption.
+        labels = ", ".join(repr(option.label) for option in matched)
+        raise ValueError(
+            f"{decision.key} offers {len(matched)} {kind!r} options ({labels}); one "
+            "kind is one answer, so a question offering two of a kind cannot be "
+            "answered by kind. This is an engine bug, not a caller bug."
+        )
+    (option,) = matched
+    if columns and not option.columns_prompt:
+        raise ValueError(
+            f"{decision.key}'s {kind!r} option ({option.label!r}) names its own "
+            f"key, so it takes no columns; got {columns!r}. Send columns only "
+            "for an option carrying a columns_prompt."
+        )
+    if option.columns_prompt and not columns:
+        raise ValueError(
+            f"{decision.key}'s {kind!r} option asks {option.columns_prompt!r} and got no columns."
+        )
+    return Answer(label=option.label, columns=columns)
 
 
 @dataclass(frozen=True, slots=True)

@@ -345,11 +345,17 @@ def test_answer_for_is_how_a_caller_re_sends_an_answer_across_a_rebuild():
     the wording the question it is answering actually offers, which is the
     translation the docstring above describes and no longer has to be done by
     hand.
+
+    The FIRST answer is sent as a literal `Answer`, the way every other test
+    in this file sends one, so that what this test exercises is only the
+    re-send. Routing the first answer through `answer_for` too would move
+    every failure onto that call and leave the assertions below unable to
+    fail on their own.
     """
     key = _key_for(APPEND_SQL, "revenue_events")
     pristine = _question_for(convert(APPEND_SQL), "revenue_events")
 
-    first = convert(APPEND_SQL, answers={key: answer_for(pristine, "merge_checked", ("order_id",))})
+    first = convert(APPEND_SQL, answers={key: Answer(verify_option().label, ("order_id",))})
     assert len(first.tests) == 1
 
     # The next screen renders the rewritten question, and the user takes the
@@ -357,14 +363,19 @@ def test_answer_for_is_how_a_caller_re_sends_an_answer_across_a_rebuild():
     rebuilt = _question_for(first, "revenue_events")
     (picked,) = [o for o in rebuilt.options if o.label == verify_option(("order_id",)).label]
     assert picked.kind == "merge_checked"
-    # `answer_for` is faithful to whichever Decision it is handed -- against
-    # the rebuilt one it returns the keyed label, which is exactly the answer
-    # the run above refuses. So the caller resolves against the pristine
-    # question, and gets the keyless spelling back for the same kind.
-    assert answer_for(rebuilt, picked.kind).label == picked.label
+
+    # One kind, two Decisions, two labels, and `answer_for` faithful to
+    # whichever it is handed. That these two come back DIFFERENT is the
+    # translation itself, and it is the whole reason a caller resolves
+    # against the pristine question rather than against the Decision in front
+    # of the user: an `answer_for` that returned the keyed spelling here --
+    # the likeliest wrong implementation, since the keyed one is what the
+    # screen showed -- passes every other assertion in this test and fails on
+    # this line.
+    displayed = answer_for(rebuilt, picked.kind)
+    assert displayed.label == picked.label
     resent = answer_for(pristine, picked.kind, ("order_id",))
-    assert resent.label != picked.label
-    assert resent == Answer(verify_option().label, ("order_id",))
+    assert resent.label != displayed.label
 
     second = convert(APPEND_SQL, answers={key: resent})
     assert second.models == first.models

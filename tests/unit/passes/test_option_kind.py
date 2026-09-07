@@ -9,16 +9,37 @@ wording, and `answer_for` turns that kind back into the label the Decision in
 front of it actually offers.
 """
 
-import pytest
+from typing import get_args
 
+import pytest
+from tests.unit.assemble.helpers import convert
+
+from dbtw.core.assemble import ProjectChange
 from dbtw.core.passes import (
+    Answer,
     Decision,
+    Option,
+    OptionKind,
     answer_for,
     append_option,
     inline_option,
     merge_option,
     var_option,
     verify_option,
+)
+
+# Every Option the five factories can build, both branches of each factory
+# that has two. The invariants below hold of all of them, so a sixth factory
+# -- or a sixth branch -- has to be added here to be covered.
+EVERY_OPTION = (
+    append_option(),
+    merge_option(),
+    merge_option(("order_id",)),
+    verify_option(),
+    verify_option(("order_id",)),
+    inline_option(),
+    var_option(),
+    var_option("cutoff"),
 )
 
 
@@ -42,17 +63,122 @@ def test_kind_survives_the_keyed_and_keyless_spellings():
     assert merge_option().label != merge_option(("order_id",)).label
 
 
-def test_the_kinds_one_question_offers_are_distinct():
-    """`answer_for` resolves a kind to one option, so two options on the same
-    question sharing a kind would make the answer it returns depend on the
-    order they were built in."""
-    for options in (
-        (append_option(), merge_option(), verify_option()),
-        (merge_option(("order_id",)), append_option(), verify_option(("order_id",))),
-        (inline_option(), var_option("cutoff")),
-    ):
-        kinds = [option.kind for option in options]
-        assert len(set(kinds)) == len(kinds), kinds
+def test_every_kind_the_literal_names_is_built_by_some_factory():
+    """`OptionKind` and the factories are two lists of the same set, and
+    nothing else makes them agree. A value in the Literal that no factory
+    builds is a kind a consumer can branch on and never reach; a factory
+    building one the Literal does not name would not type-check. This also
+    keeps `EVERY_OPTION` honest -- the parametrised invariants below assert
+    nothing if it stops covering the set.
+    """
+    assert {option.kind for option in EVERY_OPTION} == set(get_args(OptionKind))
+
+
+@pytest.mark.parametrize("option", EVERY_OPTION, ids=lambda o: f"{o.kind}-{o.label}")
+def test_the_checked_kind_is_exactly_the_kind_that_declares_a_test(option):
+    """`kind` and `declares_test` describe overlapping facts and are set
+    independently, and two different readers use them: the assembler decides
+    "this is the checked answer" from `declares_test` (eight read sites),
+    while a consumer picking an answer decides it from `kind`. The first
+    Option where they disagree is a screen saying "checked on every run"
+    beside a model with no `unique` test in its .yml, or a test written for an
+    answer the user was never shown.
+
+    Both directions, because both failures are real: a `merge_checked` option
+    that declares nothing, and any other option that declares something. This
+    is not an argument for collapsing the two fields -- `declares_test` names
+    *which* test, an axis documented to widen -- it is what keeps them from
+    drifting while they are correlated.
+    """
+    if option.kind == "merge_checked":
+        assert option.declares_test == "unique"
+    else:
+        assert option.declares_test == ""
+
+
+# The four scripts below reach every site that builds an option tuple: the
+# merge question (one-column and two-column keys) and the append question in
+# `passes/tier2.py`, and the variable question in `assemble/assembler.py`.
+# The three answered runs in `_option_sets_the_pipeline_builds` reach the
+# other two, which only an applied answer produces.
+_APPEND_SQL = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+_MERGE_SQL = (
+    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
+)
+_TWO_KEY_MERGE_SQL = (
+    "MERGE INTO dim_d AS t USING stg_d AS s ON t.a = s.a AND t.b = s.b "
+    "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
+)
+_VARIABLE_SQL = (
+    "DECLARE @cutoff DATE = '2024-01-01';\n"
+    "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders WHERE d >= @cutoff;\n"
+)
+
+
+def _incremental_key(change: ProjectChange) -> str:
+    """The key of the one incremental question in `change` -- the question
+    whose options include the append answer, which the variable question's
+    (inline/var) never do."""
+    (dec,) = [d for d in change.decisions if any(o.kind == "append" for o in d.options)]
+    return dec.key
+
+
+def _option_sets_the_pipeline_builds() -> dict[str, list[tuple[str, tuple[Option, ...]]]]:
+    """Every optioned Decision the real pipeline builds, per run.
+
+    Derived by running conversions rather than by writing option tuples out
+    here. Five sites build them and each is free to add an option; a list in
+    this file would keep passing while the questions it claims to mirror
+    changed underneath it. Two of those five shapes only exist after an
+    answer is applied, so three of these runs send one.
+    """
+    pristine = {
+        "append question": convert(_APPEND_SQL),
+        "merge question, one-column key": convert(_MERGE_SQL),
+        "merge question, two-column key": convert(_TWO_KEY_MERGE_SQL),
+        "variable question": convert(_VARIABLE_SQL, dialect="tsql"),
+    }
+    checked = Answer(verify_option().label, ("order_id",))
+    appended = Answer(append_option().label)
+    rebuilt = {
+        "append upgraded to a checked merge": convert(
+            _APPEND_SQL, answers={_incremental_key(pristine["append question"]): checked}
+        ),
+        "one-column merge downgraded to append": convert(
+            _MERGE_SQL,
+            answers={_incremental_key(pristine["merge question, one-column key"]): appended},
+        ),
+        # The shape with no checked option at all: dbt's unique test checks
+        # one column, so a two-column key never offers it.
+        "two-column merge downgraded to append": convert(
+            _TWO_KEY_MERGE_SQL,
+            answers={_incremental_key(pristine["merge question, two-column key"]): appended},
+        ),
+    }
+    return {
+        name: [(d.key, d.options) for d in change.decisions if d.options]
+        for name, change in (pristine | rebuilt).items()
+    }
+
+
+def test_no_question_the_pipeline_builds_offers_two_options_of_one_kind():
+    """The invariant `answer_for` rests on, checked against the questions the
+    passes and the assembler actually build. `answer_for` refuses a duplicated
+    kind rather than picking between them, so this is what says that refusal
+    stays unreachable -- and it is derived from real Decisions, so a site that
+    later adds a fourth option is checked rather than assumed.
+    """
+    by_run = _option_sets_the_pipeline_builds()
+    for run, sets in by_run.items():
+        assert sets, f"{run} produced no Decision with options, so it proves nothing"
+        for key, options in sets:
+            kinds = [option.kind for option in options]
+            assert len(set(kinds)) == len(kinds), f"{run}: {key} offers {kinds}"
+    # Non-vacuous: these runs have to have reached every kind, or the loop
+    # above is asserting distinctness over a subset of the questions.
+    reached = {option.kind for sets in by_run.values() for _, options in sets for option in options}
+    assert reached == set(get_args(OptionKind))
 
 
 def _question(*options):
@@ -142,6 +268,24 @@ def test_the_unoffered_kind_refusal_names_what_is_on_offer():
     message = str(refused.value)
     assert "append, merge, merge_checked" in message
     assert keyless.key in message
+
+
+def test_two_options_of_one_kind_are_refused_rather_than_resolved_by_order():
+    """One kind is one answer, so a question offering two of a kind cannot be
+    answered by kind at all. Returning the first would pick between them by
+    the order they were built in -- a silent choice in a function whose every
+    other exit says what is wrong, and one that would reach a user as an
+    answer they did not give. No site builds such a question today; that is
+    why this is refused rather than trusted.
+    """
+    doubled = _question(append_option(), merge_option(), merge_option(("order_id",)))
+    with pytest.raises(ValueError) as refused:
+        answer_for(doubled, "merge", ("order_id",))
+    message = str(refused.value)
+    assert "offers 2 'merge' options" in message
+    # Both named, so whoever has to fix the question can see which two.
+    assert merge_option().label in message
+    assert merge_option(("order_id",)).label in message
 
 
 def test_a_decision_with_no_options_refuses_every_kind():

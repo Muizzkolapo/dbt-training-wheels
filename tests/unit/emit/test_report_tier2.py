@@ -116,11 +116,15 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
                 line_end=9,
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
-                # Three options the renderer is handed, one of which ("full
-                # refresh") is not an answer this tool offers at all -- the
-                # point being that the renderer prints what it is given rather
-                # than anything it knows. `kind` is required on the record and
-                # never read by the renderer, so these are placeholders too.
+                # Three real answers under wording no pass produces, which is
+                # what lets this assert that the renderer prints the strings
+                # it is given verbatim rather than any wording it knows: no
+                # label or effect below is one a factory in `passes/types.py`
+                # builds. They are consistent triples, not placeholders --
+                # with `Option.kind` a closed set over the answers this tool
+                # offers, an Option standing for a non-answer is no longer
+                # something the record can express, so a made-up option is
+                # made up in its wording, not in its identity.
                 options=(
                     Option(
                         label="merge",
@@ -129,9 +133,9 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
                     ),
                     Option(label="append", kind="append", effect="re-inserts everything selected"),
                     Option(
-                        label="full refresh",
+                        label="merge, and check the key",
                         kind="merge_checked",
-                        effect="rebuilds the table from scratch",
+                        effect="the same merge, and dbt checks the chosen column",
                     ),
                 ),
             ),
@@ -146,7 +150,8 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
     # and its whole effect, so dropping either fails here.
     assert "    - merge (chosen) — updates matching rows and inserts the rest" in out
     assert "    - append — re-inserts everything selected" in out
-    assert "    - full refresh — rebuilds the table from scratch" in out
+    checked = "    - merge, and check the key — the same merge, and dbt checks the chosen column"
+    assert checked in out
     # Only the option that stands is marked as taken.
     assert out.count("(chosen)") == 1
 
