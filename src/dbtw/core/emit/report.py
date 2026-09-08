@@ -339,6 +339,20 @@ def _render_decisions(change: ProjectChange) -> str:
         for d in by_tier[tier]:
             location = f" ({d.source_file}:{d.line_start})" if d.source_file else ""
             block_lines.append(f"- **{d.action}** — {d.reason}{location}")
+            # Under the dbt-native reason it restates, never instead of it,
+            # and with the same "In plain words:" opening the plain question
+            # and each option's plain wording already use. That repeated
+            # opening is how a reader tells the two registers apart -- a
+            # heading naming the audience ("for beginners") would sort the
+            # readers instead of the sentences, and the dbt-native reader has
+            # as much use for the plain one as the other way round.
+            #
+            # Outside the `if d.question` branch below, because the Decision
+            # this exists for asks nothing: a rename is Tier 1 and carries no
+            # question at all. Rendering it inside would have left the whole
+            # cutover invisible.
+            if d.plain_reason:
+                block_lines.append(f"  - In plain words: {d.plain_reason}")
             if d.question:
                 block_lines.append(f"  - Question: {d.question}  Chose: {d.chosen}")
                 # The plain register, beside the dbt one rather than instead

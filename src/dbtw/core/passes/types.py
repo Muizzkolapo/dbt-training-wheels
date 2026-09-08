@@ -312,6 +312,14 @@ class Decision:
     source_file: str
     line_start: int
     line_end: int
+    # The same `reason`, assuming no dbt knowledge. Empty where none has been
+    # written yet, and a renderer meeting an empty one shows the dbt-native
+    # reason alone rather than inventing a plain one -- the two registers are
+    # for two readers, and a consumer that paraphrased is the drift both
+    # fields being engine-owned exists to prevent (spec section 11.4(b)).
+    # `plain_question` below is the same idea for `question`, and is empty on
+    # every Decision that asks none.
+    plain_reason: str = ""
     question: str = ""  # Tier-2 only: the design question posed to the user
     plain_question: str = ""  # the same question, assuming no dbt knowledge
     chosen: str = ""  # Tier-2 only: the label of the option that stands

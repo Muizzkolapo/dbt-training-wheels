@@ -98,6 +98,47 @@ def test_the_report_still_prints_the_dbt_register_beside_the_plain_one():
             assert option.effect in out, f"{d.key}/{option.label}'s effect is not rendered"
 
 
+def test_the_report_prints_the_plain_reason_under_the_dbt_one():
+    """Both registers for one Decision, in one block, in that order -- so a
+    reviewer reading the report sees them together and cannot let them drift
+    (spec section 11.4(b)).
+
+    Scoped to the Decision's own block rather than to the whole report: the
+    plain reason appearing *somewhere* on the page would pass just as well
+    for a renderer that printed every plain reason in a section of its own,
+    which is the arrangement this one exists not to be. The ordering
+    assertion is the half that says "under", and it fails for a renderer that
+    prints the plain sentence first and the dbt-native one below it.
+    """
+    out, change = _report()
+    restated = [d for d in change.decisions if d.plain_reason]
+    # Without this the loop is vacuous: no plain reasons, no assertions.
+    assert restated, "the fixture records no plain reason at all"
+    for d in restated:
+        block = _block(out, d.action)
+        assert d.reason in block, f"{d.key}'s dbt-native reason is not rendered"
+        assert f"  - In plain words: {d.plain_reason}" in block, f"{d.key}: {block}"
+        assert block.index(d.reason) < block.index(d.plain_reason), block
+
+
+def test_a_decision_with_neither_plain_register_renders_no_plain_line():
+    """The same rule the worked example and the answers heading follow: a
+    label with nothing under it reads as a rendering bug. Every Decision here
+    carries no plain reason, no plain question, and no option worded in
+    plain -- so nothing in its block may open one."""
+    out, change = _report()
+    silent = [
+        d
+        for d in change.decisions
+        if not d.plain_reason
+        and not d.plain_question
+        and not any(option.plain for option in d.options)
+    ]
+    assert silent, "every Decision in the fixture now carries a plain register"
+    for d in silent:
+        assert "In plain words:" not in _block(out, d.action), d.key
+
+
 def test_the_report_prints_a_worked_example_where_one_can_be_built():
     """stg_events projects named columns, so it has an example and the
     report must show it. The placeholder form is what proves it is ours and

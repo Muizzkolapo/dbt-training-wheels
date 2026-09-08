@@ -7,6 +7,10 @@ import heapq
 from collections.abc import Mapping
 from typing import Literal
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+
 from dbtw.core.assemble.layers import layer_roles, role_for
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.resolve import resolve_references
@@ -23,6 +27,7 @@ from dbtw.core.passes.types import (
     PassState,
     SchemaTest,
     Subject,
+    Tier,
     append_option,
     inline_option,
     merge_option,
@@ -38,15 +43,30 @@ from dbtw.core.projections import known_projections
 _FALLBACK_ROLE_ORDER = ("mart", "staging", "intermediate")
 
 
-def _decision(kind: str, name: str, action: str, reason: str) -> Decision:
+def _decision(
+    kind: str,
+    name: str,
+    action: str,
+    reason: str,
+    plain_reason: str = "",
+    # Tier 1 by default because most of what assemble does is mechanical --
+    # placement, naming, dependency order: unambiguous mappings applied
+    # without asking (RFC section 6). A Decision recording something this
+    # conversion could NOT settle from the SQL asks for tier 2 explicitly, and
+    # where a reader meets it turns on that: section 5.2 collapses Tier 1 into
+    # "mechanical changes, with a count", the right treatment for a rename and
+    # the wrong one for a gap the reader has to act on.
+    tier: Tier = 1,
+) -> Decision:
     return Decision(
         key=f"assemble.{kind}.{name}",
-        tier=1,
+        tier=tier,
         action=action,
         reason=reason,
         source_file="",
         line_start=0,
         line_end=0,
+        plain_reason=plain_reason,
     )
 
 
@@ -103,6 +123,37 @@ def _final_name(
     layer: LayerInfo | None,
     detections: Mapping[str, Detection],
 ) -> tuple[str, list[Decision]]:
+    """The name this draft's model file will carry, and the Decision that says
+    why it changed and what changing it leaves behind.
+
+    The convention half is the easy half. The half that matters is the
+    cutover: a rename here is not a migration. dbt writes the relation its own
+    model names, `draft_name` is not that relation, and nothing in the
+    generated project ever writes to it -- so the original stands exactly as
+    it was, and every query, job and dashboard still selecting from it goes on
+    selecting from it. A backend engineer in the persona walkthroughs read the
+    rename as a Django `RenameModel` ("atomic, data-preserving, references
+    updated for me") and reported that saying so plainly was the single piece
+    of expectation-management that stopped a real incident; two of five asked
+    for it unprompted (spec section 11.6).
+
+    Both registers state it, in their own terms, because they are for two
+    readers: the dbt-native one keeps the prefix evidence that answers "why
+    was it renamed at all", which the plain one has no use for.
+
+    Neither describes the escape hatch -- naming the model back to the
+    original so dbt adopts the table already there. Section 11.6 records that
+    as the scariest sentence on the page for both engineers, and it needs
+    mechanics this slice cannot supply. Saying what happens is this Decision's
+    job; offering a manoeuvre it cannot explain is not.
+
+    Deliberately materialization-free in both registers. This function is
+    handed a name and a layer, never a draft, so it cannot know whether dbt
+    will create a table or a view for the model -- and it does not need to:
+    the original is left alone either way. It also says what the conversion
+    does rather than what the original contains, so the sentence stays true
+    for a script whose target does not exist in the database yet.
+    """
     if layer is None or layer.prefix is None:
         return draft_name, []
     if draft_name.startswith(layer.prefix):
@@ -111,8 +162,122 @@ def _final_name(
     detection = detections.get(f"layer.{layer.name}.prefix")
     evidence = detection.evidence if detection is not None else f"{layer.prefix} prefix"
     action = f"renamed {draft_name} to {final_name} (prefix {layer.prefix!r} — {evidence})"
-    reason = f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}"
-    return final_name, [_decision("rename", draft_name, action, reason)]
+    reason = (
+        f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}. "
+        f"The rename is not a migration: dbt writes the relations its own models name, "
+        f"{draft_name} is not one of them, and nothing in this project writes to it — so "
+        f"dbt creates {final_name} beside it and leaves {draft_name} exactly as it is. "
+        f"Everything still selecting from {draft_name} goes on reading {draft_name} and "
+        f"never sees a row only {final_name} has; repointing those readers at {final_name} "
+        "is manual work this conversion has not done."
+    )
+    plain_reason = (
+        f"Renaming does not move the table. Afterwards there are two of them: {draft_name}, "
+        f"which this conversion leaves exactly as it is, and {final_name}, the new one, "
+        f"which is the only one anything here writes to. So anything pointed at "
+        f"{draft_name} -- a dashboard, a scheduled job, someone's saved query -- goes on "
+        f"reading {draft_name}, and never sees a row that only {final_name} has. Pointing "
+        f"those at {final_name} is a change someone has to make by hand."
+    )
+    return final_name, [_decision("rename", draft_name, action, reason, plain_reason=plain_reason)]
+
+
+def _incremental_filter_caveat(
+    draft: ModelDraft, final_name: str, dialect: str | None
+) -> list[Decision]:
+    """The Decision recording what an incremental model's copied-over filter
+    costs, or none where there is no filter to record.
+
+    Choosing merge fixes duplication and leaves the script's `WHERE` exactly
+    where it was. dbt does not narrow that condition between runs, and this
+    conversion deliberately does not wrap it in an `is_incremental()` guard --
+    nothing here can tell a watermark from an ordinary business filter, and
+    guarding the wrong one would change which rows the model produces
+    (`passes.tier2.append_pass` records the same refusal from the other side,
+    where it names the WHERE as evidence for a human to confirm). So the model
+    re-reads everything the condition matches on every run, and a row that
+    does not match it is selected by no run at all.
+
+    This is not a fix for that gap. It is the gap given a Decision, which is
+    the standing rule for anything this conversion leaves for the reader: it
+    was the warehouse engineer's single change request in both persona rounds,
+    the only finding to survive a full rebuild unaddressed, and until it is
+    closed the walk must not be silent about it (spec section 11.6).
+
+    Only for an incremental model. A `table` materialization is rebuilt from
+    nothing every run by design, so re-reading everything the filter matches
+    is what it is for -- nobody was promised a narrowing there and none is
+    withheld.
+
+    Emitted here rather than in the pass that built the draft, because the gap
+    belongs to the model and not to the statement's shape: an INSERT and a
+    MERGE whose USING subquery carries the same WHERE produce the same model
+    with the same cost, and a caveat raised only where the append pass happens
+    to look would cover half of them.
+
+    A body this cannot parse yields no Decision. That is a refusal, not a
+    fallback: with no readable condition there is nothing to name, and a
+    caveat about a filter it could not read would be worse than silence.
+    Every draft body reaching here is SQL a parser produced, so it should not
+    arise -- which is why it is not worth inventing a second, vaguer Decision
+    for.
+    """
+    if draft.incremental_strategy is None:
+        return []
+    try:
+        node = sqlglot.parse_one(draft.body, read=dialect)
+    except SqlglotError:
+        return []
+    if not isinstance(node, exp.Select):
+        return []
+    where = node.args.get("where")
+    if where is None:
+        return []
+    condition = where.this.sql(dialect=dialect)
+    action = (
+        f"caveat: {final_name} keeps the script's WHERE ({condition}) as a fixed filter, "
+        "so every run re-selects everything matching it"
+    )
+    reason = (
+        f"{final_name}'s filter is the script's own WHERE, copied verbatim: nothing here "
+        "can tell whether it was meant as this model's incremental watermark, and putting "
+        "an is_incremental() guard around a condition that was not would change which rows "
+        f"the model produces. So it stays a fixed condition — every run evaluates "
+        f"{condition} over the whole of this model's source rather than over what arrived "
+        "since the last run, so the work re-done grows with the table; and a row that does "
+        "not match it is selected by no run at all, however late it arrives (if the "
+        "condition names a date, a row turning up afterwards carrying an earlier one never "
+        f"enters {final_name}). Narrowing the filter, or guarding it, is a change to make "
+        "by hand."
+    )
+    plain_reason = (
+        f"The line deciding which rows this takes -- {condition} -- is your script's, "
+        'copied word for word and left alone. It does not mean "only what is new since '
+        'last time"; it means the same thing every time. So each run goes back over '
+        "everything that matches it, however much has piled up, and a row that does not "
+        "match is taken by no run at all, however late it turns up -- if that line "
+        "compares a date, a row arriving afterwards with an earlier date on it never gets "
+        "in. Changing the line so that it asks only for what is new is something someone "
+        "has to do by hand."
+    )
+    return [
+        _decision(
+            "incremental_filter",
+            draft.name,
+            action,
+            reason,
+            plain_reason=plain_reason,
+            # Tier 2, with every other caveat, rather than Tier 1 with the
+            # renames beside it. The mapping here is not the unambiguous kind
+            # Tier 1 names: whether the condition was this model's watermark
+            # or an ordinary business filter is exactly the intent this
+            # conversion cannot settle from the SQL. It also decides where a
+            # reader meets it -- section 5.2 collapses Tier 1 into a count,
+            # and a finding that survived two persona rounds unaddressed is
+            # not one to bury under "3 mechanical changes".
+            tier=2,
+        )
+    ]
 
 
 def _source_entries(
@@ -1152,6 +1317,12 @@ def assemble(
             )
         else:
             materialization = draft.materialization
+
+        # Into this draft's own list, not straight into new_decisions: a draft
+        # dropped for a final-name collision below has its file never written,
+        # and a caveat about the filter in a model nobody will read is one
+        # more thing the report says that is not there.
+        local_decisions.extend(_incremental_filter_caveat(draft, final_name, state.dialect))
 
         placed[draft_index] = AssembledModel(
             name=final_name,
