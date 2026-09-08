@@ -69,8 +69,18 @@ def test_the_four_commands_are_defined_and_related_to_each_other():
 # `have|has|... already ... written` and not a bare search for "already": the
 # verb has to sit directly against it, so "have *not* already been written"
 # does not match either.
+#
+# And the subject is anchored to the tables, because the phrase alone is not
+# the claim. A blind review moved it onto the .yml files -- "the checks
+# declared in the .yml files beside your models, which have already been
+# written ... the checks are evaluated first and only the models that pass are
+# written, so bad data never lands" -- which reverses the ordering outright
+# while satisfying an unanchored pattern, using no banned word, and keeping
+# "after" in the string. What has to be already written is the TABLE the check
+# reads.
 _ALREADY_WRITTEN = re.compile(
-    r"\b(?:have|has|had|is|are|was|were)\s+already\s+(?:been\s+)?written\b", re.IGNORECASE
+    r"\btables?\s+that\s+(?:have|has|had|are|were)\s+already\s+(?:been\s+)?written\b",
+    re.IGNORECASE,
 )
 _CANNOT_UNDO = re.compile(
     r"\b(?:cannot|can ?not|can't|could not|does not|do not|will not|never)\s+"
@@ -119,6 +129,17 @@ def test_the_ordering_check_rejects_the_reversal_it_exists_to_catch():
     assert not _ALREADY_WRITTEN.search(reversed_claim)
     # The negation cannot be smuggled in beside the word the check looks for.
     assert not _ALREADY_WRITTEN.search("tables that have not already been written")
+    # Nor can the phrase be relocated onto something else that is already
+    # written. A second blind review reversed the ordering outright while
+    # satisfying the unanchored form of this check: it hung "already been
+    # written" on the .yml files, used no banned word, and left "after" in the
+    # string. What has to be already written is the table the check reads.
+    assert not _ALREADY_WRITTEN.search(
+        "the checks declared in the .yml files beside your models, which have "
+        "already been written, and reports which ones failed. The checks are "
+        "evaluated first and only the models that pass are written, so bad data "
+        "never lands."
+    )
     assert _CANNOT_UNDO.search(truthful)
     assert not _CANNOT_UNDO.search("and a failing check can undo the write")
 
