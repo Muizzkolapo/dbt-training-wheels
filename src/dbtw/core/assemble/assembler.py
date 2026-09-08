@@ -162,22 +162,29 @@ def _final_name(
     detection = detections.get(f"layer.{layer.name}.prefix")
     evidence = detection.evidence if detection is not None else f"{layer.prefix} prefix"
     action = f"renamed {draft_name} to {final_name} (prefix {layer.prefix!r} — {evidence})"
+    # Each claim below sits in a clause of its own that names one table and
+    # carries no negation. That is not a style preference: the guards in
+    # `tests/unit/register_claims.py` read a claim only from such a clause,
+    # because a negation anywhere in the clause, or a second table named
+    # inside it, is how four adversarial reviews reversed these sentences
+    # while keeping every word. Splitting "goes on reading X, and never sees"
+    # at the comma is what keeps the positive half readable as the claim.
     reason = (
         f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}. "
-        f"The rename is not a migration: dbt writes the relations its own models name, "
-        f"{draft_name} is not one of them, and nothing in this project writes to it — so "
-        f"dbt creates {final_name} beside it and leaves {draft_name} exactly as it is. "
-        f"Everything still selecting from {draft_name} goes on reading {draft_name} and "
-        f"never sees a row only {final_name} has; repointing those readers at {final_name} "
-        "is manual work this conversion has not done."
+        f"The rename is not a migration: dbt writes the relations its own models name, and "
+        f"{draft_name} is not one of them, so dbt creates {final_name} beside it. "
+        f"{draft_name} is left exactly as it was, and nothing in this project writes to it "
+        f"again. Everything still selecting from {draft_name} goes on reading {draft_name}, "
+        f"and never sees a row only {final_name} has. Repointing those readers at "
+        f"{final_name} is manual work this conversion leaves to you."
     )
     plain_reason = (
-        f"Renaming does not move the table. Afterwards there are two of them: {draft_name}, "
-        f"which this conversion leaves exactly as it is, and {final_name}, the new one, "
-        f"which is the only one anything here writes to. So anything pointed at "
-        f"{draft_name} -- a dashboard, a scheduled job, someone's saved query -- goes on "
-        f"reading {draft_name}, and never sees a row that only {final_name} has. Pointing "
-        f"those at {final_name} is a change someone has to make by hand."
+        f"Renaming does not move the table. Afterwards there are two of them. {draft_name} "
+        f"is left exactly as it was, holding what it held before. {final_name} is the new "
+        f"one, and it is the only one anything here writes to. So a dashboard, a scheduled "
+        f"job or a saved query pointed at {draft_name} goes on reading {draft_name}, and "
+        f"never sees a row that only {final_name} has. Pointing each of those at "
+        f"{final_name} is a change someone has to make by hand."
     )
     return final_name, [_decision("rename", draft_name, action, reason, plain_reason=plain_reason)]
 
@@ -215,12 +222,27 @@ def _incremental_filter_caveat(
     with the same cost, and a caveat raised only where the append pass happens
     to look would cover half of them.
 
-    A body this cannot parse yields no Decision. That is a refusal, not a
-    fallback: with no readable condition there is nothing to name, and a
-    caveat about a filter it could not read would be worse than silence.
-    Every draft body reaching here is SQL a parser produced, so it should not
-    arise -- which is why it is not worth inventing a second, vaguer Decision
-    for.
+    Every WHERE in the body counts, wherever it sits. The first version of
+    this read `node.args["where"]` off the outermost SELECT, which is one
+    shape of four: a condition in a CTE, in a derived table, or on a UNION
+    branch produced no caveat at all, and the append Decision's own "the
+    SELECT already carries a WHERE" note reads the outer clause too, so those
+    readers were told nothing by anything. `find_all` walks the tree instead.
+    A filter this reaches that is not a source filter -- a correlated
+    predicate in a scalar subquery, say -- is still a fixed condition, and the
+    text says only what is true of any of them: it is the script's own, it is
+    the same on every run, and nothing narrows it. `test_incremental_filter`
+    pins all four shapes.
+
+    Runs against the RAW draft body and so must run before `rewrite_body`:
+    a body already rewritten into dbt Jinja does not parse, `parse_one` raises
+    `SqlglotError`, and this would silently record nothing. That is a real
+    dependency on the order in `assemble`, not an incidental one, and
+    test_a_body_already_rewritten_into_jinja_yields_no_caveat is what makes
+    reordering fail rather than go quiet. The refusal itself is right --
+    with no readable body there is no condition to quote, and a caveat about
+    a filter it could not read would be worse than silence -- but "should
+    never happen" is not a reason to leave it untested.
     """
     if draft.incremental_strategy is None:
         return []
@@ -228,37 +250,64 @@ def _incremental_filter_caveat(
         node = sqlglot.parse_one(draft.body, read=dialect)
     except SqlglotError:
         return []
-    if not isinstance(node, exp.Select):
+    if not isinstance(node, exp.Query):
         return []
-    where = node.args.get("where")
-    if where is None:
-        return []
-    condition = where.this.sql(dialect=dialect)
-    action = (
-        f"caveat: {final_name} keeps the script's WHERE ({condition}) as a fixed filter, "
-        "so every run re-selects everything matching it"
+    # Every WHERE in the body, not only one hanging off the outermost SELECT.
+    # A condition inside a CTE, inside a derived table, or on one branch of a
+    # UNION is fixed on exactly the same terms and costs exactly the same
+    # thing, and all three shapes are ordinary. Keying on the outer clause
+    # alone gave the reader of one of those scripts nothing at all -- not this
+    # caveat, and not the WHERE the append Decision names either, since that
+    # reads the outer clause too. Deduplicated, in the order sqlglot walks the
+    # tree: stable for a given body, but not source order.
+    conditions = tuple(
+        dict.fromkeys(where.this.sql(dialect=dialect) for where in node.find_all(exp.Where))
     )
+    if not conditions:
+        return []
+    named = "; ".join(conditions)
+    quoted = (
+        f"the script's WHERE ({named})"
+        if len(conditions) == 1
+        else f"the script's {len(conditions)} WHERE clauses ({named})"
+    )
+    action = (
+        f"caveat: {final_name} keeps {quoted} exactly as written, so every run re-selects "
+        "everything matching it"
+    )
+    # `is_incremental()` is named in this function's docstring and nowhere in
+    # the text below. It is a dbt word; the report's glossary heading promises
+    # to define the dbt words the report uses; and the glossary provably
+    # cannot take it, because every spelling of it contains `incremental`,
+    # which is already a term, and test_no_term_s_spelling_is_hidden_inside_
+    # another_s refuses a spelling nested inside another. Naming the category
+    # instead costs a dbt reader nothing they cannot recover from the model.
+    #
+    # The conditions are quoted once, in a clause of their own, and never
+    # inside a clause carrying a claim: a condition is arbitrary user SQL, and
+    # `WHERE x IS NOT NULL` would drop a negation into the clause that says
+    # every run re-reads the whole source.
     reason = (
-        f"{final_name}'s filter is the script's own WHERE, copied verbatim: nothing here "
-        "can tell whether it was meant as this model's incremental watermark, and putting "
-        "an is_incremental() guard around a condition that was not would change which rows "
-        f"the model produces. So it stays a fixed condition — every run evaluates "
-        f"{condition} over the whole of this model's source rather than over what arrived "
-        "since the last run, so the work re-done grows with the table; and a row that does "
-        "not match it is selected by no run at all, however late it arrives (if the "
-        "condition names a date, a row turning up afterwards carrying an earlier one never "
-        f"enters {final_name}). Narrowing the filter, or guarding it, is a change to make "
-        "by hand."
+        f"{final_name}'s filtering is the script's own, copied verbatim: {named}. Nothing "
+        "here can tell whether it was meant as this model's incremental watermark, and "
+        "narrowing a condition that was not meant as one would change which rows the model "
+        "produces. So no guard was written around it, and it stays a fixed condition: "
+        "every run evaluates it over the whole of this model's source rather than over "
+        "what arrived since the last run, so the work re-done grows with the table; and a "
+        "row that does not match is selected by no run at all, however late it arrives (if "
+        "the filtering compares a date, a row turning up afterwards carrying an earlier "
+        f"one never enters {final_name}). Narrowing the filtering, or guarding it, is "
+        "manual work this conversion leaves to you."
     )
     plain_reason = (
-        f"The line deciding which rows this takes -- {condition} -- is your script's, "
-        'copied word for word and left alone. It does not mean "only what is new since '
-        'last time"; it means the same thing every time. So each run goes back over '
+        f"The filtering that decides which rows this takes -- {named} -- comes from your "
+        'script, copied word for word and left alone. It does not mean "only what is new '
+        'since last time"; it means the same thing every time. So each run goes back over '
         "everything that matches it, however much has piled up, and a row that does not "
-        "match is taken by no run at all, however late it turns up -- if that line "
+        "match is taken by no run at all, however late it turns up -- if the filtering "
         "compares a date, a row arriving afterwards with an earlier date on it never gets "
-        "in. Changing the line so that it asks only for what is new is something someone "
-        "has to do by hand."
+        "in. Changing it so that it asks only for what is new is something someone has to "
+        "do by hand."
     )
     return [
         _decision(

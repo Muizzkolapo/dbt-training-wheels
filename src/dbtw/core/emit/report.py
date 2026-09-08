@@ -363,8 +363,17 @@ def _render_decisions(change: ProjectChange) -> str:
                 # consecutive lines in a list item into one paragraph, so an
                 # unbulleted continuation would run "Chose: append every row"
                 # straight into the plain question as a single sentence.
+                # One level deeper than the plain reason above, because it
+                # restates the Question line rather than the Decision's own
+                # bullet. Both opened at the same indent while a Decision
+                # could only carry one of them; a Decision carrying both --
+                # which nothing builds today and the caveats scheduled for a
+                # plain register will -- printed two identical labels as
+                # siblings, with nothing on the page saying which restated
+                # what. The indents now run 2/4/6 for reason, question, and
+                # option, matching what each one is under.
                 if d.plain_question:
-                    block_lines.append(f"  - In plain words: {d.plain_question}")
+                    block_lines.append(f"    - In plain words: {d.plain_question}")
                 # Every option, chosen one included, with the effect the
                 # engine wrote for it. A reader deciding whether to change
                 # the answer needs to know what the other one would do, and

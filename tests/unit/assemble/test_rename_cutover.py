@@ -15,51 +15,44 @@ existing table -- is deliberately not described here. Section 11.6 records it
 as the scariest sentence on the page for both engineers, and it needs
 mechanics this slice cannot supply.
 
-On the matching in this file: every assertion about the ORIGINAL table matches
-`events` as a whole word. `"events" in text` is satisfied by `"stg_events"`
-alone, so a sentence that names only the new table would pass a substring
-check while telling the reader nothing about the one left behind. That is the
-exact wrong-comparison this branch has already shipped once, and
-`test_the_original_is_matched_as_its_own_word_not_inside_the_new_name` is the
-proof that this file does not repeat it.
+Whether a register actually makes a claim is decided by
+`tests/unit/register_claims.py`, which is shared with the filter caveat's
+tests rather than copied into them: the first version of these two files
+defined the same manual-work vocabulary twice and ran it through two different
+checks, and the weaker of the two shipped. That module's docstring records why
+it works on clauses rather than on spans, and
+`tests/unit/test_register_claims.py` holds the texts that defeated the earlier
+versions.
 """
 
 from __future__ import annotations
 
-import re
-
-from tests.unit.assemble.helpers import convert
+from tests.unit.assemble.helpers import context_for, convert
 from tests.unit.passes.test_plain_register import JARGON
+from tests.unit.register_claims import (
+    LEFT_ALONE,
+    REPOINTING_IS_MANUAL,
+    STILL_READ,
+    names,
+)
 
 RENAMED = "CREATE TABLE events AS SELECT 1 AS id;\n"
 ALREADY_PREFIXED = "CREATE TABLE stg_events AS SELECT 1 AS id;\n"
 
-# `_` is a word character, so `\bevents` cannot begin inside `stg_events`.
-_ORIGINAL = re.compile(r"\bevents\b")
-
-# Positive claims the text has to make, as vocabularies rather than as a list
-# of words it may not use. A blacklist over ("moved", "replaces", ...) is
-# evaded by the first paraphrase -- "superseded by", "swapped for" -- and this
-# branch has twice shipped a blacklist that only ever met the words already
-# inside it. These say what the text must assert instead, which a paraphrase
-# of the wrong claim cannot satisfy at all. Both paraphrases are in the task
-# report's mutation table (M3, M4): the brief's blacklist passes them and
-# these fail them.
-#
-# `read` is deliberately absent from the second list: it occurs inside
-# "already", so it would match a sentence that says nothing about readers.
-_LEFT_ALONE = ("leaves", "left", "stays", "remains", "unchanged", "untouched", "as it is")
-_STILL_READ = ("reading", "reads", "pointed at", "points at", "selecting from", "selects from")
-_BY_HAND = ("by hand", "yourself", "someone has to", "manually", "manual")
-
-# A negation sitting between the table's name and the claim word reverses the
-# claim while leaving every word a plain search looks for in place: "events is
-# not left as it is" satisfies "does a sentence naming events contain
-# 'left'?". So a claim counts only where it is reachable from the name without
-# passing one of these. This is not decoration -- mutation M9 in the task
-# report is exactly that sentence, and it passed every guard in this file
-# before the tempering below was added.
-_NEGATION = r"(?:\bnot\b|\bnever\b|\bno\b|\bnothing\b|n't)"
+# R3 -- a reason that keeps the word "prefix" and drops both the prefix itself
+# and the detection evidence behind it. A blind review got it past
+# `assert "stg_" in reason and "prefix" in reason`, where the first half is
+# entailed by the `"stg_events" in reason` assertion on the line above it and
+# so was never testing anything. Held verbatim for the same reason the other
+# three defeats are held in tests/unit/test_register_claims.py.
+R3_REASON_WITHOUT_THE_EVIDENCE = (
+    "the staging layer's models all share a common prefix. The rename is not a migration: "
+    "dbt writes the relations its own models name, and events is not one of them, so dbt "
+    "creates stg_events beside it. events is left exactly as it was, and nothing in this "
+    "project writes to it again. Everything still selecting from events goes on reading "
+    "events, and never sees a row only stg_events has. Repointing those readers at "
+    "stg_events is manual work this conversion leaves to you."
+)
 
 
 def _rename(change):
@@ -67,59 +60,44 @@ def _rename(change):
     return decision
 
 
-def _sentences(text: str) -> list[str]:
-    return [part.strip() for part in re.split(r"(?<=[.;:])\s+", text) if part.strip()]
+def _prefix_convention():
+    """The prefix and the evidence for it, read off the real project rather
+    than spelled here. Authoring them would make this test agree with itself
+    instead of with what the assembler was handed."""
+    (detection,) = [d for d in context_for().detections if d.key == "layer.staging.prefix"]
+    assert detection.value and detection.evidence, detection
+    return detection.value, detection.evidence
 
 
-def _naming_the_original(text: str) -> list[str]:
-    """Every sentence of `text` that names the original table as its own word."""
-    return [sentence for sentence in _sentences(text) if _ORIGINAL.search(sentence)]
+def _keeps_the_convention(reason: str, prefix: str, evidence: str) -> bool:
+    """Whether `reason` still answers "why was it renamed at all".
 
-
-def _affirmed_of(text: str, table: str, vocabulary: tuple[str, ...]) -> list[str]:
-    """Every sentence of `text` affirming one of `vocabulary` of `table`: the
-    claim word reachable from that table's own name, in either order, without
-    a negation in between.
+    The prefix as the reason spells it (`repr`, since the sentence quotes it)
+    and the detection's own evidence string, each as its own value. Not
+    `"stg_" in reason`: that is entailed by the model's new name appearing
+    anywhere in the sentence, which is why R3 passed it.
     """
-    claim = "|".join(re.escape(word) for word in vocabulary)
-    pattern = re.compile(
-        rf"\b{table}\b(?:(?!{_NEGATION})[^.;:])*?(?:{claim})"
-        rf"|(?:{claim})(?:(?!{_NEGATION})[^.;:])*?\b{table}\b"
-    )
-    return [sentence for sentence in _sentences(text) if pattern.search(sentence.lower())]
-
-
-def _affirmed_of_the_original(text: str, vocabulary: tuple[str, ...]) -> list[str]:
-    return _affirmed_of(text, "events", vocabulary)
+    return repr(prefix) in reason and evidence in reason
 
 
 def test_the_original_is_matched_as_its_own_word_not_inside_the_new_name():
-    """The matcher every other assertion here depends on, shown to
+    """The matcher every assertion about the original depends on, shown to
     discriminate. The third assertion is the point: the substring check this
-    replaces cannot tell the two tables apart, so a text that named only the
-    new one would have passed it."""
-    assert _ORIGINAL.search("events keeps the rows it already has")
-    assert not _ORIGINAL.search("dbt creates stg_events and fills it")
+    replaces cannot tell the two tables apart, so a text naming only the new
+    one would have passed it."""
+    assert names("events keeps the rows it already has", "events")
+    assert not names("dbt creates stg_events and fills it", "events")
     assert "events" in "dbt creates stg_events and fills it"
 
 
-def test_a_claim_negated_between_the_name_and_the_claim_word_does_not_count():
-    """The tempering, shown to discriminate, on the sentence that motivated
-    it. The last assertion is the point: the plain word search this replaces
-    reads the negated sentence as making the claim."""
-    assert _affirmed_of_the_original("events, which this conversion leaves as it is", _LEFT_ALONE)
-    assert not _affirmed_of_the_original("events is not left as it is", _LEFT_ALONE)
-    assert "left" in "events is not left as it is"
-
-
 def test_the_plain_cutover_names_the_table_left_behind_as_well_as_the_new_one():
-    """Two tables, both named. A reader who is shown only `stg_events` learns
-    a new file exists and nothing about the one still standing beside it,
-    which is the half of the fact that causes the incident."""
+    """Two tables, both named. A reader shown only `stg_events` learns a new
+    file exists and nothing about the one still standing beside it, which is
+    the half of the fact that causes the incident."""
     plain = _rename(convert(RENAMED)).plain_reason
     assert plain, "the rename Decision carries no plain reason"
     assert "stg_events" in plain, plain
-    assert _ORIGINAL.search(plain), plain
+    assert names(plain, "events"), plain
 
 
 def test_the_plain_cutover_says_the_original_is_left_as_it_is_and_still_read():
@@ -127,23 +105,16 @@ def test_the_plain_cutover_says_the_original_is_left_as_it_is_and_still_read():
     ORIGINAL table rather than of the text as a whole -- a text asserting them
     about `stg_events` would be saying something else entirely."""
     plain = _rename(convert(RENAMED)).plain_reason
-    assert _naming_the_original(plain), plain
-    assert _affirmed_of_the_original(plain, _LEFT_ALONE), plain
-    assert _affirmed_of_the_original(plain, _STILL_READ), plain
+    assert LEFT_ALONE.asserted_in(plain), plain
+    assert STILL_READ.asserted_in(plain), plain
 
 
 def test_the_plain_cutover_says_repointing_the_readers_is_the_reader_s_own_work():
     """The consequence of the two claims above, and the one a reader acts on.
     Without it the text describes a situation and leaves the reader with no
-    reason to think it is theirs to resolve.
-
-    Required of the NEW table, because that is what the work is: pointing the
-    readers at `stg_events`. "...so nothing has to be changed by hand" carries
-    every word this looks for and says the opposite -- it is what mutation M4
-    in the task report produces -- and the same negation tempering the two
-    claims above use is what separates them."""
+    reason to think it is theirs to resolve."""
     plain = _rename(convert(RENAMED)).plain_reason
-    assert _affirmed_of(plain, "stg_events", _BY_HAND), plain
+    assert REPOINTING_IS_MANUAL.asserted_in(plain), plain
 
 
 def test_the_plain_cutover_uses_no_dbt_vocabulary():
@@ -178,16 +149,38 @@ def test_the_plain_cutover_does_not_offer_the_adopt_the_existing_table_manoeuvre
 def test_the_dbt_register_carries_the_cutover_without_losing_the_convention():
     """Both registers state the consequence; neither is the other's copy. The
     dbt-native one also has a second job the plain one does not -- saying why
-    the model was renamed at all -- and appending the cutover must not replace
+    the model was renamed at all -- and appending the cutover must not cost
     the prefix evidence that answers it."""
     decision = _rename(convert(RENAMED))
     reason = decision.reason
+    prefix, evidence = _prefix_convention()
     assert "stg_events" in reason, reason
-    assert _ORIGINAL.search(reason), reason
-    assert "stg_" in reason and "prefix" in reason, reason
-    assert _affirmed_of_the_original(reason, _LEFT_ALONE), reason
-    assert _affirmed_of_the_original(reason, _STILL_READ), reason
+    assert names(reason, "events"), reason
+    assert _keeps_the_convention(reason, prefix, evidence), reason
+    assert LEFT_ALONE.asserted_in(reason), reason
+    assert STILL_READ.asserted_in(reason), reason
+    # All three claims, of BOTH registers -- not the plain one alone. The
+    # filter caveat's tests already held both registers to their manual-work
+    # claim and this file held only the plain one, so reinstating "this
+    # conversion has not done" in the dbt reason passed the whole suite
+    # (mutation P4). That asymmetry between two files checking the same thing
+    # is what the shared claims module exists to remove.
+    assert REPOINTING_IS_MANUAL.asserted_in(reason), reason
     assert reason != decision.plain_reason
+
+
+def test_keeping_the_word_prefix_is_not_keeping_the_convention():
+    """R3, held as a pin. The reason it defeated the earlier assertion is that
+    `"stg_" in reason` is a strict consequence of `"stg_events" in reason` one
+    line above it -- the eighth non-discriminating guard this branch has
+    produced, in the file whose own docstring says it does not repeat that
+    mistake."""
+    prefix, evidence = _prefix_convention()
+    assert "prefix" in R3_REASON_WITHOUT_THE_EVIDENCE
+    assert "stg_" in R3_REASON_WITHOUT_THE_EVIDENCE
+    assert not _keeps_the_convention(R3_REASON_WITHOUT_THE_EVIDENCE, prefix, evidence)
+    # Not vacuous in the other direction: the shipped reason does keep it.
+    assert _keeps_the_convention(_rename(convert(RENAMED)).reason, prefix, evidence)
 
 
 def test_a_model_already_carrying_the_prefix_is_not_renamed_and_claims_no_cutover():

@@ -139,6 +139,25 @@ def test_a_decision_with_neither_plain_register_renders_no_plain_line():
         assert "In plain words:" not in _block(out, d.action), d.key
 
 
+def test_both_plain_restatements_on_one_decision_say_which_they_restate():
+    """A Decision carrying a plain reason AND a plain question renders two
+    lines opening with the same label. Nothing builds one today; the caveats
+    scheduled for a plain register will, and at the same indent the two read
+    as siblings with nothing saying which restates the reason and which the
+    question. The indent is what says it: 2 under the Decision's bullet, 4
+    under the Question line, 6 under an option."""
+    decision = dataclasses.replace(
+        _decision(), plain_reason="Two tables now, not one.", plain_question="Which one?"
+    )
+    block = _block(_hand_report(_model(), decision), "dim_customers becomes")
+    labelled = [line for line in block.splitlines() if "In plain words:" in line]
+    assert len(labelled) == 3, labelled  # reason, question, and the one option
+    indents = [len(line) - len(line.lstrip()) for line in labelled]
+    assert indents == [2, 4, 6], labelled
+    assert decision.plain_reason in labelled[0]
+    assert decision.plain_question in labelled[1]
+
+
 def test_the_report_prints_a_worked_example_where_one_can_be_built():
     """stg_events projects named columns, so it has an example and the
     report must show it. The placeholder form is what proves it is ours and
