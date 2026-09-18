@@ -25,9 +25,11 @@ fixture's own condition.
 
 from __future__ import annotations
 
+import pytest
 from tests.unit.register_claims import (
     LEFT_ALONE,
     NARROWING_IS_MANUAL,
+    NEGATION,
     NEVER_SELECTED,
     REPOINTING_IS_MANUAL,
     RESCAN,
@@ -192,3 +194,33 @@ def test_a_coordinated_clause_is_its_own_clause():
     split = clauses("it goes on reading events, and never sees a row only stg_events has")
     assert len(split) == 2, split
     assert "never" not in split[0], split
+
+
+# --- rule 3's vocabulary
+#
+# The module docstring says rule 3 "closes polarity in general rather than one
+# position at a time". The two pins above prove that for the two spellings four
+# adversarial reviews happened to produce -- "do not" and "is not" -- and
+# nothing asserted the rest. Narrowing NEGATION to `not` alone passed all 747
+# tests, so every other way English denies a thing was unheld: a rewording to
+# "events is never left as it is" would have counted as evidence that it is.
+
+
+@pytest.mark.parametrize(
+    "form", ["not", "never", "no", "none", "nothing", "nobody", "neither", "nor"]
+)
+def test_the_negation_vocabulary_covers_the_ordinary_ways_english_denies(form):
+    assert NEGATION.search(f"this leaves {form} room for doubt"), form
+
+
+@pytest.mark.parametrize("contraction", ["isn't", "doesn't", "won't", "can't"])
+def test_contracted_negations_are_recognised(contraction):
+    assert NEGATION.search(f"it {contraction} matter"), contraction
+
+
+def test_a_denial_spelled_never_is_not_evidence_either():
+    """The Claim-level form of the same gap: a second negation spelling,
+    beyond the two the pins carry, must disqualify its clause exactly as
+    "do not" does."""
+    assert LEFT_ALONE.asserted_in("this conversion leaves events exactly as it is")
+    assert not LEFT_ALONE.asserted_in("this conversion never leaves events as it is")
