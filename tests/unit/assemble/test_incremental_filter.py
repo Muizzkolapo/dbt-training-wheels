@@ -119,7 +119,7 @@ def test_the_caveat_says_narrowing_the_filter_is_the_reader_s_own_work():
         assert NARROWING_IS_MANUAL.asserted_in(register), register
 
 
-def test_neither_register_names_a_dbt_word_the_report_cannot_define():
+def test_neither_register_names_the_is_incremental_macro():
     """The escape from this gap is a dbt `is_incremental()` guard, and this
     conversion writes none. Naming the macro would put a dbt word into the
     report under a heading promising to define the dbt words the report uses
@@ -187,6 +187,54 @@ def test_a_model_filtered_twice_has_both_conditions_named():
     assert FILTER in caveat.reason, caveat.reason
     assert "event_id > 100" in caveat.reason, caveat.reason
     assert "2 WHERE clauses" in caveat.action, caveat.action
+
+
+# V1 -- a predicate that filters a lookup, not this model. Every row of
+# raw.events is still selected; a row the lookup has nothing for gets a null.
+# Reported as this model's filter, the caveat's own sentence -- "a row that
+# does not match is selected by no run at all" -- is contradicted by the model
+# file written beside it.
+CORRELATED_PREDICATE = (
+    "INSERT INTO events SELECT event_id,\n"
+    "  (SELECT max(v) FROM raw.lookup l WHERE l.event_id = e.event_id) AS v\n"
+    "FROM raw.events e;\n"
+)
+
+# V1b -- one filter, not two. The outer WHERE is the row filter and is
+# reported whole; the inner one is part of it.
+EXISTS_PREDICATE = (
+    "INSERT INTO events SELECT event_id, occurred_at FROM raw.events e\n"
+    "WHERE EXISTS (SELECT 1 FROM raw.orders o WHERE o.event_id = e.event_id);\n"
+)
+
+
+def test_a_predicate_that_filters_something_other_than_this_model_is_not_its_filter():
+    """V1. The scalar subquery's WHERE restricts the lookup it reads, and the
+    model returns every row of its own source either way -- with a null where
+    nothing matched. Naming it here put a sentence in the report that the
+    model file beside it contradicts, which is the one thing a Decision may
+    never do."""
+    change = convert(CORRELATED_PREDICATE)
+    ((model,),) = (change.models,)
+    # Not vacuous: the predicate really is in the model, and really is not a
+    # filter on it. Both halves are asserted so this cannot pass because the
+    # conversion produced something else.
+    assert model.incremental_strategy == "append"
+    assert "l.event_id = e.event_id" in model.body
+    assert not _caveats(change)
+
+
+def test_a_subquery_inside_a_row_filter_is_part_of_it_not_a_second_one():
+    """V1b. `WHERE EXISTS (SELECT ... WHERE ...)` is one filter. Counting the
+    inner clause as well reported "the script's 2 WHERE clauses" and named the
+    same restriction twice, the second time stripped of the EXISTS that gives
+    it its meaning. The count is derived, which is the rule -- it was derived
+    from the wrong set."""
+    caveat = _the_caveat(convert(EXISTS_PREDICATE))
+    assert "WHERE clauses" not in caveat.action, caveat.action
+    assert "EXISTS" in caveat.action, caveat.action
+    # The inner condition appears once, inside the EXISTS, and not again.
+    assert caveat.action.count("o.event_id = e.event_id") == 1, caveat.action
 
 
 def test_an_incremental_model_with_no_filter_gets_no_caveat():

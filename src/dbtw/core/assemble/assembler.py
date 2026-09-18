@@ -162,31 +162,103 @@ def _final_name(
     detection = detections.get(f"layer.{layer.name}.prefix")
     evidence = detection.evidence if detection is not None else f"{layer.prefix} prefix"
     action = f"renamed {draft_name} to {final_name} (prefix {layer.prefix!r} — {evidence})"
-    # Each claim below sits in a clause of its own that names one table and
-    # carries no negation. That is not a style preference: the guards in
-    # `tests/unit/register_claims.py` read a claim only from such a clause,
-    # because a negation anywhere in the clause, or a second table named
-    # inside it, is how four adversarial reviews reversed these sentences
-    # while keeping every word. Splitting "goes on reading X, and never sees"
-    # at the comma is what keeps the positive half readable as the claim.
+    # One fact per sentence, which is how these read best and also how they
+    # are checked: `tests/unit/register_claims.py` scopes a negation forward
+    # to the end of the sentence it sits in, so a sentence that denies one
+    # thing cannot also be read as asserting another. An earlier version of
+    # this comment asked future editors to place a comma where a test wanted
+    # one; that was the test's shape being wrong, and it has been fixed rather
+    # than accommodated.
+    #
+    # Neither register says what the original table CONTAINS, only what this
+    # conversion does to it: the sentence has to stay true for a script whose
+    # target does not exist in the database yet.
     reason = (
         f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}. "
-        f"The rename is not a migration: dbt writes the relations its own models name, and "
+        f"The rename is not a migration. dbt writes the relations its own models name, and "
         f"{draft_name} is not one of them, so dbt creates {final_name} beside it. "
-        f"{draft_name} is left exactly as it was, and nothing in this project writes to it "
-        f"again. Everything still selecting from {draft_name} goes on reading {draft_name}, "
-        f"and never sees a row only {final_name} has. Repointing those readers at "
+        f"{draft_name} is left exactly as it was. Nothing in this project writes to it "
+        f"again. Everything still selecting from {draft_name} goes on reading {draft_name}. "
+        f"It never sees a row only {final_name} has. Repointing those readers at "
         f"{final_name} is manual work this conversion leaves to you."
     )
     plain_reason = (
         f"Renaming does not move the table. Afterwards there are two of them. {draft_name} "
-        f"is left exactly as it was, holding what it held before. {final_name} is the new "
-        f"one, and it is the only one anything here writes to. So a dashboard, a scheduled "
-        f"job or a saved query pointed at {draft_name} goes on reading {draft_name}, and "
-        f"never sees a row that only {final_name} has. Pointing each of those at "
-        f"{final_name} is a change someone has to make by hand."
+        f"is left exactly as it was. {final_name} is the new one, and it is the only one "
+        f"anything here writes to. A dashboard, a scheduled job or a saved query pointed at "
+        f"{draft_name} goes on reading {draft_name}. It never sees a row that only "
+        f"{final_name} has. Pointing each of those at {final_name} is a change someone has "
+        f"to make by hand."
     )
     return final_name, [_decision("rename", draft_name, action, reason, plain_reason=plain_reason)]
+
+
+def _row_source_queries(select: exp.Select) -> list[exp.Query]:
+    """The derived tables this SELECT draws rows from -- the FROM and every
+    JOIN, where the source is a subquery rather than a table.
+
+    Found by node type rather than by argument key. sqlglot spells the key
+    `from_` in the version pinned here and `from` in others, and reading it by
+    name returned None under the pinned one -- silently, which cost the
+    derived-table and CTE coverage until a shape test caught it.
+    """
+    queries: list[exp.Query] = []
+    for value in select.args.values():
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, (exp.From, exp.Join)) and isinstance(item.this, exp.Subquery):
+                inner = item.this.this
+                if isinstance(inner, exp.Query):
+                    queries.append(inner)
+    return queries
+
+
+def _row_filters(query: exp.Query, dialect: str | None) -> tuple[str, ...]:
+    """The conditions that decide which rows this model's own query returns.
+
+    The query SPINE, not every `WHERE` in the tree: the outer query, the
+    branches of a set operation, the CTEs that feed it, and any derived table
+    it selects from. Each of those contributes rows to the model, so a
+    condition on one is a condition on the model.
+
+    What the spine deliberately excludes is the reason this is a walk rather
+    than a `find_all`. A predicate inside a scalar subquery in the select list
+    (`SELECT id, (SELECT max(v) FROM lookup l WHERE l.id = e.id) AS v`) filters
+    the lookup, not the model: every row of the model's own source is still
+    returned, with a null where nothing matched. Reporting it as this model's
+    filter put a sentence in the report -- "a row that does not match is
+    selected by no run at all" -- that the model file beside it contradicts.
+    A `WHERE EXISTS (...)` is the mirror image: the outer condition IS the row
+    filter and is reported whole, while descending into it reported the same
+    filter twice and called the model "filtered by 2 WHERE clauses".
+
+    Deduplicated, in spine order: CTEs, then derived tables, then this query's
+    own WHERE -- which is source order for every shape the tests cover.
+    """
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def visit(node: exp.Query) -> None:
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        for cte in node.ctes:
+            if isinstance(cte.this, exp.Query):
+                visit(cte.this)
+        if isinstance(node, exp.SetOperation):
+            for branch in (node.this, node.expression):
+                if isinstance(branch, exp.Query):
+                    visit(branch)
+            return
+        if not isinstance(node, exp.Select):
+            return
+        for source in _row_source_queries(node):
+            visit(source)
+        where = node.args.get("where")
+        if where is not None:
+            found.append(where.this.sql(dialect=dialect))
+
+    visit(query)
+    return tuple(dict.fromkeys(found))
 
 
 def _incremental_filter_caveat(
@@ -222,17 +294,16 @@ def _incremental_filter_caveat(
     with the same cost, and a caveat raised only where the append pass happens
     to look would cover half of them.
 
-    Every WHERE in the body counts, wherever it sits. The first version of
-    this read `node.args["where"]` off the outermost SELECT, which is one
-    shape of four: a condition in a CTE, in a derived table, or on a UNION
-    branch produced no caveat at all, and the append Decision's own "the
-    SELECT already carries a WHERE" note reads the outer clause too, so those
-    readers were told nothing by anything. `find_all` walks the tree instead.
-    A filter this reaches that is not a source filter -- a correlated
-    predicate in a scalar subquery, say -- is still a fixed condition, and the
-    text says only what is true of any of them: it is the script's own, it is
-    the same on every run, and nothing narrows it. `test_incremental_filter`
-    pins all four shapes.
+    Every condition on the query SPINE counts, and nothing else does --
+    `_row_filters` above owns that rule and says what it keeps and drops. Two
+    earlier versions got the scope wrong in opposite directions and both were
+    found by a reader, not by a test: reading the outermost `WHERE` alone told
+    the reader of a CTE, a UNION or a derived table nothing at all, and
+    `find_all` then told the reader of a scalar-subquery predicate something
+    the model file contradicts. The text below says these conditions decide
+    which rows the model takes, which is true of a spine condition and false
+    of any other, so the scope is what makes the sentence honest rather than
+    the wording. `test_incremental_filter` pins both directions.
 
     Runs against the RAW draft body and so must run before `rewrite_body`:
     a body already rewritten into dbt Jinja does not parse, `parse_one` raises
@@ -252,17 +323,7 @@ def _incremental_filter_caveat(
         return []
     if not isinstance(node, exp.Query):
         return []
-    # Every WHERE in the body, not only one hanging off the outermost SELECT.
-    # A condition inside a CTE, inside a derived table, or on one branch of a
-    # UNION is fixed on exactly the same terms and costs exactly the same
-    # thing, and all three shapes are ordinary. Keying on the outer clause
-    # alone gave the reader of one of those scripts nothing at all -- not this
-    # caveat, and not the WHERE the append Decision names either, since that
-    # reads the outer clause too. Deduplicated, in the order sqlglot walks the
-    # tree: stable for a given body, but not source order.
-    conditions = tuple(
-        dict.fromkeys(where.this.sql(dialect=dialect) for where in node.find_all(exp.Where))
-    )
+    conditions = _row_filters(node, dialect)
     if not conditions:
         return []
     named = "; ".join(conditions)
@@ -289,25 +350,25 @@ def _incremental_filter_caveat(
     # every run re-reads the whole source.
     reason = (
         f"{final_name}'s filtering is the script's own, copied verbatim: {named}. Nothing "
-        "here can tell whether it was meant as this model's incremental watermark, and "
-        "narrowing a condition that was not meant as one would change which rows the model "
-        "produces. So no guard was written around it, and it stays a fixed condition: "
-        "every run evaluates it over the whole of this model's source rather than over "
-        "what arrived since the last run, so the work re-done grows with the table; and a "
-        "row that does not match is selected by no run at all, however late it arrives (if "
-        "the filtering compares a date, a row turning up afterwards carrying an earlier "
-        f"one never enters {final_name}). Narrowing the filtering, or guarding it, is "
-        "manual work this conversion leaves to you."
+        "here can tell whether it was meant as this model's incremental watermark. "
+        "Narrowing a condition that was not meant as one would change which rows the model "
+        "produces. So no guard was written around it. It stays a fixed condition: every "
+        "run evaluates it over the whole of this model's source rather than over what "
+        "arrived since the last run. The work re-done grows with the table. A row that "
+        "does not match is selected by no run at all, however late it arrives. If the "
+        "filtering compares a date, a row turning up afterwards carrying an earlier one "
+        f"never enters {final_name}. Narrowing or guarding the filtering is manual work "
+        "this conversion leaves to you."
     )
     plain_reason = (
         f"The filtering that decides which rows this takes -- {named} -- comes from your "
         'script, copied word for word and left alone. It does not mean "only what is new '
-        'since last time"; it means the same thing every time. So each run goes back over '
-        "everything that matches it, however much has piled up, and a row that does not "
-        "match is taken by no run at all, however late it turns up -- if the filtering "
+        'since last time". It means the same thing every time. So each run goes back over '
+        "the whole of that table again, however much has piled up. A row that does not "
+        "match is taken by no run at all, however late it turns up. If the filtering "
         "compares a date, a row arriving afterwards with an earlier date on it never gets "
-        "in. Changing it so that it asks only for what is new is something someone has to "
-        "do by hand."
+        "in. Narrowing the filtering so that it asks only for what is new is something "
+        "someone has to do by hand."
     )
     return [
         _decision(
