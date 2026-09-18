@@ -4,6 +4,12 @@
 target-project context, assemble, emit — against a real SQL file (or
 directory of them) and a real dbt project, and writes the result to an
 output directory.
+
+`dbtw web` opens the same conversion as a conversation: one `Session` over
+one SQL path and one dbt project, answered a question at a time. What this
+command owns is the two refusals that belong on the command line rather than
+on a screen — a project that is not a dbt project (spec section 7), and an
+install without the web extra — and the session they guard.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from dbtw.core.context import NotADbtProjectError, ProjectContext, read_project
 from dbtw.core.emit import UnsafeOutputPathError, emit
 from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest
 from dbtw.core.passes import run_passes
+from dbtw.web import MissingWebExtraError, Session, require_flask
 
 _REPORT_NAME = "CONVERSION_REPORT.md"
 
@@ -59,6 +66,11 @@ class OutputInsideProjectError(ValueError):
 # OSError covers FileNotFoundError plus its siblings that a bad --out can
 # raise (FileExistsError when --out names an existing file, PermissionError,
 # IsADirectoryError, ...) — all input-driven, not a dbtw bug.
+# MissingWebExtraError is here on the same test and not because it is an
+# input: an install without the web extra is something the user can change,
+# and the message says what to change it to. Contrast DuplicateSourceEntryError
+# and MulticolumnCheckedAnswerError, deliberately absent because no input can
+# produce them, so reaching one is a dbtw bug and must surface as a traceback.
 _USAGE_ERRORS = (
     UnknownDialectError,
     OSError,
@@ -66,6 +78,7 @@ _USAGE_ERRORS = (
     UnsafeOutputPathError,
     OutputInsideProjectError,
     UnexpandablePathError,
+    MissingWebExtraError,
 )
 
 # How many of the project's own files the refusal names. Enough to make
@@ -109,6 +122,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "incremental to a merge incremental keyed on these columns"
         ),
     )
+
+    web = subparsers.add_parser(
+        "web", help="Answer this conversion's questions one at a time, in a browser"
+    )
+    web.add_argument("sql_path", metavar="SQL_PATH", help="A .sql file or directory of .sql")
+    web.add_argument(
+        "--project", metavar="PROJECT_PATH", required=True, help="The target dbt project root"
+    )
+    web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
 
     return parser
 
@@ -287,15 +309,47 @@ def _convert(
     return 0
 
 
+def _web(sql_path: str, project: str, dialect: str | None) -> int:
+    # Asked first, and before anything is read: no argument the user could
+    # have written makes this command work without the extra, so a refusal
+    # about their --project would send them to fix the wrong thing.
+    require_flask()
+
+    # Both arguments expanded, for the reason `_expanded` gives.
+    project_root = _expanded(project, "--project")
+    sql = _expanded(sql_path, "SQL_PATH")
+
+    # Spec section 7: a missing dbt_project.yml is a command-line error, not a
+    # screen. Read here rather than left to the session's own first run so the
+    # refusal is about the project, not about whatever the SQL turns out to
+    # do. The session reads it again on every run, which is what keeps a
+    # screen current with a project being edited beside it.
+    ctx = read_project(project_root)
+
+    session = Session(project=project_root, sql=sql, dialect=dialect)
+    questions = session.questions()
+    noun = "question" if len(questions) == 1 else "questions"
+    print(f"{sql} → {ctx.project_name}: {len(questions)} {noun} to answer.")
+    print(
+        "The screens that ask them are not served by this build; nothing was written.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    unique_key = (
-        tuple(c.strip() for c in args.unique_key.split(",") if c.strip()) if args.unique_key else ()
-    )
-
     try:
+        if args.command == "web":
+            return _web(args.sql_path, args.project, args.dialect)
+
+        unique_key = (
+            tuple(c.strip() for c in args.unique_key.split(",") if c.strip())
+            if args.unique_key
+            else ()
+        )
         return _convert(
             args.sql_path, args.project, args.out, args.dialect, args.inline_vars, unique_key
         )
