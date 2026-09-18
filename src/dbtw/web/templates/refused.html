@@ -1,0 +1,12 @@
+{#
+  One refusal, in the engine's own words. Nothing was recorded: `Session.
+  answer` applies an answer before it keeps it, and restores what was held if
+  the run refuses -- so the screen the reader goes back to is the one they
+  came from.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Not recorded</h1>
+<p><span data-engine>{{ message }}</span></p>
+<p class="onward"><a href="/">Start</a></p>
+{% endblock %}

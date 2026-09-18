@@ -21,11 +21,17 @@ import hashlib
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import pytest
 from tests.unit.web.helpers import ONE_APPEND
 
+from dbtw.web import Session
 from dbtw.web import state as state_module
+
+if TYPE_CHECKING:
+    from flask import Flask
+    from flask.testing import FlaskClient
 
 PROJECTS = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -71,3 +77,47 @@ def pipeline_runs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 
     monkeypatch.setattr(state_module, "ingest", spy)
     return seen
+
+
+SQL = Path(__file__).parents[2] / "fixtures" / "sql"
+
+
+@pytest.fixture
+def walk_sql() -> Path:
+    """The script the ten walkthroughs were run against (spec section 11).
+
+    The checked-in fixture itself, read and never written: a `Session` needs
+    one path that does not move (spec 11.7), and this one is as stable as a
+    path gets. The project beside it is always a copy -- `project_dir` -- so
+    nothing this walk does can reach the repository's own test data.
+    """
+    return SQL / "incremental_etl.sql"
+
+
+class Walk(Protocol):
+    """Build the walk over one script: (app, client, session)."""
+
+    def __call__(
+        self, sql: Path, dialect: str | None = None
+    ) -> tuple[Flask, FlaskClient, Session]: ...
+
+
+@pytest.fixture
+def walk(project_dir: Path) -> Walk:
+    """The app, a client for it, and the session all three share.
+
+    `create_app` is imported inside the factory rather than at module scope:
+    `dbtw.web` is documented to stay importable without Flask, and a conftest
+    that imported the app at the top would make every session test in this
+    directory need the extra too.
+    """
+
+    def build(sql: Path, dialect: str | None = None) -> tuple[Flask, FlaskClient, Session]:
+        from dbtw.web.app import create_app
+
+        session = Session(project=project_dir, sql=sql, dialect=dialect)
+        app = create_app(session)
+        app.testing = True
+        return app, app.test_client(), session
+
+    return build

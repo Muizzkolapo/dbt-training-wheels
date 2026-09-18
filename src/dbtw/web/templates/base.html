@@ -1,0 +1,62 @@
+{#
+  The frame every screen shares: the walk's own list of screens, the words
+  this screen uses, and the screen itself.
+
+  Two rules hold for every template in this directory.
+
+  1. Every explanatory string is the engine's, and says so: it is rendered
+     inside an element carrying `data-engine`, and a test checks each of
+     those claims by exact match against what `dbtw.core` produced. Text
+     outside such an element is this template's own, and no run of it may
+     reach sentence length.
+  2. Every number is `len()` of the list beside it. The element showing the
+     number carries `data-count="<name>"` and each element of the list it
+     counts carries `data-item="<name>"`, so a test can hold the two against
+     each other on the page itself -- "4 new files" over a list of five is
+     the mismatch that cost this page the most trust.
+
+  The glossary sits above the screen rather than under it, as it does in the
+  report and for the same reason: four of five personas never reached the
+  block that sat at the end, and a definition the reader meets after the word
+  is a definition they have already guessed at.
+#}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>dbt training wheels</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <nav>
+      <p class="tally"><span data-count="screen">{{ screens | length }}</span> screens</p>
+      <ul class="steps">
+        {%- for screen in screens %}
+        <li data-item="screen"{% if screen.url == here %} class="here"{% endif %}>
+          <a href="{{ screen.url }}">
+            {%- if screen.engine %}<span data-engine>{{ screen.label }}</span>
+            {%- else %}{{ screen.label }}{% endif -%}
+          </a>
+        </li>
+        {%- endfor %}
+      </ul>
+    </nav>
+
+    {%- if terms %}
+    <section class="glossary" data-aside>
+      <h2>Words used here</h2>
+      <dl>
+        {%- for term in terms %}
+        <dt data-item="term"><span data-engine>{{ term.name }}</span></dt>
+        <dd><span data-engine>{{ term.plain }}</span></dd>
+        {%- endfor %}
+      </dl>
+    </section>
+    {%- endif %}
+
+    <main>
+      {%- block main %}{% endblock %}
+    </main>
+  </body>
+</html>

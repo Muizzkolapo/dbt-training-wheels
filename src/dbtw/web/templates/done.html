@@ -1,0 +1,26 @@
+{#
+  The write action, and the commands. Nothing is ticked first: three of three
+  personas named the acknowledgment checkbox theatre and said ticking it
+  would be lying to the tool, because it demanded a certification the page
+  gave them no way to obtain. Gates buy attention, not comprehension.
+
+  The commands are named here and defined once, in the block above, which is
+  where every word on every screen is defined. Five of five asked for the set
+  related to one another rather than introduced one at a time; the glossary
+  is where that was written.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Done</h1>
+<form method="post" action="/write">
+  <button type="submit">Write these files</button>
+</form>
+
+<h2>Commands</h2>
+<p class="tally"><span data-count="command">{{ commands | length }}</span> commands</p>
+<ul class="commands">
+  {%- for command in commands %}
+  <li data-item="command"><span data-engine>{{ command }}</span></li>
+  {%- endfor %}
+</ul>
+{% endblock %}

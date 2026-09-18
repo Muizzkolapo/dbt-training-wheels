@@ -1,4 +1,5 @@
-"""`dbtw web` — the two refusals that happen before anything is served.
+"""`dbtw web` — the refusals that happen before anything is served, and what
+reaches the server when nothing refuses.
 
 Spec 7 puts "the project path is not a dbt project" on the command line
 rather than on a screen, and the web extra is the same shape of problem: the
@@ -15,11 +16,43 @@ from __future__ import annotations
 
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from dbtw.cli.main import main
+
+
+@dataclass
+class Served:
+    """What `dbtw web` handed the server, instead of running one.
+
+    `dbtw.web.app.serve` blocks until the user stops it, so every test here
+    replaces it. The replacement is installed by an autouse fixture rather
+    than per test: a test that forgot it would not fail, it would hang, and a
+    suite that hangs says nothing about what it was checking.
+    """
+
+    calls: list[tuple[str, int, bool]]
+
+    @property
+    def once(self) -> tuple[str, int, bool]:
+        (call,) = self.calls
+        return call
+
+
+@pytest.fixture(autouse=True)
+def served(monkeypatch: pytest.MonkeyPatch) -> Served:
+    record = Served(calls=[])
+
+    def spy(app: object, host: str, port: int, open_browser: bool) -> None:
+        assert app is not None
+        record.calls.append((host, port, open_browser))
+
+    monkeypatch.setattr("dbtw.web.app.serve", spy)
+    return record
+
 
 FIXTURE = Path(__file__).parents[2] / "fixtures" / "projects" / "jaffle_shop"
 
@@ -93,6 +126,45 @@ def test_web_refuses_a_project_that_is_not_a_dbt_project(
     err = capsys.readouterr().err
     assert "dbt_project.yml" in err
     assert str(not_a_project) in err
+
+
+def test_web_serves_the_walk_on_the_default_port_and_opens_a_browser(
+    tmp_path: Path, project: Path, served: Served
+) -> None:
+    assert main(["web", str(_sql(tmp_path)), "--project", str(project)]) == 0
+    assert served.once == ("127.0.0.1", 5000, True)
+
+
+def test_web_serves_on_the_port_it_was_given(tmp_path: Path, project: Path, served: Served) -> None:
+    assert main(["web", str(_sql(tmp_path)), "--project", str(project), "--port", "8123"]) == 0
+    assert served.once == ("127.0.0.1", 8123, True)
+
+
+def test_no_browser_leaves_the_browser_alone(tmp_path: Path, project: Path, served: Served) -> None:
+    assert main(["web", str(_sql(tmp_path)), "--project", str(project), "--no-browser"]) == 0
+    assert served.once == ("127.0.0.1", 5000, False)
+
+
+def test_a_port_that_is_not_a_number_is_refused_by_the_parser(
+    tmp_path: Path, project: Path, served: Served
+) -> None:
+    """argparse's own refusal, and it exits rather than serving. A --port
+    accepted as a string would reach `make_server` and fail there, after the
+    conversion had been read.
+    """
+    with pytest.raises(SystemExit, match="2"):
+        main(["web", str(_sql(tmp_path)), "--project", str(project), "--port", "http"])
+    assert served.calls == []
+
+
+def test_nothing_is_served_when_the_command_refuses(
+    tmp_path: Path, served: Served, capsys: pytest.CaptureFixture[str]
+) -> None:
+    not_a_project = tmp_path / "elsewhere"
+    not_a_project.mkdir()
+    assert main(["web", str(_sql(tmp_path)), "--project", str(not_a_project)]) == 2
+    assert served.calls == []
+    assert "dbt_project.yml" in capsys.readouterr().err
 
 
 def test_web_refuses_without_the_extra_and_names_it(
@@ -211,8 +283,9 @@ def _snapshot(root: Path) -> dict[str, bytes | None]:
 
 
 def test_web_writes_nothing(tmp_path: Path, project: Path) -> None:
-    """The command prepares a conversation; writing is a separate action a
-    user takes. Nothing lands on disk, least of all inside the project.
+    """Starting the walk prepares a conversation; writing is a separate
+    action a user takes, and this build does not serve the route that takes
+    it. Nothing lands on disk, least of all inside the project.
     """
     before = _snapshot(project)
 

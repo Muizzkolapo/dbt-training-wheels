@@ -1,0 +1,30 @@
+{#
+  Screen 0. What this conversion is over, and the one consequence two of five
+  personas asked to be told here rather than at the end: renaming does not
+  move a table, so afterwards there are two.
+
+  The consequence renders once, in both registers, for the first renamed
+  table; every rename's own one-line action renders beside it. A reviewer
+  reading a real three-model report found this paragraph rendered verbatim
+  three times, differing only in two table names, and named it the thing most
+  likely to train a reader to skip the block.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1><span data-engine>{{ project }}</span></h1>
+<p class="source"><span data-engine>{{ sql }}</span></p>
+
+<h2>Renaming</h2>
+<p class="tally"><span data-count="rename">{{ renames | length }}</span> tables</p>
+<ul class="renames">
+  {%- for rename in renames %}
+  <li data-item="rename"><span data-engine>{{ rename.action }}</span></li>
+  {%- endfor %}
+</ul>
+{%- if cutover %}
+<p><span data-engine>{{ cutover.reason }}</span></p>
+<p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ cutover.plain_reason }}</span></p>
+{%- endif %}
+
+<p class="onward"><a href="{{ screens[1].url }}">Next</a></p>
+{% endblock %}

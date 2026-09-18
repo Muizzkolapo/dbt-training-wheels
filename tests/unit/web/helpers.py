@@ -32,3 +32,22 @@ ONE_MERGE = (
 
 # Nothing to answer at all.
 NO_QUESTIONS = "SELECT id, name INTO dim_people FROM raw_people;\n"
+
+# One statement sqlglot cannot parse, ahead of one it can: spec section 7
+# requires the failure to render in place while the rest of the page still
+# renders.
+UNPARSEABLE_AND_APPEND = (
+    "THIS IS NOT SQL AT ALL(((;\n"
+    "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+)
+
+# Two projections that carry the same output name. `Subject.candidates` is
+# deliberately not deduplicated, because the ambiguity is the user's to see.
+DUPLICATE_CANDIDATES = (
+    "INSERT INTO revenue_events SELECT o.amount, p.amount "
+    "FROM orders AS o JOIN pay AS p ON o.id = p.id;\n"
+)
+
+# A star projection: the columns are not knowable at convert time, so
+# `Subject.candidates` is empty and a picker has nothing to offer.
+STAR_PROJECTION = "INSERT INTO revenue_events SELECT * FROM stg_orders;\n"

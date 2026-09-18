@@ -6,10 +6,11 @@ directory of them) and a real dbt project, and writes the result to an
 output directory.
 
 `dbtw web` opens the same conversion as a conversation: one `Session` over
-one SQL path and one dbt project, answered a question at a time. What this
-command owns is the two refusals that belong on the command line rather than
-on a screen — a project that is not a dbt project (spec section 7), and an
-install without the web extra — and the session they guard.
+one SQL path and one dbt project, answered a question at a time, served on
+the loopback address until the user stops it. What this command owns is the
+two refusals that belong on the command line rather than on a screen — a
+project that is not a dbt project (spec section 7), and an install without
+the web extra — the session they guard, and where the walk is served.
 """
 
 from __future__ import annotations
@@ -28,6 +29,18 @@ from dbtw.core.passes import run_passes
 from dbtw.web import MissingWebExtraError, Session, require_flask
 
 _REPORT_NAME = "CONVERSION_REPORT.md"
+
+# Where `dbtw web` serves. The loopback address and nothing else: a
+# conversation holds the contents of the user's SQL and their dbt project,
+# and a local tool that put those on the network by default would be making
+# that choice on their behalf. There is no flag for it, because "serve this
+# to the network" is a decision that deserves more than a flag.
+_HOST = "127.0.0.1"
+
+# Flask's own default, so the address is the one a reader expects. A port
+# already in use raises OSError from the bind, which is already a usage
+# error here — the refusal names the port and --port is the answer to it.
+_DEFAULT_PORT = 5000
 
 
 class UnexpandablePathError(ValueError):
@@ -131,6 +144,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--project", metavar="PROJECT_PATH", required=True, help="The target dbt project root"
     )
     web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
+    web.add_argument(
+        "--port",
+        metavar="PORT",
+        type=int,
+        default=_DEFAULT_PORT,
+        help=f"The port to serve the walk on (default: {_DEFAULT_PORT})",
+    )
+    web.add_argument(
+        "--no-browser",
+        dest="open_browser",
+        action="store_false",
+        default=True,
+        help="Do not open a browser (the address is printed either way)",
+    )
 
     return parser
 
@@ -309,7 +336,7 @@ def _convert(
     return 0
 
 
-def _web(sql_path: str, project: str, dialect: str | None) -> int:
+def _web(sql_path: str, project: str, dialect: str | None, port: int, open_browser: bool) -> int:
     # Asked first, and before anything is read: no argument the user could
     # have written makes this command work without the extra, so a refusal
     # about their --project would send them to fix the wrong thing.
@@ -330,10 +357,14 @@ def _web(sql_path: str, project: str, dialect: str | None) -> int:
     questions = session.questions()
     noun = "question" if len(questions) == 1 else "questions"
     print(f"{sql} → {ctx.project_name}: {len(questions)} {noun} to answer.")
-    print(
-        "The screens that ask them are not served by this build; nothing was written.",
-        file=sys.stderr,
-    )
+
+    # Imported here, after require_flask(), so that `dbtw convert` — and
+    # `dbtw.web` itself — go on importing without the extra. `dbtw.web.app`
+    # is the one module in the package that imports Flask at its top, and
+    # this is the one line that reaches it.
+    from dbtw.web.app import create_app, serve
+
+    serve(create_app(session), _HOST, port, open_browser)
     return 0
 
 
@@ -343,7 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "web":
-            return _web(args.sql_path, args.project, args.dialect)
+            return _web(args.sql_path, args.project, args.dialect, args.port, args.open_browser)
 
         unique_key = (
             tuple(c.strip() for c in args.unique_key.split(",") if c.strip())
