@@ -9,15 +9,32 @@ keys stop matching.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from tests.unit.web.conftest import ONE_MERGE, VARIABLE_AND_APPEND
+from tests.unit.web.helpers import (
+    NO_QUESTIONS,
+    ONE_APPEND_ELSEWHERE,
+    ONE_MERGE,
+    VARIABLE_AND_APPEND,
+)
 
 from dbtw.core.assemble import UnknownAnswerError
 from dbtw.core.passes import SchemaTest
 from dbtw.web.state import Session
+
+
+def _reassign(obj: object, field: str, value: object) -> None:
+    """Rebind one field, dynamically.
+
+    Written as a call rather than `session.sql = ...` because that line is a
+    type error as well as a runtime one, and a type-checker suppression on it
+    would be the only one in the tree. The name arrives as a variable, so
+    nothing here knows it is a constant.
+    """
+    setattr(obj, field, value)
 
 
 def test_an_answer_can_be_given_again_after_the_engine_rewrote_the_labels(
@@ -236,11 +253,16 @@ def test_questions_are_the_decisions_that_ask_something(project_dir: Path, sql_f
     session = Session(project=project_dir, sql=sql_file, dialect=None, answers={})
     change = session.current()
 
+    (question,) = session.questions()
     assert [d.key for d in session.questions()] == [f"tier2.append.{sql_file}:0"]
 
-    silent = [d for d in change.decisions if not d.question]
-    assert any(d.tier == 2 for d in silent)
-    assert any(d.chosen for d in silent)
+    # One Decision that is tier 2 AND carries a `chosen` AND asks nothing --
+    # two separate any()s could be satisfied by two different Decisions and
+    # would prove nothing about either wrong rule.
+    assert any(d.tier == 2 and d.chosen and not d.question for d in change.decisions)
+    # And `chosen` is wrong in the other direction too: the question carries
+    # one as well, so it separates nothing.
+    assert question.chosen == "append every row"
 
 
 def test_the_session_holds_paths_rather_than_a_snapshot_of_one_run(
@@ -254,7 +276,7 @@ def test_the_session_holds_paths_rather_than_a_snapshot_of_one_run(
     the pristine run an answer is resolved against have to have moved: a
     cache on either one alone leaves one of these assertions wrong.
     """
-    sql = sql_script("INSERT INTO daily_totals SELECT order_id, amount FROM stg_orders;\n")
+    sql = sql_script(ONE_APPEND_ELSEWHERE)
     session = Session(project=project_dir, sql=sql, dialect=None, answers={})
     assert [model.name for model in session.current().models] == ["stg_daily_totals"]
     assert [d.key for d in session.questions()] == [f"tier2.append.{sql}:0"]
@@ -309,7 +331,7 @@ def test_a_conversion_with_nothing_to_answer_is_not_an_error(
     """Spec 7's "nothing to answer" row. A clean script is the common case
     and must come back as a conversion with no questions, not as a failure.
     """
-    sql = sql_script("SELECT id, name INTO dim_people FROM raw_people;\n")
+    sql = sql_script(NO_QUESTIONS)
     session = Session(project=project_dir, sql=sql, dialect="tsql", answers={})
     change = session.current()
     assert session.questions() == ()
@@ -374,3 +396,147 @@ def test_a_dialect_is_carried_into_every_run(
     assert "assemble.variable.cutoff" not in [d.key for d in without.questions()]
     assert with_dialect.current().dialect == "tsql"
     assert without.current().dialect is None
+
+
+def test_a_held_answer_whose_question_the_script_no_longer_asks_is_named(
+    project_dir: Path, sql_script: Callable[[str], Path]
+) -> None:
+    """A session is a live view of two paths, so an edit to the SQL can strand
+    an answer: its tier-2 key embeds a statement's position in a file that has
+    changed. Every accessor refuses while one is held -- an answer the run
+    cannot apply is an answer the user gave and the screen would not show --
+    and `answer` refuses with them, because it resolves the whole set before
+    it can validate anything. So the refusal has to come with the list and a
+    way to act on it, or a conversation ends at an error with no door out.
+    """
+    sql = sql_script(ONE_APPEND_ELSEWHERE)
+    session = Session(project=project_dir, sql=sql, dialect=None)
+    (question,) = session.questions()
+    session.answer(question.key, "merge", ("order_id",))
+
+    sql.write_text(ONE_MERGE, encoding="utf-8")
+    asked = f"tier2.merge.{sql}:0"
+
+    assert session.stale_answers() == (question.key,)
+    with pytest.raises(UnknownAnswerError, match="no question with key"):
+        session.current()
+    # A new and perfectly good answer cannot get in past the stale one ...
+    with pytest.raises(UnknownAnswerError, match="no question with key"):
+        session.answer(asked, "merge_checked", ())
+    assert session.answers == {question.key: ("merge", ("order_id",))}
+
+    # ... until the stale one is dropped, which is the way forward.
+    assert session.drop_stale_answers() == (question.key,)
+    assert session.stale_answers() == ()
+    assert session.answers == {}
+
+    session.answer(asked, "merge_checked", ())
+    (model,) = session.current().models
+    assert model.unique_key == ("id",)
+
+
+def test_nothing_is_stale_while_the_script_still_asks_for_it(
+    project_dir: Path, sql_file: Path
+) -> None:
+    """The other half: a view that named every answer, or a drop that cleared
+    good ones, would pass the test above and end every conversation here.
+    """
+    session = Session(project=project_dir, sql=sql_file, dialect=None)
+    (question,) = session.questions()
+    assert session.stale_answers() == ()
+
+    session.answer(question.key, "merge", ("order_id",))
+    assert session.stale_answers() == ()
+    assert session.drop_stale_answers() == ()
+    assert session.answers == {question.key: ("merge", ("order_id",))}
+    assert session.current().models[0].unique_key == ("order_id",)
+
+
+def test_what_each_accessor_costs_in_pipeline_runs(
+    project_dir: Path, sql_file: Path, pipeline_runs: list[Path]
+) -> None:
+    """Spec 4.3 forbids a cache, so every accessor is a whole conversion --
+    17 ms for 8 statements, 149 ms for 80. What is left to control is how many
+    a screen takes, and this is the number Task 6 builds against.
+
+    Resolving an answer needs the pristine run as well as the answered one;
+    resolving nothing does not, and every screen before the first answer is in
+    that case.
+    """
+    session = Session(project=project_dir, sql=sql_file, dialect=None)
+
+    session.current()
+    assert len(pipeline_runs) == 1
+
+    pipeline_runs.clear()
+    (question,) = session.questions()
+    assert len(pipeline_runs) == 1
+
+    pipeline_runs.clear()
+    session.view()
+    assert len(pipeline_runs) == 1
+
+    pipeline_runs.clear()
+    session.answer(question.key, "merge", ("order_id",))
+    assert len(pipeline_runs) == 2
+
+    pipeline_runs.clear()
+    session.current()
+    assert len(pipeline_runs) == 2
+
+    pipeline_runs.clear()
+    session.columns_prompts(question.key)
+    assert len(pipeline_runs) == 1
+
+    # One screen: the change to render, the questions to ask, and the columns
+    # every one of them will need -- from the same two runs, not two per
+    # question.
+    pipeline_runs.clear()
+    view = session.view()
+    assert len(pipeline_runs) == 2
+    assert len(view.prompts) == len(view.questions)
+
+
+def test_view_agrees_with_the_accessors_it_gathers(project_dir: Path, sql_file: Path) -> None:
+    """`view` is one pair of runs, not a second way of computing a screen. If
+    it could disagree with these three it would be the drifting second path
+    spec 4.3 exists to forbid.
+    """
+    session = Session(project=project_dir, sql=sql_file, dialect=None)
+    (question,) = session.questions()
+    session.answer(question.key, "merge_checked", ("order_id",))
+
+    view = session.view()
+    assert view.change == session.current()
+    assert view.questions == session.questions()
+    assert view.prompts == {question.key: session.columns_prompts(question.key)}
+
+
+def test_a_view_of_a_conversion_with_nothing_to_answer_carries_no_prompts(
+    project_dir: Path, sql_script: Callable[[str], Path]
+) -> None:
+    sql = sql_script(NO_QUESTIONS)
+    view = Session(project=project_dir, sql=sql, dialect="tsql").view()
+    assert view.questions == ()
+    assert view.prompts == {}
+    assert [model.name for model in view.change.models] == ["stg_dim_people"]
+
+
+def test_the_paths_a_session_was_built_with_cannot_move(
+    project_dir: Path, sql_file: Path, sql_script: Callable[[str], Path]
+) -> None:
+    """Spec 11.7: every tier-2 key a session hands out embeds `sql`. Moving
+    the field mid-conversation invalidates all of them at once, which is the
+    failure this whole design is arranged around, and a docstring saying the
+    paths do not move is not what stops them.
+    """
+    session = Session(project=project_dir, sql=sql_file, dialect=None)
+    (question,) = session.questions()
+    session.answer(question.key, "append", ())
+
+    with pytest.raises(dataclasses.FrozenInstanceError, match="sql"):
+        _reassign(session, "sql", sql_script(ONE_MERGE))
+    with pytest.raises(dataclasses.FrozenInstanceError, match="project"):
+        _reassign(session, "project", project_dir.parent)
+
+    assert [d.key for d in session.questions()] == [question.key]

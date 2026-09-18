@@ -12,7 +12,10 @@ requires-python = ">=3.11"
 dependencies = ["pyyaml>=6", "sqlglot>=30,<31"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "pyright>=1.1.380"]
+# The web extra by reference, not a repeated "flask>=3": `dbtw web` imports
+# Flask at startup and its tests drive that path, so the suite needs it, and
+# CI plus the README build their whole environment from `dev` alone.
+dev = ["dbt-training-wheels[web]", "pytest>=8", "ruff>=0.6", "pyright>=1.1.380"]
 web = ["flask>=3"]
 
 [project.scripts]

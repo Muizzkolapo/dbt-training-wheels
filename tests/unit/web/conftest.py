@@ -11,8 +11,8 @@ invalid on the next one and every answer held against them is refused. A
 path per call would be exercising a session the product never builds.
 
 Every call writes the file, so a test that edits a script in place -- there
-is one, and it is testing that the session re-reads its inputs -- leaves the
-next test's copy restored rather than whatever it left behind.
+are two, and they are testing that the session re-reads its inputs -- leaves
+the next test's copy restored rather than whatever it left behind.
 """
 
 from __future__ import annotations
@@ -23,26 +23,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from tests.unit.web.helpers import ONE_APPEND
+
+from dbtw.web import state as state_module
 
 PROJECTS = Path(__file__).parents[2] / "fixtures" / "projects"
-
-# One append question and nothing else to answer.
-ONE_APPEND = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
-
-# Two answerable Decisions from the two different families: a tier-2 pass key,
-# which embeds the source path, and an assemble key, which does not.
-VARIABLE_AND_APPEND = (
-    "DECLARE @cutoff DATE = '2024-01-01';\n"
-    "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders "
-    "WHERE order_date >= @cutoff;\n"
-)
-
-# A MERGE names its key in its ON clause, so every option this question offers
-# already spells that key and none of them carries a columns_prompt.
-ONE_MERGE = (
-    "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
-    "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
-)
 
 
 @pytest.fixture(scope="session")
@@ -69,3 +54,20 @@ def project_dir(tmp_path: Path) -> Path:
     destination = tmp_path / "jaffle_shop"
     shutil.copytree(PROJECTS / "jaffle_shop", destination)
     return destination
+
+
+@pytest.fixture
+def pipeline_runs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """One entry per full ingest -> classify -> passes -> assemble the session
+    runs. `ingest` is the first call of `Session._run` and is made exactly
+    once per run, so counting it counts conversions.
+    """
+    seen: list[Path] = []
+    real = state_module.ingest
+
+    def spy(source: Path, dialect: str | None = None):  # type: ignore[no-untyped-def]
+        seen.append(source)
+        return real(source, dialect)
+
+    monkeypatch.setattr(state_module, "ingest", spy)
+    return seen

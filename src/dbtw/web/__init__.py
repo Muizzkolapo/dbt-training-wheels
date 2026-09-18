@@ -9,9 +9,9 @@ and it asks at the moment a command that needs it starts.
 
 from __future__ import annotations
 
-from dbtw.web.state import Session
+from dbtw.web.state import Session, SessionView
 
-__all__ = ["MissingWebExtraError", "Session", "require_flask"]
+__all__ = ["MissingWebExtraError", "Session", "SessionView", "require_flask"]
 
 _EXTRA = "pip install 'dbt-training-wheels[web]'"
 

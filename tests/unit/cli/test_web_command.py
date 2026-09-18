@@ -28,7 +28,14 @@ ONE_APPEND = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders
 
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
-    destination = tmp_path / "jaffle_shop"
+    """A copy of the fixture project in a directory *not* named after it.
+
+    The declared name in `dbt_project.yml` is `jaffle_shop`; the directory is
+    not. Copied to `<tmp>/jaffle_shop`, a test asserting the reported name
+    cannot tell it from the path or from the directory's basename, because all
+    three read the same.
+    """
+    destination = tmp_path / "checkout"
     shutil.copytree(FIXTURE, destination)
     return destination
 
@@ -53,10 +60,12 @@ def _no_flask(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_web_reports_the_questions_the_walk_will_ask(
     tmp_path: Path, project: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main(["web", str(_sql(tmp_path)), "--project", str(project)]) == 0
-    out = capsys.readouterr().out
-    assert "1 question to answer." in out
-    assert "jaffle_shop" in out
+    sql = _sql(tmp_path)
+    assert main(["web", str(sql), "--project", str(project)]) == 0
+    # The whole line. "jaffle_shop" *in* the output cannot tell the project's
+    # name from its path, because the copy lives at <tmp>/jaffle_shop -- a
+    # print of the path would satisfy it.
+    assert capsys.readouterr().out == f"{sql} \u2192 jaffle_shop: 1 question to answer.\n"
 
 
 def test_web_counts_every_question_the_session_carries(
@@ -183,17 +192,31 @@ def test_web_expands_a_home_relative_project_path(
     shutil.copytree(FIXTURE, home / "proj")
     monkeypatch.setenv("HOME", str(home))
 
-    assert main(["web", str(_sql(tmp_path)), "--project", "~/proj"]) == 0
-    assert "jaffle_shop" in capsys.readouterr().out
+    sql = _sql(tmp_path)
+    assert main(["web", str(sql), "--project", "~/proj"]) == 0
+    assert capsys.readouterr().out == f"{sql} \u2192 jaffle_shop: 1 question to answer.\n"
+
+
+def _snapshot(root: Path) -> dict[str, bytes | None]:
+    """Every path under `root` and, for files, what is in it.
+
+    Contents and not just names: a conversion writing over a model the project
+    already has adds no path, and that is the write this command must not make
+    most of all.
+    """
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
+        for path in root.rglob("*")
+    }
 
 
 def test_web_writes_nothing(tmp_path: Path, project: Path) -> None:
     """The command prepares a conversation; writing is a separate action a
     user takes. Nothing lands on disk, least of all inside the project.
     """
-    before = sorted(p.relative_to(project).as_posix() for p in project.rglob("*"))
+    before = _snapshot(project)
 
     assert main(["web", str(_sql(tmp_path)), "--project", str(project)]) == 0
 
-    assert sorted(p.relative_to(project).as_posix() for p in project.rglob("*")) == before
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["in.sql", "jaffle_shop"]
+    assert _snapshot(project) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["checkout", "in.sql"]
