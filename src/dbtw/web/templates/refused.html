@@ -1,12 +1,16 @@
 {#
   One refusal, in the engine's own words. Nothing was recorded: `Session.
   answer` applies an answer before it keeps it, and restores what was held if
-  the run refuses -- so the screen the reader goes back to is the one they
-  came from.
+  the run refuses -- so the question the reader was answering is still there,
+  unchanged, and the link goes back to it rather than to the start of the
+  walk.
+
+  This is the likeliest page in the walk for a first-time reader to meet:
+  pressing "merge on a unique key" without naming a column lands here.
 #}
 {% extends "base.html" %}
 {% block main %}
 <h1>Not recorded</h1>
 <p><span data-engine>{{ message }}</span></p>
-<p class="onward"><a href="/">Start</a></p>
+<p class="onward"><a data-link="back" href="{{ back }}">Back</a></p>
 {% endblock %}

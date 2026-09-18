@@ -8,6 +8,21 @@ files `emit` would write. Nothing here reads a template or a route. If the
 walk shows a string the engine never produced, it is not in here, and the
 claim fails.
 
+**Two runs, because the screens read two.** A question screen renders the
+options of the *answered* run and the column requirement of the *pristine*
+one -- that split is the design, and it is the whole reason `SessionView`
+carries `prompts` separately. Gathered from the answered run alone, the set
+is missing every pristine `columns_prompt` (they are `""` once an answer is
+applied), so the honest page fails the claim and the only state in which the
+claim holds is the one with no answers. That made the strongest assertion on
+the branch true by construction, which is the shape of guard blind review
+keeps finding here.
+
+The stale state is the third: while an answer is held whose question the
+current SQL no longer asks, the answered run cannot be computed at all. Then
+the set is the pristine run plus the keys `stale_answers` names, which is
+exactly what that screen renders.
+
 The files are gathered by running `emit` into a temporary directory and
 reading back what it wrote, rather than by re-deriving the paths: emit
 decides where a sources file and a per-model schema .yml land, and a second
@@ -23,7 +38,7 @@ from pathlib import Path
 
 from tests.unit.web.page import normalised
 
-from dbtw.core.assemble import ProjectChange
+from dbtw.core.assemble import ProjectChange, UnknownAnswerError
 from dbtw.core.context import read_project
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
@@ -129,13 +144,40 @@ def _from_files(session: Session, change: ProjectChange) -> Iterator[str]:
         yield contents
 
 
+def _pristine(session: Session) -> Session:
+    """The same conversation with no answers in it.
+
+    Built through the public constructor rather than reached for inside the
+    session: the pristine run is a conversion of the same two paths, and a
+    test that needed a private accessor to name what a screen reads would be
+    reading the implementation instead of the contract.
+    """
+    return Session(project=session.project, sql=session.sql, dialect=session.dialect)
+
+
 def engine_strings(session: Session) -> frozenset[str]:
-    """Every string `dbtw.core` produces for this conversation, normalised."""
-    change = session.view().change
+    """Every string `dbtw.core` produces for this conversation, normalised.
+
+    Both runs the screens read, and the files, and the glossary.
+    """
     produced: list[str] = [str(session.sql), str(session.project)]
-    produced.extend(_from_change(change))
-    produced.extend(_from_examples(change))
-    produced.extend(_from_files(session, change))
+
+    pristine = _pristine(session).view().change
+    produced.extend(_from_change(pristine))
+    produced.extend(_from_examples(pristine))
+
+    try:
+        change = session.view().change
+    except UnknownAnswerError:
+        # A held answer the current SQL no longer asks for. Nothing but the
+        # pristine run can be computed, and the stale screen renders the keys.
+        produced.extend(session.stale_answers())
+        produced.extend(session.answers)
+    else:
+        produced.extend(_from_change(change))
+        produced.extend(_from_examples(change))
+        produced.extend(_from_files(session, change))
+
     for term in GLOSSARY:
         produced.append(term.name)
         produced.append(term.plain)

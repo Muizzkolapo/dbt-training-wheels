@@ -270,7 +270,17 @@ def test_a_held_answer_the_script_no_longer_asks_for_is_named_and_can_be_dropped
 
     stranded = client.get("/")
     assert stranded.status_code == 409
-    assert key in stranded.get_data(as_text=True)
+    page = read(stranded.get_data(as_text=True))
+    assert key in page.text
+
+    # No navigation, because there is none to have: every screen refuses
+    # while this answer is held. A nav counting "0 screens" would present a
+    # walk with nothing in it, which reads as a defect rather than as the
+    # state it is -- so the page counts no screens at all, and the one
+    # control on it is the way out.
+    assert page.links == ()
+    assert [name for name, _shown in page.counts if name == "screen"] == []
+    assert [form for form in page.forms if form.get("action") == "/stale"]
 
     dropped = client.post("/stale")
     assert dropped.status_code == 302

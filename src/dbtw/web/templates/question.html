@@ -11,6 +11,13 @@
   picker built from them would leave "append" as the only answer still
   reachable.
 
+  An answer the engine accepts and then does not apply -- a key the model
+  does not select -- comes back as an append with "append every row" marked
+  chosen. What the engine recorded about that sits at the top of this screen,
+  beside the question it answers, rather than two screens away: the redirect
+  after an answer exists so the reader watches their answer take effect, and
+  a screen that showed nothing taking effect would invert it.
+
   The worked example is the single most effective element measured, named
   unprompted by four of five and then five of five. Where `worked_example`
   refuses one -- a model whose columns are not knowable -- nothing renders in
@@ -20,6 +27,22 @@
 {% block main %}
 <h1><span data-engine>{{ decision.plain_question }}</span></h1>
 <p><span data-engine>{{ decision.question }}</span></p>
+
+{%- if produced %}
+<h2>From your answer</h2>
+<p class="tally"><span data-count="produced">{{ produced | length }}</span> records</p>
+<ul class="produced">
+  {%- for record in produced %}
+  <li data-item="produced">
+    <p class="action"><span data-engine>{{ record.action }}</span></p>
+    <p><span data-engine>{{ record.reason }}</span></p>
+    {%- if record.plain_reason %}
+    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ record.plain_reason }}</span></p>
+    {%- endif %}
+  </li>
+  {%- endfor %}
+</ul>
+{%- endif %}
 
 <h2>Evidence</h2>
 <p><span data-engine>{{ decision.action }}</span></p>

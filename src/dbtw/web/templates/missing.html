@@ -1,0 +1,16 @@
+{#
+  A page this walk does not have.
+
+  It exists so the walk's own shape survives the one 404 a reader reaches by
+  pressing a button rather than by typing an address: the done screen offers
+  the write action, because spec section 7 requires a conversion with nothing
+  to answer to offer it, and the route that performs it is not served by this
+  build. Werkzeug's stock page has no navigation and no way back, which makes
+  the terminal action of the walk look like an error -- the one thing section
+  7 says it must not look like.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Not here</h1>
+<p class="onward"><a data-link="back" href="/">Start</a></p>
+{% endblock %}

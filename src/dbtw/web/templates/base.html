@@ -15,6 +15,11 @@
      each other on the page itself -- "4 new files" over a list of five is
      the mismatch that cost this page the most trust.
 
+  The navigation is rendered only when there are screens to reach. While an
+  answer is held whose question the current SQL no longer asks, there are
+  none -- every screen refuses until it is dropped -- and a nav reading "0
+  screens" would say that as a defect rather than as a state.
+
   The glossary sits above the screen rather than under it, as it does in the
   report and for the same reason: four of five personas never reached the
   block that sat at the end, and a definition the reader meets after the word
@@ -29,6 +34,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
   <body>
+    {%- if screens %}
     <nav>
       <p class="tally"><span data-count="screen">{{ screens | length }}</span> screens</p>
       <ul class="steps">
@@ -42,6 +48,7 @@
         {%- endfor %}
       </ul>
     </nav>
+    {%- endif %}
 
     {%- if terms %}
     <section class="glossary" data-aside>

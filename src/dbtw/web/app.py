@@ -17,6 +17,16 @@ number of questions. The accessors are there for a caller that wants one
 thing; a screen wants three, and asking for them separately costs a
 conversion each.
 
+Two screens ask for one run more, and both buy something with it. A question
+screen runs the conversion *without* its own answer, so it can say what that
+answer -- and no other -- put on the record; the caveats screen runs it with
+no answers at all, so it can hand those records to the question screens
+instead of keeping them. Both are the same pipeline on the same inputs with a
+different answer set, which is the only way to ask what one answer is
+responsible for, and neither runs at all before the first answer is given. At
+spec 4.3's measured 17 ms for eight statements that is one screen at four
+runs rather than two.
+
 Two things this module deliberately does not do:
 
 * it does not read a rendered option to find out whether an answer needs
@@ -198,12 +208,83 @@ def _grouped(decisions: Sequence[Decision]) -> tuple[Consequence, ...]:
     )
 
 
+def _elsewhere(session: Session, *, without: str = "") -> frozenset[str]:
+    """The Decision keys this conversion records with the held answers, less
+    `without`'s -- or with none of them at all when `without` is empty.
+
+    A second `Session` over the same two paths, built through the public
+    constructor. It is not a second code path: the same pipeline runs, on the
+    same inputs, with a different answer set, which is the only way to ask
+    what one answer is responsible for. `answers` is copied rather than
+    shared, so nothing this asks can change what the session holds.
+    """
+    held = {key: value for key, value in session.answers.items() if key != without}
+    other = Session(
+        project=session.project,
+        sql=session.sql,
+        dialect=session.dialect,
+        answers=held if without else {},
+    )
+    return frozenset(decision.key for decision in other.view().change.decisions)
+
+
+def _produced_by(session: Session, change: ProjectChange, key: str) -> tuple[Decision, ...]:
+    """The Decisions this question's answer put on the record.
+
+    An answer the engine accepts and then does not apply is the case this
+    exists for: name a key the model does not select and the conversion comes
+    back as an append, the screen shows "append every row -- chosen", and the
+    only thing that says why is a Decision two screens away, in dbt's words.
+    The engine is not silent there; the walk was.
+
+    Derived by difference rather than by reading a name out of a key: the
+    Decision an answer produces carries no statement index and its key ends
+    in the table's name, so pairing it to the question by spelling would be
+    this layer parsing our own identifiers -- and `events` sits inside
+    `stg_events`, which is how that goes wrong. Running the conversion
+    without this one answer and taking what appears when it is put back is
+    exact, and it costs one more pipeline run on a screen that shows one
+    question.
+
+    Empty for an unanswered question, and empty for an answer the engine
+    applied as given -- there is nothing to say about an answer that did what
+    it said.
+    """
+    if key not in session.answers:
+        return ()
+    without = _elsewhere(session, without=key)
+    return tuple(d for d in change.decisions if d.key not in without)
+
+
+def _answered_into_existence(session: Session, change: ProjectChange) -> frozenset[str]:
+    """Every Decision key this conversion records only because of an answer.
+
+    The caveats screen is everything this conversion decided without asking,
+    and a Decision that exists because of an answer belongs beside the
+    question that answer was given to -- so this is what the caveats screen
+    subtracts and the question screens add back. Between them every Decision
+    still reaches exactly one screen, and
+    `test_every_decision_reaches_exactly_one_screen` is what holds that in the
+    answered states as well as the pristine one.
+    """
+    if not session.answers:
+        return frozenset()
+    pristine = _elsewhere(session)
+    return frozenset(d.key for d in change.decisions if d.key not in pristine)
+
+
 def _renames(change: ProjectChange) -> tuple[Decision, ...]:
     return tuple(d for d in change.decisions if d.key.startswith(_RENAME))
 
 
-def _caveats(change: ProjectChange) -> tuple[Decision, ...]:
-    return tuple(d for d in change.decisions if not d.question and not d.key.startswith(_RENAME))
+def _caveats(change: ProjectChange, answered: frozenset[str]) -> tuple[Decision, ...]:
+    """Everything this conversion decided without asking, that an answer did
+    not bring into existence."""
+    return tuple(
+        d
+        for d in change.decisions
+        if not d.question and not d.key.startswith(_RENAME) and d.key not in answered
+    )
 
 
 def _example_for(decision: Decision, change: ProjectChange) -> Example | None:
@@ -376,12 +457,16 @@ def create_app(session: Session) -> Flask:
         decision = view.questions[index]
         choices = _choices(decision, view.prompts.get(decision.key, {}))
         example = _example_for(decision, view.change)
+        produced = _produced_by(session, view.change, decision.key)
         spoken = _spoken(
             decision.plain_question,
             decision.question,
             decision.action,
             decision.reason,
             decision.plain_reason,
+            (d.action for d in produced),
+            (d.reason for d in produced),
+            (d.plain_reason for d in produced),
             (choice.option.label for choice in choices),
             (choice.option.effect for choice in choices),
             (choice.option.plain for choice in choices),
@@ -398,6 +483,7 @@ def create_app(session: Session) -> Flask:
             decision=decision,
             choices=choices,
             example=example,
+            produced=produced,
         )
 
     @app.get("/caveats")
@@ -405,7 +491,7 @@ def create_app(session: Session) -> Flask:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        decided = _caveats(view.change)
+        decided = _caveats(view.change, _answered_into_existence(session, view.change))
         pending = tuple(statement for _, statement in view.change.pending)
         spoken = _spoken(
             (d.action for d in decided),
@@ -491,9 +577,18 @@ def create_app(session: Session) -> Flask:
         try:
             session.answer(key, kind, columns)
         except (UnknownAnswerError, ValueError) as refusal:
-            return _refused(str(refusal)), 400
+            return _refused(str(refusal), key), 400
 
-        return redirect(url_for("question", index=_index_of(session, key)))
+        index = _index_of(session, key)
+        if index is None:
+            # Unreachable: an answer this conversion accepted names one of its
+            # own questions. Raising rather than defaulting to the first
+            # screen, because sending a reader to an answer they did not give
+            # is the silence this project does not keep.
+            raise UnknownAnswerError(
+                f"{key!r} was answered and is not a question of the run that answered it"
+            )
+        return redirect(url_for("question", index=index))
 
     @app.post("/stale")
     def stale() -> Response:
@@ -507,8 +602,57 @@ def create_app(session: Session) -> Flask:
         session.drop_stale_answers()
         return redirect(url_for("start"))
 
-    def _refused(message: str) -> str:
-        return render_template("refused.html", screens=(), terms=(), here="", message=message)
+    def _refused(message: str, key: str) -> str:
+        """One refusal, with the walk still around it and a way back into it.
+
+        Not a bare page. Pressing "merge on a unique key" without naming a
+        column is the likeliest misstep in the walk, and a first-time user who
+        makes it should land on the walk with a sentence on it, not on a page
+        with the navigation gone and no route back to the question they were
+        answering.
+        """
+        view = _view()
+        screens = _screens(view) if isinstance(view, SessionView) else ()
+        return render_template(
+            "refused.html",
+            screens=screens,
+            terms=(),
+            here="",
+            message=message,
+            back=_question_url(session, key),
+        )
+
+    @app.errorhandler(404)
+    def missing(_error: object) -> tuple[str, int]:
+        """A page this walk does not have, shaped like the walk.
+
+        `/write` is the one a reader reaches by pressing a button: the done
+        screen offers the write action because spec section 7 requires it,
+        and the route that performs it is not served by this build. Werkzeug's
+        stock page for that -- no navigation, no way back, "check your
+        spelling" -- makes the terminal action of the walk look like an error,
+        which is the one thing section 7 says it must not look like.
+        """
+        view = _view()
+        screens = _screens(view) if isinstance(view, SessionView) else ()
+        return render_template("missing.html", screens=screens, terms=(), here=""), 404
+
+    def _question_url(session: Session, key: str) -> str:
+        """The screen `key`'s question is on, or the start of the walk.
+
+        Both exits say the same thing: there is a question screen to go back
+        to, or there is not. A key this conversion does not ask has none, and
+        neither does a conversation that cannot be run at all while a stranded
+        answer is held -- and `/` is the screen that says so.
+        """
+        try:
+            questions = session.view().questions
+        except UnknownAnswerError:
+            return url_for("start")
+        for index, decision in enumerate(questions):
+            if decision.key == key:
+                return url_for("question", index=index)
+        return url_for("start")
 
     return app
 
@@ -546,8 +690,9 @@ def _submitted_columns(ticked: Sequence[str], typed: str) -> tuple[str, ...]:
     return tuple(columns)
 
 
-def _index_of(session: Session, key: str) -> int:
-    """Where the question `key` sits in the walk.
+def _index_of(session: Session, key: str) -> int | None:
+    """Where the question `key` sits in the walk, or None when this
+    conversion asks no such question.
 
     Read back off the session rather than taken from the form: a redirect
     target the browser supplied is one the browser could get wrong, and the
@@ -556,13 +701,7 @@ def _index_of(session: Session, key: str) -> int:
     for index, decision in enumerate(session.view().questions):
         if decision.key == key:
             return index
-    # Unreachable through `answer`, which refuses a key this conversion does
-    # not ask before anything is recorded. Raising rather than defaulting to
-    # the first screen: sending a user to an answer they did not give is the
-    # silence this project does not keep.
-    raise UnknownAnswerError(
-        f"{key!r} was answered and is not a question of the run that answered it"
-    )
+    return None
 
 
 def serve(app: Flask, host: str, port: int, open_browser: bool) -> None:

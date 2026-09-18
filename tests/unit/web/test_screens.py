@@ -17,7 +17,12 @@ from pathlib import Path
 import pytest
 from tests.unit.web.conftest import Walk
 from tests.unit.web.engine_strings import engine_strings, written_files
-from tests.unit.web.helpers import DUPLICATE_CANDIDATES, STAR_PROJECTION
+from tests.unit.web.helpers import (
+    DUPLICATE_CANDIDATES,
+    ONE_APPEND_ELSEWHERE,
+    ONE_MERGE,
+    STAR_PROJECTION,
+)
 from tests.unit.web.page import Page, normalised, read, words
 
 import dbtw.web
@@ -76,6 +81,104 @@ def _engine(page: Page) -> set[str]:
     return {normalised(run) for run in page.engine}
 
 
+# The states a screen of this walk is rendered in. Every cross-cutting guard
+# runs in all four, because five of the six screens change under the answer
+# loop and a guard evaluated only before the first answer is a guard evaluated
+# in the one state where it cannot fail. "downgraded" is the answer the engine
+# accepts and then does not apply -- a key the model does not select -- which
+# is the state that puts a Decision on the page that no pristine run carries.
+_PRISTINE = "pristine"
+_ANSWERED = "answered"
+_DOWNGRADED = "downgraded"
+_STALE = "stale"
+_STATES = (_PRISTINE, _ANSWERED, _DOWNGRADED, _STALE)
+
+
+def _append_key(session: Session) -> str:
+    return next(d.key for d in session.view().questions if ".append." in d.key)
+
+
+def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str):  # type: ignore[no-untyped-def]
+    """The walk, put into one of the four states, and the session behind it."""
+    if state == _STALE:
+        sql = sql_script(ONE_APPEND_ELSEWHERE)
+        app, client, session = walk(sql)
+        (question,) = session.view().questions
+        assert (
+            client.post("/answer", data={"key": question.key, "kind": "append"}).status_code == 302
+        )
+        sql.write_text(ONE_MERGE, encoding="utf-8")
+        return app, client, session
+
+    app, client, session = walk(walk_sql)
+    if state == _ANSWERED:
+        answer = {"key": _append_key(session), "kind": "merge_checked", "typed": "event_id"}
+        assert client.post("/answer", data=answer).status_code == 302
+    elif state == _DOWNGRADED:
+        answer = {"key": _append_key(session), "kind": "merge", "typed": "evnt_id"}
+        assert client.post("/answer", data=answer).status_code == 302
+    return app, client, session
+
+
+def _pristine_decisions(session: Session):  # type: ignore[no-untyped-def]
+    """This conversion's Decisions with no answers in it.
+
+    A second `Session` over the same two paths, through the public
+    constructor. What an answer produced is what this run does not carry.
+    """
+    return (
+        Session(project=session.project, sql=session.sql, dialect=session.dialect)
+        .view()
+        .change.decisions
+    )
+
+
+def _refusal_message(session: Session) -> str:
+    """What the engine says when the merge answer arrives with no columns.
+
+    Asked of the engine by making the call, not written out here: the refusal
+    page renders the exception's own sentence, and a test that spelled that
+    sentence out would be checking the page against a copy of the message
+    instead of against the message. `Session.answer` restores what it held
+    when a run refuses, so asking costs the session nothing.
+    """
+    try:
+        session.answer(_append_key(session), "merge", ())
+    except ValueError as refusal:
+        return str(refusal)
+    raise AssertionError("the merge answer with no columns was accepted")
+
+
+def _produced(session: Session, state: str) -> frozenset[str]:
+    """Every string the engine produces for this state, the refusal included."""
+    strings = engine_strings(session)
+    if state == _STALE:
+        return strings
+    return strings | {normalised(_refusal_message(session))}
+
+
+def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]:
+    """Every page a reader can land on in this state, screens and both
+    non-screens alike.
+
+    `/answer` and `/stale` are POST-only, so a screen list derived from the
+    routing table filters them out -- and the refusal page is the most likely
+    page in the whole walk for a first-time user to meet, because pressing
+    "merge on a unique key" without naming a column lands on it. A guard that
+    never visited it is a guard that never visited the page it matters most on.
+    """
+    if state == _STALE:
+        stranded = client.get("/")
+        assert stranded.status_code == 409
+        return {"/ (stranded)": read(stranded.get_data(as_text=True))}
+
+    pages = _pages(app, client, session)
+    refusal = client.post("/answer", data={"key": _append_key(session), "kind": "merge"})
+    assert refusal.status_code == 400
+    pages["/answer (refused)"] = read(refusal.get_data(as_text=True))
+    return pages
+
+
 def _pages(app, client, session: Session) -> dict[str, Page]:
     pages: dict[str, Page] = {}
     for url in _screen_urls(app, session):
@@ -100,23 +203,33 @@ def test_the_walk_is_the_six_screens_its_own_routes_define(walk: Walk, walk_sql:
         assert client.get(url).status_code == 200, url
 
 
-def test_no_screen_authors_a_sentence(walk: Walk, walk_sql: Path) -> None:
+@pytest.mark.parametrize("state", _STATES)
+def test_no_screen_authors_a_sentence(walk: Walk, sql_script, walk_sql: Path, state: str) -> None:
     """Spec section 6.1, mechanically.
 
     Two assertions, and they are one claim seen from both ends. A template
     that wrote a sentence of its own fails the second; a template that wrote
     one and marked it as the engine's fails the first, because the mark is
     checked by exact match against what `dbtw.core` actually produced.
-    """
-    app, client, session = walk(walk_sql)
-    produced = engine_strings(session)
 
-    for url, page in _pages(app, client, session).items():
+    In every state, because the walk has four and five of its six screens
+    change between them. Run only against a pristine walk, the first
+    assertion held for a reason that had nothing to do with the templates:
+    the page renders the *pristine* question's `columns_prompt` -- which is
+    the design, and the only honest source for it -- while the set it was
+    checked against was gathered from the *answered* run, where that field is
+    empty. So the one state it was evaluated in was the one state where the
+    two runs agree.
+    """
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    produced = _produced(session, state)
+
+    for url, page in _guarded_pages(app, client, session, state).items():
         unclaimed = [run for run in page.engine if normalised(run) not in produced]
-        assert not unclaimed, f"{url} marks text the engine never produced: {unclaimed[:2]}"
+        assert not unclaimed, f"{state} {url} marks text the engine never produced: {unclaimed[:2]}"
 
         authored = page.sentences(_SENTENCE)
-        assert not authored, f"{url} authors prose: {authored}"
+        assert not authored, f"{state} {url} authors prose: {authored}"
 
 
 def test_the_prose_check_sees_a_sentence_a_template_would_have_written(
@@ -150,15 +263,18 @@ def test_the_prose_check_sees_a_sentence_a_template_would_have_written(
     assert [run for run in salted.engine if normalised(run) not in produced]
 
 
-def test_the_prose_check_has_something_left_to_look_at(walk: Walk, walk_sql: Path) -> None:
-    """Every screen leaves authored text behind after the engine's is set
-    aside -- headings, nav, buttons. A screen whose authored side came back
+@pytest.mark.parametrize("state", _STATES)
+def test_the_prose_check_has_something_left_to_look_at(
+    walk: Walk, sql_script, walk_sql: Path, state: str
+) -> None:
+    """Every page leaves authored text behind after the engine's is set
+    aside -- headings, nav, buttons. A page whose authored side came back
     empty would pass the check above having inspected nothing.
     """
-    app, client, session = walk(walk_sql)
-    for url, page in _pages(app, client, session).items():
-        assert page.authored, f"{url} leaves nothing authored to inspect"
-        assert page.engine, f"{url} renders nothing from the engine"
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    for url, page in _guarded_pages(app, client, session, state).items():
+        assert page.authored, f"{state} {url} leaves nothing authored to inspect"
+        assert page.engine, f"{state} {url} renders nothing from the engine"
 
 
 def test_every_question_screen_shows_the_engine_s_example_or_no_example_at_all(
@@ -201,10 +317,13 @@ def test_every_question_screen_shows_the_engine_s_example_or_no_example_at_all(
     assert refused == 1, "this conversion is meant to carry one question an example refuses"
 
 
-def test_no_screen_renders_a_heading_with_an_empty_body(walk: Walk, walk_sql: Path) -> None:
-    app, client, session = walk(walk_sql)
-    for url, page in _pages(app, client, session).items():
-        assert page.empty_headings() == (), f"{url} opens a section and says nothing in it"
+@pytest.mark.parametrize("state", _STATES)
+def test_no_screen_renders_a_heading_with_an_empty_body(
+    walk: Walk, sql_script, walk_sql: Path, state: str
+) -> None:
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    for url, page in _guarded_pages(app, client, session, state).items():
+        assert page.empty_headings() == (), f"{state} {url} opens a section and says nothing in it"
 
 
 def test_the_empty_heading_check_catches_one(walk: Walk, walk_sql: Path) -> None:
@@ -214,20 +333,35 @@ def test_the_empty_heading_check_catches_one(walk: Walk, walk_sql: Path) -> None
     assert read(salted).empty_headings() == ("Orphan",)
 
 
-def test_every_count_is_the_length_of_what_is_listed_beside_it(walk: Walk, walk_sql: Path) -> None:
-    """Section 11.4(c). The number and the list are checked against each
-    other on the page itself, which is the failure that cost the most trust:
-    "4 new files" beside a list of five.
+@pytest.mark.parametrize("state", _STATES)
+def test_every_count_is_the_length_of_what_is_listed_beside_it(
+    walk: Walk, sql_script, walk_sql: Path, state: str
+) -> None:
+    """Section 11.4(c), both halves.
+
+    A declared number is held against the list beside it -- the failure that
+    cost the most trust was "4 new files" over a list of five. But checking
+    only the numbers that declare themselves checks nothing about a number
+    that does not: written as a bare `<p>4 new files</p>`, the exact string
+    from the finding is two words and one digit, so the prose threshold
+    cannot see it and the count loop never looks at it. So every digit in
+    every run the templates wrote has to sit inside a `data-count` element,
+    and that is the second assertion.
     """
-    app, client, session = walk(walk_sql)
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
     seen = 0
-    for url, page in _pages(app, client, session).items():
-        assert page.counts, f"{url} shows no derived count"
+    for url, page in _guarded_pages(app, client, session, state).items():
+        assert page.counts, f"{state} {url} shows no derived count"
         for name, shown in page.counts:
             listed = sum(1 for item in page.items if item == name)
-            assert shown == str(listed), f"{url} says {shown} {name} beside {listed}"
+            assert shown == str(listed), f"{state} {url} says {shown} {name} beside {listed}"
             seen += 1
-    assert seen >= 6, "the walk should be counting more than one thing"
+        undeclared = page.undeclared_numbers()
+        assert not undeclared, f"{state} {url} shows a number that counts nothing: {undeclared}"
+    # The stranded state is one page with one count on it; every other state
+    # is seven pages, and a walk counting fewer than six things across them
+    # has stopped deriving numbers it used to derive.
+    assert seen >= (1 if state == _STALE else 6), f"{state} counts {seen} things"
 
 
 def test_the_count_check_catches_a_number_that_does_not_match_its_list() -> None:
@@ -263,36 +397,59 @@ def test_not_null_is_declared_on_no_screen(walk: Walk, walk_sql: Path) -> None:
         assert "not_null" not in page.text, f"{url} declares a test nobody chose"
 
 
-def test_no_screen_gates_the_write_action_behind_a_checkbox(walk: Walk, walk_sql: Path) -> None:
+@pytest.mark.parametrize("state", _STATES)
+def test_no_screen_gates_the_write_action(
+    walk: Walk, sql_script, walk_sql: Path, state: str
+) -> None:
     """Three of three personas named the second acknowledgment checkbox
     theatre and said ticking it would be lying to the tool: it demanded a
     certification the page gave them no way to obtain. The write action is
-    reachable with nothing ticked.
+    reachable with nothing supplied.
+
+    Every control, not only checkboxes. "I have read this" as a required text
+    box or a required dropdown is the same gate demanding the same
+    certification, built out of a different tag, and a guard that named the
+    tag rather than the demand would wave both through.
 
     The column picker's checkboxes are a different thing -- they carry an
-    answer, not an acknowledgment -- so the claim is about the screen holding
-    the write action and about `required`, not about checkboxes in general.
+    answer, not an acknowledgment -- so the claim is about the form that
+    writes and about `required`, not about controls in general.
     """
-    app, client, session = walk(walk_sql)
-    pages = _pages(app, client, session)
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    pages = _guarded_pages(app, client, session, state)
 
-    done = pages["/done"]
-    assert [form for form in done.forms if form.get("action") == "/write"]
-    assert not [box for box in done.inputs if box.get("type") == "checkbox"]
+    if state != _STALE:
+        done = pages["/done"]
+        assert [form for form in done.forms if form.get("action") == "/write"]
+        writing = [control for control in done.controls if control["form"] == "/write"]
+        assert writing, "the write form offers nothing to press"
+        demanded = [control for control in writing if "required" in control]
+        assert not demanded, f"the write action demands {demanded}"
+        assert not [c for c in writing if c.get("type") == "checkbox"]
 
     for url, page in pages.items():
-        gated = [box for box in page.inputs if box.get("type") == "checkbox" and "required" in box]
-        assert not gated, f"{url} demands a tick before it will go on"
-        assert "<script" not in page.text, f"{url} carries script that could gate it"
+        gated = [c for c in page.controls if c.get("type") == "checkbox" and "required" in c]
+        assert not gated, f"{state} {url} demands a tick before it will go on"
+        assert "<script" not in page.text, f"{state} {url} carries script that could gate it"
 
 
-def test_every_decision_reaches_exactly_one_screen(walk: Walk, walk_sql: Path) -> None:
+@pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])
+def test_every_decision_reaches_exactly_one_screen(
+    walk: Walk, sql_script, walk_sql: Path, state: str
+) -> None:
     """Nothing is silent. Every Decision this conversion recorded is on a
     screen, and on one screen: a Decision rendered nowhere is a choice made
     without telling anyone, and one rendered twice is the repetition a
     reviewer named as the thing most likely to train a reader to skip it.
+
+    In the answered states too, and that is where it does real work: a
+    Decision an answer brought into existence belongs beside the question
+    that answer was given to, and the caveats screen has to stop carrying it
+    at the same moment the question screen starts. Checked only before the
+    first answer, the partition would be checked in the one state where
+    nothing has moved.
     """
-    app, client, session = walk(walk_sql)
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
     pages = _pages(app, client, session)
     decisions = session.view().change.decisions
     assert len(decisions) > 5, "this conversion should record more than a handful"
@@ -300,7 +457,7 @@ def test_every_decision_reaches_exactly_one_screen(walk: Walk, walk_sql: Path) -
     for decision in decisions:
         action = normalised(decision.action)
         on = [url for url, page in pages.items() if action in _engine(page)]
-        assert len(on) == 1, f"{decision.key} is rendered on {on or 'no screen'}"
+        assert len(on) == 1, f"{state}: {decision.key} is rendered on {on or 'no screen'}"
 
 
 def test_the_cutover_is_disclosed_before_the_first_question(walk: Walk, walk_sql: Path) -> None:
@@ -364,6 +521,18 @@ def test_the_picker_still_offers_columns_after_the_question_has_been_answered(
     page = read(client.get(f"/questions/{index}").get_data(as_text=True))
     assert session.view().prompts[key]["merge"] in page.text
     assert [box for box in page.inputs if box.get("name") == "typed"]
+
+    # The rows, not only the legend and the free-text field. Reading the
+    # candidate rows off the rendered option's `columns_prompt` instead of the
+    # session's prompts empties the picker after the first answer while
+    # leaving both of those in place -- half of the dead end, and invisible to
+    # a check that asked only whether the picker was there.
+    assert answered.subject is not None
+    candidates = answered.subject.candidates
+    assert candidates == ("event_id", "occurred_at"), "the model still projects both"
+    pickers = [kind for kind, prompt in session.view().prompts[key].items() if prompt]
+    ticked = [box.get("value") for box in page.inputs if box.get("name") == "columns"]
+    assert ticked == list(candidates) * len(pickers)
 
 
 def test_a_model_whose_columns_are_not_knowable_is_offered_free_text(
@@ -484,42 +653,61 @@ def test_each_screen_defines_the_dbt_words_it_uses_and_no_others(
     assert "{{ }}" in _engine(brackets), "the brackets are shown and never explained"
 
 
-@pytest.mark.parametrize("url", ["/", "/questions/0", "/caveats", "/files", "/done"])
-def test_no_screen_repeats_one_engine_string(walk: Walk, walk_sql: Path, url: str) -> None:
+@pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])
+def test_no_screen_repeats_one_engine_string(
+    walk: Walk, sql_script, walk_sql: Path, state: str
+) -> None:
     """The repetition a reviewer named as the thing most likely to train a
     reader to skip a block. One string, rendered twice on one screen, is
     either a mistake or noise; either way it is not the page saying something
     twice on purpose.
     """
-    app, client, session = walk(walk_sql)
-    page = read(client.get(url).get_data(as_text=True))
+    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
     consequences = {
         normalised(text)
         for decision in session.view().change.decisions
         for text in (decision.reason, decision.plain_reason)
         if len(words(text)) >= _SENTENCE
     }
-    shown = [normalised(run) for run in page.engine]
-    repeated = {text: shown.count(text) for text in consequences if shown.count(text) > 1}
-    assert not repeated, f"{url} restates one consequence {list(repeated.values())} times"
+    for url, page in _pages(app, client, session).items():
+        shown = [normalised(run) for run in page.engine]
+        repeated = {text: shown.count(text) for text in consequences if shown.count(text) > 1}
+        assert not repeated, f"{state} {url} restates a consequence {list(repeated.values())} times"
 
 
 def test_the_engine_refuses_an_example_for_every_caveat_so_the_screen_shows_none(
     walk: Walk, walk_sql: Path
 ) -> None:
     """Spec section 11.2 asks for a worked example on every question *and*
-    every caveat. Half of it is unbuildable from here, and this is the test
-    that says so rather than a template filling the hole with prose.
+    every caveat. The caveat half is not buildable, and this is the test that
+    says so rather than a template filling the hole with prose.
 
     `worked_example`'s first refusal is `not decision.question or
     decision.subject is None`, and every Decision that asks nothing carries
-    both -- no caveat this pipeline emits has a subject. So the screen shows
-    no example beside a caveat, and invents none.
+    both. **Dropping that refusal and handing every caveat a subject closes
+    none of the eleven** -- measured, not reasoned about. Three further
+    blockers stand behind it, and they are independent of each other:
 
-    Closing it is a core change, not a template one: a caveat Decision has to
-    carry its `Subject`, and `worked_example` has to accept a Decision that
-    asks nothing. This test fails the day either lands, which is when the
-    screen should start rendering them.
+    * seven of the eleven are `assemble.*` Decisions whose keys carry no
+      statement index, so `statement_index(d) is None` and the pairing
+      `worked_example` uses to find the model returns nothing. Pairing them
+      needs a channel the `Decision` contract does not have;
+    * two are `truncate_insert` Decisions over a model that is not
+      incremental at all, and `worked_example` has two branches -- merge and
+      append -- neither of which describes a full rebuild;
+    * two are over a `SELECT *`, whose output columns are not knowable at
+      convert time, and those are never closable by anything.
+
+    And the shape is wrong for most of them regardless: `Example` models one
+    row before and after, while seven of the eleven are not row-shaped. A
+    rename's honest picture is two tables, not two rows.
+
+    So this is not a two-line fix waiting to be scoped. It is a core change
+    of real size -- a pairing channel, a third `worked_example` branch, and
+    an `Example` that can carry something other than a row -- and until it
+    lands the caveats screen shows no example and invents none. This test
+    fails the day any part of it lands, which is when the screen should be
+    revisited.
     """
     app, client, session = walk(walk_sql)
     view = session.view()
@@ -557,6 +745,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "done.html",
         "stale.html",
         "refused.html",
+        "missing.html",
     }
     for name in rendered:
         assert (package / "templates" / name).is_file(), name
@@ -590,3 +779,153 @@ def test_the_start_screen_names_what_is_being_converted(walk: Walk, walk_sql: Pa
 
     assert session.view().change.project_name in rendered
     assert str(session.sql) in rendered
+
+
+def test_an_answer_the_engine_did_not_apply_is_explained_beside_the_question(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """Name a key the model does not select and the engine accepts the answer,
+    refuses to apply it, and records why. Before this, the screen the reader
+    was redirected to showed "append every row -- chosen" and said nothing;
+    the explanation was on the caveats screen, two screens away, in dbt's
+    words only.
+
+    The redirect after an answer exists so the reader watches their answer
+    take effect. When it does not take effect, that is the thing to show, and
+    it is shown where the answer was given.
+    """
+    app, client, session = walk(walk_sql)
+    key = _append_key(session)
+    index = [d.key for d in session.view().questions].index(key)
+    before = {d.key for d in _pristine_decisions(session)}
+
+    assert (
+        client.post("/answer", data={"key": key, "kind": "merge", "typed": "evnt_id"}).status_code
+        == 302
+    )
+
+    view = session.view()
+    (events,) = [m for m in view.change.models if m.name == "stg_events"]
+    assert (events.incremental_strategy, events.unique_key) == ("append", ())
+    assert next(d for d in view.questions if d.key == key).chosen == "append every row"
+
+    # Named by difference, not by spelling: the Decision an answer produces is
+    # the one the pristine run does not carry.
+    (downgrade,) = [d for d in view.change.decisions if d.key not in before]
+
+    pages = _pages(app, client, session)
+    here = f"/questions/{index}"
+    rendered = _engine(pages[here])
+    assert normalised(downgrade.action) in rendered, "the screen does not say the key was dropped"
+    assert normalised(downgrade.reason) in rendered, "the screen does not say why"
+
+    elsewhere = [
+        url
+        for url, page in pages.items()
+        if url != here and normalised(downgrade.action) in _engine(page)
+    ]
+    assert elsewhere == [], f"it is also on {elsewhere}"
+
+
+def test_an_answer_the_engine_applied_as_given_says_nothing_extra(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The other half of the claim above, and what stops it being a section
+    that is always there: an answer that did what it said produces no
+    Decision, so the screen gains no block.
+    """
+    app, client, session = walk(walk_sql)
+    key = _append_key(session)
+    index = [d.key for d in session.view().questions].index(key)
+    before = {d.key for d in _pristine_decisions(session)}
+
+    assert (
+        client.post("/answer", data={"key": key, "kind": "merge", "typed": "event_id"}).status_code
+        == 302
+    )
+
+    view = session.view()
+    (events,) = [m for m in view.change.models if m.name == "stg_events"]
+    assert (events.incremental_strategy, events.unique_key) == ("merge", ("event_id",))
+    assert [d.key for d in view.change.decisions if d.key not in before] == []
+
+    page = read(client.get(f"/questions/{index}").get_data(as_text=True))
+    assert [item for item in page.items if item == "produced"] == []
+    assert "From your answer" not in page.text
+
+
+def test_a_page_the_walk_does_not_have_is_still_shaped_like_the_walk(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The write action is offered and its route is not served by this build,
+    so pressing it is the one 404 a reader reaches by pressing a button.
+    Werkzeug's stock page -- no navigation, no way back, "check your
+    spelling" -- makes the terminal action of the walk look like an error,
+    which is the one thing spec section 7 says it must not look like.
+    """
+    app, client, session = walk(walk_sql)
+
+    for response in (client.post("/write"), client.get("/questions/9")):
+        assert response.status_code == 404
+        page = read(response.get_data(as_text=True))
+        assert set(page.links) == set(_screen_urls(app, session))
+        assert page.named_links["back"] == "/"
+        assert page.sentences(_SENTENCE) == ()
+        assert page.undeclared_numbers() == ()
+        assert "check your spelling" not in page.text
+
+
+def test_the_refusal_page_goes_back_to_the_question_it_refused(walk: Walk, walk_sql: Path) -> None:
+    """The likeliest misstep in the walk: press "merge on a unique key"
+    without naming a column. The walk is still around the refusal and the way
+    on is the question it came from, not the start of it.
+    """
+    app, client, session = walk(walk_sql)
+    key = _append_key(session)
+    index = [d.key for d in session.view().questions].index(key)
+
+    refused = client.post("/answer", data={"key": key, "kind": "merge"})
+    assert refused.status_code == 400
+    page = read(refused.get_data(as_text=True))
+
+    assert normalised(_refusal_message(session)) in _engine(page)
+    # The link the page itself offers, not merely a link on it: every page in
+    # the walk carries a nav link to every question, so "the refusal links to
+    # /questions/1" is true of the start screen too and says nothing.
+    assert page.named_links["back"] == f"/questions/{index}"
+    assert set(page.links) >= set(_screen_urls(app, session))
+
+
+def test_a_refusal_about_a_key_this_conversion_does_not_ask_goes_to_the_start(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """There is no question screen for a key this conversion does not ask, so
+    the way on is the walk's first screen -- the only honest destination, and
+    not a guess at which question was meant.
+    """
+    _app, client, _session = walk(walk_sql)
+    refused = client.post("/answer", data={"key": "tier2.append.nowhere.sql:0", "kind": "append"})
+    assert refused.status_code == 400
+    assert read(refused.get_data(as_text=True)).named_links["back"] == "/"
+
+
+def test_the_glossary_is_set_aside_from_the_screen_it_defines_words_for(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """`data-aside` on the glossary block is what stops the check above being
+    a tautology, and it is one attribute. Without it the block's own
+    definitions are part of the screen the check reads, so a screen defining
+    fourteen words is a screen using fourteen words and the check passes for
+    any block at all -- including the round-one block that dumped everything,
+    which four of five personas never reached.
+    """
+    app, client, _session = walk(walk_sql)
+    page = read(client.get("/files").get_data(as_text=True))
+
+    defined = terms_in(page.outside_asides())
+    assert defined, "this screen uses words the glossary defines"
+    assert len(page.outside_asides()) < len(page.text)
+
+    inside = {normalised(run.text) for run in page.runs if run.aside}
+    for term in defined:
+        assert normalised(term.plain) in inside, f"{term.name} is defined outside the aside"
