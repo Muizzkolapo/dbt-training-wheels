@@ -811,12 +811,26 @@ def _flag_overridden_decision(
     taken = f"{answered.option.label!r}"
     if answered.keys and answered.option.columns_prompt:
         taken += f" with {_keys_str(answered.keys)}"
+    # What the model came out doing, in the plain register's terms and read
+    # off `after` rather than off which branch this is. The dbt register can
+    # spell it in dbt's own config vocabulary; this one cannot, and a reader
+    # who has just been told a key was not used still has to be told what the
+    # table does instead.
+    left = (
+        f"matching rows on {_keys_str(after.unique_key)}"
+        if after.unique_key
+        else "adding every row it finds, every run"
+    )
     # The answer took effect exactly when the model came out carrying the key
     # it asked for -- an empty one for "append every row", the named one for a
     # merge.
     if after.unique_key == answered.keys:
         outcome = f"its own question was answered {taken} instead"
         aftermath = "so it was taken and the flag was not applied here"
+        plain_aftermath = (
+            f"So that answer was taken for {draft_name}, and {keys_str} was not used here. "
+            f"{draft_name} is left {left}."
+        )
     else:
         # Spelled in dbt's own config vocabulary, the same way `_upgrade_to_merge`
         # names an outcome, rather than in prose needing an article the strategy
@@ -837,6 +851,11 @@ def _flag_overridden_decision(
             "then declined on its own merits, for the reason recorded in the Decision "
             "beside this one"
         )
+        plain_aftermath = (
+            f"So {keys_str} was not used here. The answer that displaced it was then turned "
+            "down for a reason of its own, written in the record beside this one. "
+            f"{draft_name} was left {left}."
+        )
     return Decision(
         key=f"assemble.unique_key_overridden.{draft_name}",
         tier=2,
@@ -845,6 +864,12 @@ def _flag_overridden_decision(
             "--unique-key answers every incremental question in this run at once, "
             "and this model's own question was answered separately; the answer "
             f"naming this one model is the more specific of the two, {aftermath}"
+        ),
+        plain_reason=(
+            f"{keys_str} was asked for on the command line, which asks the same thing of "
+            f"every table in this run at once. {draft_name} was asked about on its own, and "
+            f"answered on its own. An answer about one table is the more particular of the "
+            f"two. {plain_aftermath}"
         ),
         source_file="",
         line_start=0,
@@ -961,19 +986,29 @@ def _apply_unique_key(
                 all_matched = all(status == "matched" for _, status, _ in statuses)
 
                 if missing and not has_star:
+                    absent = _keys_str(tuple(missing))
                     extra_decisions.append(
                         Decision(
                             key=f"assemble.unique_key_not_selected.{draft_name}",
                             tier=2,
                             action=(
                                 f"{requested} was not applied to "
-                                f"{draft_name}: it does not select {_keys_str(tuple(missing))}"
+                                f"{draft_name}: it does not select {absent}"
                             ),
                             reason=(
                                 "a merge's unique_key must be one of the model's own "
                                 "output columns; forcing this key onto a model that "
                                 "doesn't select it would fail at dbt run time, so it "
                                 "was left as an append incremental instead"
+                            ),
+                            plain_reason=(
+                                f"{draft_name} does not select {absent}, so nothing was set "
+                                "up to match rows on it. Matching a new row against one "
+                                "already in the table needs a column the model itself gives "
+                                f"back. {draft_name} goes on adding every row it finds, every "
+                                "run, which is what naming a column was meant to stop. Name a "
+                                "column this model does select, or change the query so that "
+                                f"it selects {absent}."
                             ),
                             source_file="",
                             line_start=0,
@@ -985,6 +1020,12 @@ def _apply_unique_key(
 
                 if ambiguous and not has_star and not missing:
                     named = ", ".join(f'{k} as "{name}"' for k, name in ambiguous)
+                    # The two halves the plain register needs separately: what
+                    # was asked for, and what the model writes. The dbt
+                    # register pairs them with SQL's own `as`, which is the
+                    # spelling this one may not lean on.
+                    asked = _keys_str(tuple(k for k, _ in ambiguous))
+                    written = ", ".join(f'"{name}"' for _, name in ambiguous)
                     extra_decisions.append(
                         Decision(
                             key=f"assemble.unique_key_ambiguous.{draft_name}",
@@ -1002,6 +1043,19 @@ def _apply_unique_key(
                                 "naming.compare_targets uses for cross-statement "
                                 "target identity; left as an append incremental "
                                 "rather than guessing either way"
+                            ),
+                            plain_reason=(
+                                f"Rows were to be matched on {asked}. {draft_name} selects "
+                                f"{written} instead, with quote marks around it, and quote "
+                                "marks make the capital and small letters part of a column's "
+                                "name. There is nothing in the text of the query that settles "
+                                "whether those are one column spelled two ways or two "
+                                "different columns. Guessing wrong would match rows on the "
+                                f"wrong column, so nothing was set up to match on {asked} at "
+                                f"all. {draft_name} goes on adding every row it finds, every "
+                                "run. Ask for it with the same capital and small letters the "
+                                "query uses, or take the quote marks off that column in the "
+                                "query."
                             ),
                             source_file="",
                             line_start=0,
@@ -1124,6 +1178,17 @@ def _apply_unique_key(
                             "the command line, so the script-derived key was kept "
                             "instead of the flag's"
                         ),
+                        plain_reason=(
+                            "The statement this model came from already names the column "
+                            f"{draft_name} matches rows on, which is "
+                            f"{_keys_str(model.unique_key)}. {keys_str} was asked for on the "
+                            "command line, which asks the same thing of every table in this "
+                            "run at once. A column the statement itself names is evidence "
+                            f"about this one table in particular. So {draft_name} goes on "
+                            f"matching rows on {_keys_str(model.unique_key)}. {keys_str} was "
+                            "not used here. To change that, change the statement in your "
+                            "script."
+                        ),
                         source_file="",
                         line_start=0,
                         line_end=0,
@@ -1170,6 +1235,14 @@ def _apply_unique_key(
                     "no model converted from this SQL has an append or merge "
                     "incremental strategy, so there was nothing for --unique-key to "
                     "apply to -- check for a typo in the flag or in the input SQL"
+                ),
+                plain_reason=(
+                    "Nothing this conversion built is brought up to date by adding to what "
+                    f"is already in it, so there was nothing for {keys_str} to be used on. "
+                    "Matching rows on a column is only a choice for a table that is added "
+                    "to; every table here is worked out again from nothing each time. "
+                    "Check the spelling of what was typed, and check that the script really "
+                    "does add rows to a table that is already there."
                 ),
                 source_file="",
                 line_start=0,
