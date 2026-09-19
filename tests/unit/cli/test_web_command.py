@@ -282,6 +282,23 @@ def _snapshot(root: Path) -> dict[str, bytes | None]:
     }
 
 
+def test_web_refuses_an_out_dir_inside_the_project_before_serving_anything(
+    tmp_path: Path, project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`dbtw convert` refuses this before it writes a byte; `dbtw web`
+    must refuse it before it serves a page, for the same reason. Discovering
+    it only when the write button is pressed means a person who has never
+    used dbt walked six screens on the strength of a conversation that was
+    never going anywhere -- the refusal `emit()` already carries, arriving
+    three actions later than it has to.
+    """
+    inside = project / "out"
+    assert main(["web", str(_sql(tmp_path)), "--project", str(project), "--out", str(inside)]) == 2
+    err = capsys.readouterr().err
+    assert "refusing" in err
+    assert not inside.exists()
+
+
 def test_web_writes_nothing(tmp_path: Path, project: Path) -> None:
     """Starting the walk prepares a conversation; writing is a separate
     action a user takes, and this build does not serve the route that takes

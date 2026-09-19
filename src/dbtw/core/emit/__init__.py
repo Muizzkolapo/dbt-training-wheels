@@ -14,6 +14,7 @@ from dbtw.core.emit.writer import (
     OutputInsideProjectError,
     UnsafeOutputPathError,
     emit,
+    refuse_output_inside_project,
 )
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "OutputInsideProjectError",
     "UnsafeOutputPathError",
     "emit",
+    "refuse_output_inside_project",
     "render_model",
     "render_report",
     "render_schema_yaml",

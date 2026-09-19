@@ -22,7 +22,12 @@ from pathlib import Path
 
 from dbtw.core.assemble import assemble
 from dbtw.core.context import NotADbtProjectError, read_project
-from dbtw.core.emit import OutputInsideProjectError, UnsafeOutputPathError, emit
+from dbtw.core.emit import (
+    OutputInsideProjectError,
+    UnsafeOutputPathError,
+    emit,
+    refuse_output_inside_project,
+)
 from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest
 from dbtw.core.passes import run_passes
 from dbtw.web import MissingWebExtraError, Session, require_flask
@@ -208,9 +213,11 @@ def _web(
     # about their --project would send them to fix the wrong thing.
     require_flask()
 
-    # All three expanded, for the reason `_expanded` gives. --out is nothing
-    # but held here: the walk writes when the reader presses the write action
-    # and not before, and `test_web_writes_nothing` is what says so.
+    # All three expanded, for the reason `_expanded` gives. --out is held
+    # rather than used here for most of this function: the walk writes when
+    # the reader presses the write action and not before, and
+    # `test_web_writes_nothing` is what says so. It is read once below, to
+    # ask the same question `dbtw convert` asks before it reads a statement.
     project_root = _expanded(project, "--project")
     sql = _expanded(sql_path, "SQL_PATH")
     out_dir = _expanded(out, "--out")
@@ -221,6 +228,15 @@ def _web(
     # do. The session reads it again on every run, which is what keeps a
     # screen current with a project being edited beside it.
     ctx = read_project(project_root)
+
+    # Asked here, not left to `emit()` when the write button is pressed:
+    # --out defaults to ./dbtw-out, same as `convert`, so a user standing in
+    # their own project is the ordinary case dbtw convert refuses before
+    # reading a single statement. Waiting means a person who has never used
+    # dbt spends six screens on a conversation that was never going anywhere.
+    # `emit()` still asks this question too, so a caller that reaches it any
+    # other way is not left unguarded.
+    refuse_output_inside_project(out_dir, ctx)
 
     session = Session(project=project_root, sql=sql, dialect=dialect)
     questions = session.questions()

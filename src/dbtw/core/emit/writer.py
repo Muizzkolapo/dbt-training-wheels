@@ -168,7 +168,7 @@ def _refuse(relation: str, ctx: ProjectContext) -> NoReturn:
     )
 
 
-def _refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
+def refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
     """Refuse a run that would write into the dbt project it converts against.
 
     dbtw's whole contract is that it hands you a copy to read before you
@@ -185,6 +185,18 @@ def _refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
     and `emit` is the only thing in this package that writes. A guard a caller
     has to remember to call is a guard a caller can forget, and the front end
     aimed at people least able to notice is the one that was about to.
+
+    Public, and called a second time, for the same reason it moved here:
+    `dbtw web` reads a project and holds a conversation for as long as the
+    user wants before anything is written, and the ordinary case is a user
+    standing in their own project with `--out` defaulted to `./dbtw-out` —
+    exactly what `dbtw convert` refuses before it reads a single statement.
+    Waiting for `emit()` to raise means the refusal arrives when the write
+    button is pressed, after a walk built for people with no dbt knowledge
+    has already spent six screens on a conversation that was never going
+    anywhere. `_web` calls this once, at startup, beside the project it
+    already reads for `NotADbtProjectError`; `emit()` still calls it too, so
+    a caller that skips the CLI's check is not left unguarded.
 
     It runs before out_dir is created, not during the write: a refusal raised
     after three model files have landed has already done the damage it exists
@@ -238,7 +250,7 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResul
     # First, and before out_dir is created: `ctx` was read from a real dbt
     # project, and writing this conversion into that project is the one thing
     # this package must never do.
-    _refuse_output_inside_project(out_dir, ctx)
+    refuse_output_inside_project(out_dir, ctx)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
