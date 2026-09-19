@@ -434,6 +434,22 @@ def test_the_count_check_catches_a_number_that_does_not_match_its_list() -> None
     assert sum(1 for item in page.items if item == name) == 5
 
 
+def test_the_script_check_sees_an_element_the_page_text_cannot() -> None:
+    """The assertion this replaced -- `"<script" not in page.text` -- could
+    never fail for any input. `text` is built in `handle_data`, which receives
+    character data only, and `_SKIP` drops a script's contents before they
+    reach it, so the literal cannot occur there. The same page is read both
+    ways here: the text says nothing at all about the script, and the element
+    list says what is on the page.
+    """
+    page = read("<main><h1>Written</h1><script>gate()</script><p>ok</p></main>")
+    assert "<script" not in page.text
+    assert page.text == "Writtenok"
+    assert page.scripts == ("",)
+    assert read('<main><script src="/app.js"></script></main>').scripts == ("/app.js",)
+    assert read("<main><p>ok</p></main>").scripts == ()
+
+
 def test_not_null_is_declared_on_no_screen(walk: Walk, walk_sql: Path) -> None:
     """Section 11.4(c): the rebuild emitted `tests: [unique, not_null]` for a
     user who agreed to a uniqueness check and was never asked about nulls.
@@ -488,7 +504,7 @@ def test_no_screen_gates_the_write_action(
     for url, page in pages.items():
         gated = [c for c in page.controls if c.get("type") == "checkbox" and "required" in c]
         assert not gated, f"{state} {url} demands a tick before it will go on"
-        assert "<script" not in page.text, f"{state} {url} carries script that could gate it"
+        assert page.scripts == (), f"{state} {url} carries script that could gate it"
 
 
 @pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])

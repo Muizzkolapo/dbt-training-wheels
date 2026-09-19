@@ -1045,7 +1045,8 @@ def _apply_unique_key(
                                 "rather than guessing either way"
                             ),
                             plain_reason=(
-                                f"Rows were to be matched on {asked}. {draft_name} selects "
+                                f"The column named was {asked}, written without quote marks. "
+                                f"{draft_name} selects "
                                 f"{written} instead, with quote marks around it, and quote "
                                 "marks make the capital and small letters part of a column's "
                                 "name. There is nothing in the text of the query that settles "

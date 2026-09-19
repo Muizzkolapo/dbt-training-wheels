@@ -154,6 +154,13 @@ class Page:
     items: tuple[str, ...]  # one entry per data-item element
     controls: tuple[dict[str, str], ...]  # every form control, with its form's action
     forms: tuple[dict[str, str], ...]  # every <form>'s attributes
+    # One entry per <script> element, holding its `src` or "" for an inline
+    # one. Recorded as an element rather than looked for in `text`, because
+    # `text` cannot hold one: it is built in `handle_data`, which receives
+    # character data only, and `_SKIP` drops a script's contents before they
+    # get there. `assert "<script" not in page.text` could therefore never
+    # fail for any input, which is what this field exists to replace.
+    scripts: tuple[str, ...]
     links: tuple[str, ...]  # every <a>'s href
     # The links that carry a `data-link` name, by that name. Every screen
     # links to every other, so "the page links to /questions/1" is true of
@@ -239,6 +246,7 @@ class _Reader(HTMLParser):
         self.items: list[str] = []
         self.controls: list[dict[str, str]] = []
         self.forms: list[dict[str, str]] = []
+        self.scripts: list[str] = []
         self.links: list[str] = []
         self.named_links: dict[str, str] = {}
         self.text: list[str] = []
@@ -279,6 +287,10 @@ class _Reader(HTMLParser):
                 continue
             if attributes.get(attribute, "").strip():
                 self.runs.append(Run(tag=f"@{attribute}", text=attributes[attribute], engine=False))
+        # Before the `_SKIP` return below, which is where a script stops being
+        # visible to this reader at all.
+        if tag == "script":
+            self.scripts.append(attributes.get("src", ""))
         if tag in _SKIP:
             self._skip += 1
             return
@@ -354,6 +366,7 @@ def read(html: str) -> Page:
         items=tuple(reader.items),
         controls=tuple(reader.controls),
         forms=tuple(reader.forms),
+        scripts=tuple(reader.scripts),
         links=tuple(reader.links),
         named_links=dict(reader.named_links),
         text="".join(reader.text),

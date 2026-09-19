@@ -28,7 +28,7 @@ from __future__ import annotations
 import pytest
 from tests.unit.assemble.helpers import convert
 from tests.unit.passes.test_plain_register import JARGON
-from tests.unit.register_claims import Claim
+from tests.unit.register_claims import Claim, names, scoped_clauses
 
 from dbtw.core.passes.types import Answer
 
@@ -58,18 +58,22 @@ def _decision(change, key: str):
 def _not_selected():
     key = _question(convert(ONE_APPEND), "revenue_events").key
     change = convert(ONE_APPEND, answers={key: Answer("merge on a unique key", ("customer_id",))})
-    return change, _decision(change, "assemble.unique_key_not_selected.revenue_events")
+    return (
+        change,
+        _decision(change, "assemble.unique_key_not_selected.revenue_events"),
+        ("customer_id",),
+    )
 
 
 def _ambiguous():
     key = _question(convert(QUOTED), "revenue_events").key
     change = convert(QUOTED, answers={key: Answer("merge on a unique key", ("order_id",))})
-    return change, _decision(change, "assemble.unique_key_ambiguous.revenue_events")
+    return change, _decision(change, "assemble.unique_key_ambiguous.revenue_events"), ("order_id",)
 
 
 def _ignored():
     change = convert(ONE_MERGE, unique_key=("order_id",))
-    return change, _decision(change, "assemble.unique_key_ignored.dim_c")
+    return change, _decision(change, "assemble.unique_key_ignored.dim_c"), ("order_id",)
 
 
 def _overridden_taken():
@@ -78,7 +82,7 @@ def _overridden_taken():
     change = convert(
         TWO_APPENDS, unique_key=("order_id",), answers={key: Answer("append every row")}
     )
-    return change, _decision(change, "assemble.unique_key_overridden.page_views")
+    return change, _decision(change, "assemble.unique_key_overridden.page_views"), ("order_id",)
 
 
 def _overridden_declined():
@@ -90,12 +94,19 @@ def _overridden_declined():
         unique_key=("order_id",),
         answers={key: Answer("merge on a unique key", ("customer_id",))},
     )
-    return change, _decision(change, "assemble.unique_key_overridden.revenue_events")
+    return (
+        change,
+        _decision(change, "assemble.unique_key_overridden.revenue_events"),
+        (
+            "order_id",
+            "customer_id",
+        ),
+    )
 
 
 def _unused():
     change = convert(NO_INCREMENTAL, unique_key=("order_id",))
-    return change, _decision(change, "assemble.unique_key_unused")
+    return change, _decision(change, "assemble.unique_key_unused"), ("order_id",)
 
 
 CASES = {
@@ -190,6 +201,32 @@ def _draft(final_name: str) -> str:
     return final_name.removeprefix("stg_")
 
 
+# A verb that says rows are matched. Not a `Claim`: what is asked here is not
+# "does this text make a claim" but "does it make one it must not", so the
+# scan runs over every clause and reports the ones that do.
+_MATCHING = ("match", "matches", "matching", "matched")
+
+
+def _matched_on(text: str, keys: tuple[str, ...]) -> list[str]:
+    """Every clause of `text` that affirmatively says rows are matched on one
+    of `keys`.
+
+    Affirmative only, which is the whole difficulty. "nothing was set up to
+    match rows on it" names a key beside a matching verb and asserts the
+    opposite, and it is the sentence these registers exist to write -- a scan
+    that could not tell it from the assertion would reject every correct
+    register here. Governed clauses are skipped for that reason, on the same
+    forward-scoped, sentence-bounded rule `register_claims` uses everywhere
+    else.
+    """
+    offending: list[str] = []
+    for clause, governed in scoped_clauses(text):
+        if governed or not any(names(clause, verb) for verb in _MATCHING):
+            continue
+        offending.extend(f"{key}: {clause}" for key in keys if names(clause, key))
+    return offending
+
+
 # --- the register itself
 
 
@@ -199,14 +236,14 @@ def test_every_declined_unique_key_carries_a_plain_reason(case: str) -> None:
     renders as the dbt sentence alone -- and for the two cases the walk can
     reach, that dbt sentence is the only thing on screen saying why the answer
     the reader gave did not take effect."""
-    _change, decision = CASES[case]()
+    _change, decision, _asked = CASES[case]()
     assert decision.plain_reason.strip(), f"{case}: {decision.key} carries no plain reason"
     assert decision.plain_reason != decision.reason, case
 
 
 @pytest.mark.parametrize("case", CASES)
 def test_the_plain_reason_uses_no_dbt_vocabulary(case: str) -> None:
-    _change, decision = CASES[case]()
+    _change, decision, _asked = CASES[case]()
     plain = decision.plain_reason.lower()
     found = [term for term in JARGON if term in plain]
     assert not found, f"{case}: the plain reason uses {found}: {decision.plain_reason}"
@@ -218,7 +255,7 @@ def test_the_plain_reason_says_the_key_it_names_was_not_used(case: str) -> None:
     not what this model matches rows on. A register that explained the
     mechanics and never said so leaves them believing the opposite of the file
     written beside it."""
-    _change, decision = CASES[case]()
+    _change, decision, _asked = CASES[case]()
     assert NOT_USED[case].asserted_in(decision.plain_reason), f"{case}: {decision.plain_reason}"
 
 
@@ -228,7 +265,7 @@ def test_the_plain_reason_says_what_the_model_does_instead(case: str) -> None:
     a fact about this tool; "it goes on adding every row it finds" is a fact
     about the table the reader will have tomorrow, and it is the half that
     tells them whether to care."""
-    _change, decision = CASES[case]()
+    _change, decision, _asked = CASES[case]()
     assert OUTCOME[case].asserted_in(decision.plain_reason), f"{case}: {decision.plain_reason}"
 
 
@@ -239,7 +276,7 @@ def test_the_plain_reason_agrees_with_the_model_this_run_produced(case: str) -> 
     out matching on a key, is the contradiction this project does not ship --
     and it is the failure a register copied between two of these branches
     would produce."""
-    change, decision = CASES[case]()
+    change, decision, _asked = CASES[case]()
     draft = decision.key.rsplit(".", 1)[1]
     (model,) = [m for m in change.models if _draft(m.name) == draft]
     adds_every_row = _still_adds_every_row(draft).asserted_in(decision.plain_reason)
@@ -247,6 +284,62 @@ def test_the_plain_reason_agrees_with_the_model_this_run_produced(case: str) -> 
         f"{case}: {model.name} came out with unique_key={model.unique_key!r} and the "
         f"plain reason {'says' if adds_every_row else 'does not say'} it adds every row"
     )
+
+
+@pytest.mark.parametrize("case", OUTCOME)
+def test_no_clause_says_the_model_matches_on_a_key_it_did_not_come_out_with(case: str) -> None:
+    """The property, rather than one sentence of it.
+
+    `ignored`'s register names the key it kept twice -- once introducing it
+    and once asserting it -- and only the second naming sits in a clause the
+    claim above can see. Swapping the first one for the flag's key ships a
+    record whose opening sentence says the model matches on one column and
+    whose closing sentence says it matches on another, and the model file
+    written beside it agrees with neither. That mutation passed the whole
+    suite.
+
+    So this asks the register as a whole, in every case rather than in the
+    one that was found: no clause of it may affirmatively pair a matching
+    verb with a column this model did not come out keyed on. It reads
+    `model.unique_key` off the run, so it needs no table of expected
+    outcomes, and it covers a register copied between two of these branches
+    as readily as one edited in place.
+    """
+    change, decision, asked = CASES[case]()
+    draft = decision.key.rsplit(".", 1)[1]
+    (model,) = [m for m in change.models if _draft(m.name) == draft]
+
+    # `asked` is this fixture's own input, and this is what stops it drifting
+    # away from the fixture it is written beside: the Decision names what was
+    # asked for, so a key listed here that nothing asked for fails.
+    for key in asked:
+        assert key in decision.action, f"{case}: nothing asked for {key}"
+
+    declined = tuple(key for key in asked if key not in model.unique_key)
+    offending = _matched_on(decision.plain_reason, declined)
+    assert not offending, (
+        f"{case}: {model.name} came out with unique_key={model.unique_key!r} and the plain "
+        f"reason says rows are matched on {offending}"
+    )
+
+
+def test_the_matching_scan_sees_a_register_that_names_the_wrong_key() -> None:
+    """Both directions, because either one alone is free.
+
+    The first is the sentence the surviving mutation produced. The second is
+    the denial every declined register has to be allowed to write, and a scan
+    that rejected it would have been satisfied by deleting the refusal.
+    """
+    swapped = (
+        "The statement this model came from already names the column dim_c matches rows "
+        "on, which is order_id."
+    )
+    assert _matched_on(swapped, ("order_id",))
+
+    denial = (
+        "revenue_events does not select customer_id, so nothing was set up to match rows on it."
+    )
+    assert _matched_on(denial, ("customer_id",)) == []
 
 
 # --- the discipline that holds the claims above honest

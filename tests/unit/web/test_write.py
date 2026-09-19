@@ -30,8 +30,9 @@ from pathlib import Path
 
 import pytest
 from tests.unit.web.conftest import Walk
+from tests.unit.web.engine_strings import written_files
 from tests.unit.web.helpers import NO_QUESTIONS, ONE_APPEND
-from tests.unit.web.page import read
+from tests.unit.web.page import normalised, read
 
 from dbtw.cli.main import main
 from dbtw.web import Session
@@ -158,15 +159,27 @@ def test_an_answer_in_the_browser_writes_what_the_equivalent_cli_flag_writes(
     # one line: the Decision that records the upgrade names the input that
     # asked for it. That is not drift -- two reports naming the same input
     # would mean one of them was saying something it was not told -- so it is
-    # pinned rather than excused, at one line on each side and at which line.
+    # pinned rather than excused.
+    #
+    # Pinned by position and by length, not by which lines are unique to one
+    # side. Membership alone misses a second divergence whose text is not
+    # unique -- a duplicated heading, or two lines swapped -- because every
+    # line of it still occurs somewhere on the other side. Equal lengths plus
+    # exactly one differing index says the two reports are the same report
+    # with one sentence replaced, which is the actual claim.
+    #
+    # The index itself is deliberately not written out here: how far down the
+    # report that Decision falls is a fact about the report's layout, not
+    # about the two surfaces agreeing, and pinning it would fail on a new
+    # glossary term.
     mine = ours[_REPORT].decode().splitlines()
     flagged = theirs[_REPORT].decode().splitlines()
-    only_mine = [line for line in mine if line not in flagged]
-    only_flagged = [line for line in flagged if line not in mine]
-    assert len(only_mine) == 1, only_mine
-    assert len(only_flagged) == 1, only_flagged
-    assert "--unique-key" in only_flagged[0] and "--unique-key" not in only_mine[0]
-    assert "answered 'merge on a unique key'" in only_mine[0], only_mine[0]
+    assert len(mine) == len(flagged), (len(mine), len(flagged))
+    differing = [at for at, (a, b) in enumerate(zip(mine, flagged, strict=True)) if a != b]
+    assert len(differing) == 1, [(at, mine[at], flagged[at]) for at in differing]
+    (at,) = differing
+    assert "--unique-key" in flagged[at] and "--unique-key" not in mine[at]
+    assert "answered 'merge on a unique key'" in mine[at], mine[at]
 
     # Not vacuous: the answered tree really is different from the unanswered
     # one, so the agreement above is two converters agreeing rather than two
@@ -272,6 +285,37 @@ def test_the_refusal_screen_carries_the_error_the_path_and_the_models(
     # written while they fix where it was going.
     assert "models/staging/stg_revenue_events.sql" in rendered, rendered
     assert "incremental_strategy='append'" in rendered, rendered
+
+
+def test_the_refusal_screen_carries_every_file_the_conversion_would_write(
+    walk: Walk, walk_sql: Path, project_dir: Path
+) -> None:
+    """ "The models still on screen" is a claim about all of them.
+
+    Held against `written_files` rather than against two hand-written
+    literals: a conversion of this script writes models, a sources file and
+    the report, and a page that rendered the first of them and stopped would
+    satisfy any assertion naming one file -- while hiding the sources file
+    and the report from the one screen section 7 requires to carry them. The
+    count is held against the same set for the same reason: derived from a
+    truncated list it is self-consistently wrong, and only a comparison with
+    something outside the page can see that.
+
+    This conversion, not ONE_APPEND's: five files rather than two, so the
+    difference between "all of them" and "the first of them" is four.
+    """
+    _app, client, session = walk(walk_sql, out=project_dir)
+    page = read(client.post("/write").get_data(as_text=True))
+
+    expected = written_files(session)
+    assert len(expected) > 2, "this script is meant to write more than a model and a report"
+    rendered = {normalised(run) for run in page.engine}
+    for path, contents in expected.items():
+        assert path in rendered, f"{path} would be written and is not on the refusal screen"
+        assert normalised(contents) in rendered, f"{path} is named with none of its contents"
+
+    assert ("file", str(len(expected))) in page.counts
+    assert len([item for item in page.items if item == "file"]) == len(expected)
 
 
 def test_a_refused_write_is_never_reported_as_a_written_one(
