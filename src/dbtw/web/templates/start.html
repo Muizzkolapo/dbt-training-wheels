@@ -11,8 +11,14 @@
 #}
 {% extends "base.html" %}
 {% block main %}
-<h1><span data-engine>{{ project }}</span></h1>
-<p class="source"><span data-engine>{{ sql }}</span></p>
+{# The project's declared name and the reader's own file path are identifiers
+   the engine hands this screen to display, not prose it wrote -- see the
+   `data-identifier` note on `Run` in tests/unit/web/page.py. Marked so a
+   project the reader happens to have named `staging_run`, or a directory
+   they happen to have named `warehouse`, does not put those words on the
+   page as though the conversion's own output used them. #}
+<h1><span data-engine data-identifier>{{ project }}</span></h1>
+<p class="source"><span data-engine data-identifier>{{ sql }}</span></p>
 
 <h2>Renaming</h2>
 <p class="tally"><span data-count="rename">{{ renames | length }}</span> tables</p>

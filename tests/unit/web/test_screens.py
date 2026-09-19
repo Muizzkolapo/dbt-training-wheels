@@ -19,6 +19,7 @@ from tests.unit.web.conftest import Walk
 from tests.unit.web.engine_strings import engine_strings, written_files
 from tests.unit.web.helpers import (
     DUPLICATE_CANDIDATES,
+    ONE_APPEND,
     ONE_APPEND_ELSEWHERE,
     ONE_MERGE,
     STAR_PROJECTION,
@@ -696,18 +697,23 @@ def test_the_last_screen_names_the_commands_the_glossary_defines(
     assert "stg_events+" not in page.text
 
 
+@pytest.mark.parametrize("state", _STATES)
 def test_each_screen_defines_the_dbt_words_it_uses_and_no_others(
-    walk: Walk, walk_sql: Path
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
     """`terms_in`, not a dumped glossary: four of five personas never reached
     the round-one block that defined everything. Each screen's block is
-    exactly the words on that screen, which also puts the double-bracket
-    definition on the screen that first shows one.
-    """
-    app, client, session = walk(walk_sql)
-    pages = _pages(app, client, session)
+    exactly the words on that screen.
 
-    for url, page in pages.items():
+    In every state, for the reason `test_no_screen_authors_a_sentence` gives:
+    a check evaluated only on a pristine, GET-served walk is a check evaluated
+    only in the states where it cannot fail. The refusal page is reached by
+    the likeliest misstep in the walk, and had no glossary at all until this
+    state was added -- `_refused` passed `terms=()` and nothing here noticed.
+    """
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+
+    for url, page in _guarded_pages(app, client, session, state).items():
         # Read without the block itself. A glossary listing all fourteen
         # terms puts all fourteen words on the page, so a check that read the
         # whole page would find exactly what the block defined however much
@@ -715,16 +721,59 @@ def test_each_screen_defines_the_dbt_words_it_uses_and_no_others(
         used = terms_in(page.outside_asides())
         defined = [item for item in page.items if item == "term"]
         assert len(defined) == len(used), (
-            f"{url} defines {len(defined)} words and uses {[t.name for t in used]}"
+            f"{state} {url} defines {len(defined)} words and uses {[t.name for t in used]}"
         )
         rendered = _engine(page)
         for term in used:
-            assert term.name in rendered, f"{url} uses {term.name} and does not define it"
+            assert term.name in rendered, f"{state} {url} uses {term.name} and does not define it"
             assert normalised(term.plain) in rendered
 
+
+def test_the_double_bracket_is_defined_on_the_screen_that_first_shows_it(
+    walk: Walk, walk_sql: Path
+) -> None:
+    app, client, _ = walk(walk_sql)
     brackets = read(client.get("/files").get_data(as_text=True))
     assert "{{" in brackets.text
     assert "{{ }}" in _engine(brackets), "the brackets are shown and never explained"
+
+
+def test_the_start_screens_glossary_does_not_depend_on_the_sql_files_directory_name(
+    tmp_path: Path, project_dir: Path, out_dir: Path
+) -> None:
+    """The path to the reader's own SQL file is an identifier the start
+    screen displays, like a Decision key -- not prose the engine spoke. A
+    directory the reader happened to name `warehouse` must not put the word
+    `warehouse` on the page as though the conversion's own output used it: a
+    reader who never sees the word `warehouse` anywhere the engine wrote
+    still meets its definition, on the first screen, for no reason connected
+    to their conversion.
+    """
+    from dbtw.web.app import create_app
+
+    plain = tmp_path / "sql" / "in.sql"
+    plain.parent.mkdir(parents=True)
+    plain.write_text(ONE_APPEND, encoding="utf-8")
+
+    salted = tmp_path / "warehouse" / "in.sql"
+    salted.parent.mkdir(parents=True)
+    salted.write_text(ONE_APPEND, encoding="utf-8")
+
+    def start_page(sql: Path) -> Page:
+        app = create_app(Session(project=project_dir, sql=sql), out_dir)
+        app.testing = True
+        return read(app.test_client().get("/").get_data(as_text=True))
+
+    plain_page = start_page(plain)
+    salted_page = start_page(salted)
+
+    plain_defined = {item for item in plain_page.items if item == "term"}
+    salted_defined = {item for item in salted_page.items if item == "term"}
+    assert len(plain_defined) == len(salted_defined), (
+        f"plain defines {sorted(t.name for t in terms_in(plain_page.outside_asides()))}, "
+        f"salted defines {sorted(t.name for t in terms_in(salted_page.outside_asides()))}"
+    )
+    assert "warehouse" not in {t.name for t in terms_in(salted_page.outside_asides())}
 
 
 @pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])

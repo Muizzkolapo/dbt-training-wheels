@@ -471,9 +471,14 @@ def create_app(session: Session, out: Path) -> Flask:
         # table names, and named it the thing most likely to train a reader
         # to skip the block.
         cutover = next((d for d in renames if d.plain_reason), None)
+        # NOT view.change.project_name or str(session.sql): both are
+        # identifiers the screen displays rather than prose the engine wrote,
+        # marked `data-identifier` in the template for the same reason. A
+        # project a reader happens to have named `staging_run`, or a
+        # directory they happen to have named `warehouse`, must not define
+        # those words on the page as though the conversion's own output used
+        # them.
         spoken = _spoken(
-            view.change.project_name,
-            str(session.sql),
             (d.action for d in renames),
             cutover.reason if cutover else "",
             cutover.plain_reason if cutover else "",
@@ -758,7 +763,7 @@ def create_app(session: Session, out: Path) -> Flask:
         return render_template(
             "refused.html",
             screens=screens,
-            terms=(),
+            terms=_terms(_spoken(message)),
             here="",
             message=message,
             back=_question_url(session, key),

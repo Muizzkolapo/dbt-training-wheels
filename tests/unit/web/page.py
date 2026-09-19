@@ -132,12 +132,25 @@ class Run:
     screen use" has to read the screen without it, or the block defining
     fourteen words is a screen that uses fourteen words and the check passes
     for any block at all.
+
+    `identifier` is set for a run inside an element carrying `data-identifier`
+    -- a filesystem path or another opaque name the engine hands the template
+    to display, not to speak. It is real, visible text (the reader has to see
+    which file they are converting), and it is also unconstrained: a project
+    path a reader happens to have named `warehouse` contains that word by
+    coincidence, not because the conversion's own output used it. Read
+    alongside `data-engine` for the no-authored-prose check -- an identifier
+    is still exactly what the engine handed the template, so a template that
+    altered it would still be caught -- and excluded from the glossary check
+    the same way `aside` is, for the same reason: a word matched inside an
+    identifier is not a word the screen's prose uses.
     """
 
     tag: str
     text: str
     engine: bool
     aside: bool = False
+    identifier: bool = False
     count: str = ""
 
 
@@ -189,8 +202,11 @@ class Page:
         return tuple(control for control in self.controls if control["tag"] == "input")
 
     def outside_asides(self) -> str:
-        """Everything on the page except what a `data-aside` region holds."""
-        return " ".join(run.text for run in self.runs if not run.aside)
+        """Everything on the page a reader would meet as prose: not a
+        `data-aside` region (the glossary block itself), and not a
+        `data-identifier` region (a path or other opaque name the engine
+        handed the template to display rather than to speak)."""
+        return " ".join(run.text for run in self.runs if not run.aside and not run.identifier)
 
     def sentences(self, minimum: int) -> tuple[str, ...]:
         """Every authored run holding `minimum` words or more."""
@@ -235,6 +251,7 @@ class _Frame:
     tag: str
     engine: bool
     aside: bool
+    identifier: bool
     count: str = ""
     buffer: list[str] = field(default_factory=list)
 
@@ -250,7 +267,7 @@ class _Reader(HTMLParser):
         self.links: list[str] = []
         self.named_links: dict[str, str] = {}
         self.text: list[str] = []
-        self.frames: list[_Frame] = [_Frame(tag="", engine=False, aside=False)]
+        self.frames: list[_Frame] = [_Frame(tag="", engine=False, aside=False, identifier=False)]
         self._skip = 0
         self._form_actions: list[str] = []
 
@@ -259,6 +276,9 @@ class _Reader(HTMLParser):
 
     def _aside(self) -> bool:
         return any(frame.aside for frame in self.frames)
+
+    def _identifier(self) -> bool:
+        return any(frame.identifier for frame in self.frames)
 
     def _add(self, text: str) -> None:
         self.frames[-1].buffer.append(text)
@@ -301,6 +321,7 @@ class _Reader(HTMLParser):
                 tag=tag,
                 engine="data-engine" in attributes,
                 aside=self._aside() or "data-aside" in attributes,
+                identifier=self._identifier() or "data-identifier" in attributes,
                 count=attributes.get("data-count", ""),
             )
         )
@@ -340,6 +361,7 @@ class _Reader(HTMLParser):
                     text=text,
                     engine=frame.engine,
                     aside=frame.aside,
+                    identifier=frame.identifier,
                     count=frame.count,
                 )
             )
