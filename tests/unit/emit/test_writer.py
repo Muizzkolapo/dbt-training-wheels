@@ -159,14 +159,21 @@ def test_sources_at_project_root_land_at_the_root_not_in_staging(tmp_path):
     assert not (staging / "sources_dbtw.yml").exists()
 
 
-def _context_declaring(*declarations: tuple[str, str, str]) -> ProjectContext:
+def _context_declaring(root: Path, *declarations: tuple[str, str, str]) -> ProjectContext:
     """A minimal target project whose only interesting feature is where it
     declares sources. Hand-built rather than read off a fixture because the
     case it exists for — a project that declares sources in a file *not*
     named sources.yml — has no fixture, and the collision it causes is a
     property of ProjectContext alone.
+
+    `root` is made rather than merely named: emit asks whether out_dir is the
+    project by comparing what the filesystem says about the two directories,
+    so a root that is not on disk is a question it cannot answer. The caller
+    passes a directory beside out_dir, which is the ordinary arrangement.
     """
+    root.mkdir(parents=True, exist_ok=True)
     return ProjectContext(
+        root=root,
         project_name="handbuilt",
         model_paths=("models",),
         layers=(),
@@ -252,7 +259,7 @@ def test_a_source_name_declared_in_another_file_is_not_a_collision(tmp_path):
     skipped every table the project declares — so there is nothing here to
     report, and a Decision would be a warning about a non-problem.
     """
-    ctx = _context_declaring(("raw", "orders", "models/schema.yml"))
+    ctx = _context_declaring(tmp_path / "project", ("raw", "orders", "models/schema.yml"))
     emit(
         _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
         ctx,
@@ -285,7 +292,7 @@ def test_the_landing_name_turns_on_the_path_not_on_the_source_names(tmp_path):
     the project's, so ours still goes under its own name: what must not be
     replaced is the file, whatever it happens to declare.
     """
-    ctx = _context_declaring(("legacy", "orders", "models/sources.yml"))
+    ctx = _context_declaring(tmp_path / "project", ("legacy", "orders", "models/sources.yml"))
     emit(
         _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
         ctx,

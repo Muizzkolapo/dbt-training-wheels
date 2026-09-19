@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 DetectionStatus = Literal["detected", "undetermined"]
@@ -46,8 +47,23 @@ class SourceInfo:
 
 @dataclass(frozen=True, slots=True)
 class ProjectContext:
-    """Everything the pipeline knows about the target dbt project. Read-only."""
+    """Everything the pipeline knows about the target dbt project. Read-only.
 
+    `root` is the directory `read_project` read all of this from, as it was
+    given -- not resolved, because the questions asked of it are about
+    filesystem identity and `emit._same_dir` answers those by stat rather
+    than by comparing strings.
+
+    It carries no default, for the same reason `Option.kind` carries none.
+    `emit` refuses to write a conversion into the project it was read from,
+    and it cannot tell an out_dir that is the project from any other out_dir
+    without this field. A context that had to be *remembered* to record where
+    it came from would let that refusal be skipped by forgetting an argument,
+    silently, on whichever front end forgot it -- which is the failure the
+    field exists to close.
+    """
+
+    root: Path
     project_name: str
     model_paths: tuple[str, ...]
     layers: tuple[LayerInfo, ...]

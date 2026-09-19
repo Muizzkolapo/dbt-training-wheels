@@ -37,12 +37,10 @@ Two things this module deliberately does not do:
   be the only answer left;
 * it does not register `/write`. The done screen offers the write action,
   because spec section 7 requires a conversion with nothing to answer to
-  offer it; the route that performs it is the next task's, and the guard that
-  keeps a conversion from being written into the user's own dbt project
-  (`cli.main._refuse_output_inside_project`) is reachable from the CLI path
-  only. A route that wrote without it would reintroduce, on the surface aimed
-  at the people least able to spot it, exactly what that guard exists to
-  prevent.
+  offer it; the route that performs it is the next task's. The guard that
+  keeps a conversion from being written into the user's own dbt project now
+  lives inside `emit` itself, so a route that calls it inherits the refusal
+  rather than having to remember it.
 """
 
 from __future__ import annotations

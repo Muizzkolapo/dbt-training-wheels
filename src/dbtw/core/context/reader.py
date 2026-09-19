@@ -81,6 +81,7 @@ def read_project(root: Path | str) -> ProjectContext:
     detections.extend(source_warnings)
 
     return ProjectContext(
+        root=root,
         project_name=project_name,
         model_paths=model_paths,
         layers=tuple(layers),

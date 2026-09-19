@@ -1,4 +1,5 @@
 import dataclasses
+from pathlib import Path
 
 import pytest
 
@@ -7,6 +8,7 @@ from dbtw.core.context import Detection, LayerInfo, ProjectContext
 
 def test_context_is_immutable():
     ctx = ProjectContext(
+        root=Path("/nowhere"),
         project_name="p",
         model_paths=("models",),
         layers=(),
