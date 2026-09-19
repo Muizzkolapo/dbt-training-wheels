@@ -10,9 +10,10 @@ test_a_claim_embedded_under_a_framing_verb_is_a_documented_blind_spot:
 
     It is a myth that events is left exactly as it was.      (lexical denial)
     People assume events is left exactly as it was.          (attribution)
-    The following is false. events is left exactly as it was. (cross-sentence)
+    The following is false. events is left exactly as it was. (cross-sentence denial)
     events would be left exactly as it was.                  (modal)
     events is left exactly as it was, under its new name.    (affirmative and false)
+    A saved query pointed at events probably goes on reading events. (hedge)
 
 Each of those denies or suspends the claim with no negation, no scope word and
 no clause boundary to see. Closing them means deciding what a sentence MEANS,

@@ -1,13 +1,11 @@
 {#
   A page this walk does not have.
 
-  It exists so the walk's own shape survives the one 404 a reader reaches by
-  pressing a button rather than by typing an address: the done screen offers
-  the write action, because spec section 7 requires a conversion with nothing
-  to answer to offer it, and the route that performs it is not served by this
-  build. Werkzeug's stock page has no navigation and no way back, which makes
-  the terminal action of the walk look like an error -- the one thing section
-  7 says it must not look like.
+  Reached by a mistyped address, and by a question index this conversion
+  does not ask -- /questions/9 on a walk with two questions, one keystroke
+  away from a link that works. Werkzeug's stock page for that has no
+  navigation, no way back and "check your spelling" on it; this one keeps
+  the walk's own shape around a reader who lands here.
 #}
 {% extends "base.html" %}
 {% block main %}

@@ -207,6 +207,23 @@ FRAMED_REVERSALS = (
 )
 
 
+def test_the_docstring_names_exactly_the_blind_spots_pinned_here():
+    """Nothing bound the module docstring's list to `FRAMED_REVERSALS`
+    before this test existed: the docstring could name five cases while six
+    were pinned, and both the suite and the docstring's own claim to be
+    "verified, not assumed" would stay green. The label in parentheses at
+    the end of each docstring line is read back and compared against this
+    file's own labels, in order, so the two cannot drift apart silently
+    again.
+    """
+    import re
+
+    import tests.unit.register_claims as module
+
+    labelled = re.findall(r"\(([a-z][a-z -]*)\)\s*$", module.__doc__ or "", re.MULTILINE)
+    assert labelled == [label for label, _claim, _text in FRAMED_REVERSALS]
+
+
 @pytest.mark.parametrize(
     ("label", "claim", "text"), FRAMED_REVERSALS, ids=[case[0] for case in FRAMED_REVERSALS]
 )
