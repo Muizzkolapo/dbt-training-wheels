@@ -123,6 +123,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
     web.add_argument(
+        "--out",
+        metavar="OUT_DIR",
+        default="./dbtw-out",
+        help="Where the walk's write action writes (default: ./dbtw-out)",
+    )
+    web.add_argument(
         "--port",
         metavar="PORT",
         type=int,
@@ -194,15 +200,20 @@ def _convert(
     return 0
 
 
-def _web(sql_path: str, project: str, dialect: str | None, port: int, open_browser: bool) -> int:
+def _web(
+    sql_path: str, project: str, out: str, dialect: str | None, port: int, open_browser: bool
+) -> int:
     # Asked first, and before anything is read: no argument the user could
     # have written makes this command work without the extra, so a refusal
     # about their --project would send them to fix the wrong thing.
     require_flask()
 
-    # Both arguments expanded, for the reason `_expanded` gives.
+    # All three expanded, for the reason `_expanded` gives. --out is nothing
+    # but held here: the walk writes when the reader presses the write action
+    # and not before, and `test_web_writes_nothing` is what says so.
     project_root = _expanded(project, "--project")
     sql = _expanded(sql_path, "SQL_PATH")
+    out_dir = _expanded(out, "--out")
 
     # Spec section 7: a missing dbt_project.yml is a command-line error, not a
     # screen. Read here rather than left to the session's own first run so the
@@ -222,7 +233,7 @@ def _web(sql_path: str, project: str, dialect: str | None, port: int, open_brows
     # this is the one line that reaches it.
     from dbtw.web.app import create_app, serve
 
-    serve(create_app(session), _HOST, port, open_browser)
+    serve(create_app(session, out_dir), _HOST, port, open_browser)
     return 0
 
 
@@ -232,7 +243,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "web":
-            return _web(args.sql_path, args.project, args.dialect, args.port, args.open_browser)
+            return _web(
+                args.sql_path,
+                args.project,
+                args.out,
+                args.dialect,
+                args.port,
+                args.open_browser,
+            )
 
         unique_key = (
             tuple(c.strip() for c in args.unique_key.split(",") if c.strip())

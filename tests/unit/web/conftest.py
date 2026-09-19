@@ -94,16 +94,39 @@ def walk_sql() -> Path:
     return SQL / "incremental_etl.sql"
 
 
+@pytest.fixture
+def out_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Where the walk writes when the write action is pressed.
+
+    Outside the project copy: `emit` refuses an out_dir that is the project,
+    and the tests that drive that refusal hand the walk their own destination
+    rather than relying on this one.
+
+    From `tmp_path_factory` rather than from `tmp_path`, which is named after
+    the test that asked for it. The done screen and both write screens render
+    this path, so a `tmp_path` destination puts the running test's own name
+    on the page -- and `test_not_null_is_declared_on_no_screen` really did
+    fail on a directory called `test_not_null_is_declared_on_n0`. A test name
+    is not a thing the product can say, and a page assertion that can be
+    moved by renaming a test is not measuring the page.
+
+    The directory itself is not created: `dbtw web` writes nothing until the
+    action is pressed, and a fixture that made it would hide a route that
+    never wrote.
+    """
+    return tmp_path_factory.mktemp("walk") / "dbtw-out"
+
+
 class Walk(Protocol):
     """Build the walk over one script: (app, client, session)."""
 
     def __call__(
-        self, sql: Path, dialect: str | None = None
+        self, sql: Path, dialect: str | None = None, out: Path | None = None
     ) -> tuple[Flask, FlaskClient, Session]: ...
 
 
 @pytest.fixture
-def walk(project_dir: Path) -> Walk:
+def walk(project_dir: Path, out_dir: Path) -> Walk:
     """The app, a client for it, and the session all three share.
 
     `create_app` is imported inside the factory rather than at module scope:
@@ -112,11 +135,13 @@ def walk(project_dir: Path) -> Walk:
     directory need the extra too.
     """
 
-    def build(sql: Path, dialect: str | None = None) -> tuple[Flask, FlaskClient, Session]:
+    def build(
+        sql: Path, dialect: str | None = None, out: Path | None = None
+    ) -> tuple[Flask, FlaskClient, Session]:
         from dbtw.web.app import create_app
 
         session = Session(project=project_dir, sql=sql, dialect=dialect)
-        app = create_app(session)
+        app = create_app(session, out_dir if out is None else out)
         app.testing = True
         return app, app.test_client(), session
 

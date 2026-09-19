@@ -155,12 +155,21 @@ def _pristine(session: Session) -> Session:
     return Session(project=session.project, sql=session.sql, dialect=session.dialect)
 
 
-def engine_strings(session: Session) -> frozenset[str]:
+def engine_strings(session: Session, out: Path) -> frozenset[str]:
     """Every string `dbtw.core` produces for this conversation, normalised.
 
     Both runs the screens read, and the files, and the glossary.
+
+    Plus the conversation's own three paths. The SQL, the project and the
+    destination are not `dbtw.core`'s output -- they are what the user handed
+    the command, and each is rendered verbatim on a screen. The claim this
+    set is used to check is that no *template* authors text, and a path the
+    caller supplied is not a template authoring anything. `out` is required
+    rather than defaulted for the same reason `ProjectContext.root` is: the
+    two write screens are checked in every state, and a destination a caller
+    could forget to pass would make the check pass by having nothing to say.
     """
-    produced: list[str] = [str(session.sql), str(session.project)]
+    produced: list[str] = [str(session.sql), str(session.project), str(out)]
 
     pristine = _pristine(session).view().change
     produced.extend(_from_change(pristine))

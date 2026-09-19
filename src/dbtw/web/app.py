@@ -35,12 +35,13 @@ Two things this module deliberately does not do:
   `columns_prompt` at all while the answer still needs one. A picker built
   from the screen would offer no way to name a second key, and "append" would
   be the only answer left;
-* it does not register `/write`. The done screen offers the write action,
-  because spec section 7 requires a conversion with nothing to answer to
-  offer it; the route that performs it is the next task's. The guard that
-  keeps a conversion from being written into the user's own dbt project now
-  lives inside `emit` itself, so a route that calls it inherits the refusal
-  rather than having to remember it.
+* it does not decide where the write goes, and it does not guard where the
+  write goes. `dbtw web --out` names the destination and `create_app` is
+  handed it; the refusal that keeps a conversion out of the user's own dbt
+  project lives inside `emit`, so `/write` inherits it rather than
+  remembering it. A second copy of that rule here is the drift this project
+  deletes fields to avoid, and the rule is about writing rather than about
+  one front end.
 """
 
 from __future__ import annotations
@@ -62,6 +63,8 @@ from dbtw.core.emit import (
     PLACEHOLDER_NOTICE,
     SUPPOSED_ROW_LABEL,
     Example,
+    OutputInsideProjectError,
+    UnsafeOutputPathError,
     emit,
     worked_example,
 )
@@ -145,6 +148,40 @@ class FilePreview:
 
     path: str
     contents: str
+
+
+# What a write can fail with that the reader can do something about: a
+# destination inside their own dbt project, a model path that would escape
+# the destination, and every OSError a directory can raise -- a permission,
+# a file standing where a directory belongs, a disk that is full.
+#
+# `emit` raises two more. `DuplicateSourceEntryError` and
+# `OrphanSchemaTestError` are each documented as unreachable through the
+# pipeline, so reaching one is a defect in this tool; a screen telling the
+# reader to check their own paths over one of those would be this tool
+# blaming them for its own bug. They are absent here for the same reason they
+# are absent from the CLI's `_USAGE_ERRORS`, and absent means they surface as
+# a traceback.
+_WRITE_FAILURES = (OutputInsideProjectError, UnsafeOutputPathError, OSError)
+
+
+@dataclass(frozen=True, slots=True)
+class Written:
+    """One completed write: where it went, what landed, and what it was of.
+
+    `change` is what was written, not a flag saying that something was. The
+    write action is terminal for a conversion and not for the walk: a reader
+    can go back, answer a question differently, and press it again, and the
+    files they now have on screen are the ones that have to reach disk. Held
+    as the change itself, a second press compares what is on screen against
+    what was written and writes only when those differ -- so a double click
+    writes once and a changed answer writes again, which a boolean cannot
+    tell apart.
+    """
+
+    out: Path
+    files: tuple[str, ...]
+    change: ProjectChange
 
 
 def _columns(candidates: Sequence[str]) -> tuple[Column, ...]:
@@ -371,11 +408,19 @@ def _terms(spoken: str) -> tuple[Term, ...]:
     return terms_in(spoken)
 
 
-def create_app(session: Session) -> Flask:
+def create_app(session: Session, out: Path) -> Flask:
     """The walk over one conversation. One session, held by the app.
 
     Keyed by nothing, as spec 4.1 requires: this is a local single-user tool
     and a second tab is a second view of the same conversation.
+
+    `out` is where the write action writes, and it is the caller's rather
+    than the reader's: `dbtw web --out` names it, the done screen shows it
+    before the button, and nothing on a screen can change it. A destination
+    typed into the browser would be one more thing for a first-time user to
+    get right at the one moment in the walk that touches their disk -- and
+    the session holds it nowhere, because a conversation about a conversion
+    is not where the result goes.
     """
     app = Flask(__name__)
     # The three strings a rendered example is shown under. `emit.example`
@@ -536,6 +581,7 @@ def create_app(session: Session) -> Flask:
         if not isinstance(view, SessionView):
             return view
         spoken = _spoken(
+            str(out),
             _COMMANDS,
             (screen.label for screen in _screens(view) if screen.engine),
         )
@@ -545,6 +591,104 @@ def create_app(session: Session) -> Flask:
             here="/done",
             terms=_terms(spoken),
             commands=_COMMANDS,
+            out=str(out),
+        )
+
+    # The one completed write of this conversation, or None. Held by the app
+    # rather than by the session for the reason `create_app` gives about
+    # `out`: a conversation is about a conversion, and where its result went
+    # is the front end's business.
+    written: Written | None = None
+
+    @app.post("/write")
+    def write() -> str | tuple[str, int]:
+        """Write this conversion to the destination the command line named.
+
+        Terminal, and not a gate: nothing has to be ticked to reach it, and
+        every screen of the walk still renders afterwards. Three of three
+        personas named the acknowledgment checkbox theatre, and a reader who
+        writes and then goes back to read a caveat has to find one.
+
+        Pressed twice with nothing answered in between, it writes once. The
+        files on disk are already this conversion's, so a second write would
+        be one nobody asked for -- and a reader who double-clicked, or
+        refreshed the result, cannot tell one write from two. Answer an
+        earlier question differently and the conversion is a different
+        conversion, which is a write this has not made, so it makes it.
+
+        A failure renders the error, the destination and the files, and never
+        the written screen: spec section 7 asks that a half-written directory
+        is never reported as success, and the only way to keep that promise
+        is for the page a failed write renders to be a different page.
+        """
+        nonlocal written
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        if written is not None and written.change == view.change:
+            return _written_page(view, written)
+        try:
+            result = emit(view.change, read_project(session.project), out)
+        except _WRITE_FAILURES as failure:
+            # 500 rather than 400: the form carried nothing wrong. The paths
+            # this conversation was started with cannot take the write, and
+            # that is the server's side of the exchange to report.
+            return _write_failed(view, str(failure)), 500
+        written = Written(
+            out=out,
+            files=tuple(path.relative_to(out).as_posix() for path in result.paths),
+            change=view.change,
+        )
+        return _written_page(view, written)
+
+    def _written_page(view: SessionView, record: Written) -> str:
+        """What landed, named by the paths `emit` reported writing.
+
+        Project-relative, so the list reads as the same list the files screen
+        showed, and read back off `EmitResult.paths` rather than re-derived:
+        where a sources file and a per-model schema .yml land are decisions
+        `emit` makes, and a second copy of that reasoning here would be free
+        to name a file this run did not write.
+        """
+        spoken = _spoken(
+            str(record.out),
+            record.files,
+            (screen.label for screen in _screens(view) if screen.engine),
+        )
+        return render_template(
+            "written.html",
+            screens=_screens(view),
+            here="",
+            terms=_terms(spoken),
+            out=str(record.out),
+            files=record.files,
+        )
+
+    def _write_failed(view: SessionView, message: str) -> str:
+        """The refusal in the engine's own words, with the walk around it.
+
+        The files are the previews rather than what reached disk: a write
+        that failed part way left some of them there and not others, and a
+        list of what landed would read as a result. What the reader needs is
+        what this conversion is, so they can fix where it was going and press
+        again.
+        """
+        previews = _previews(session, view.change)
+        spoken = _spoken(
+            message,
+            str(out),
+            (preview.path for preview in previews),
+            (preview.contents for preview in previews),
+            (screen.label for screen in _screens(view) if screen.engine),
+        )
+        return render_template(
+            "write_failed.html",
+            screens=_screens(view),
+            here="",
+            terms=_terms(spoken),
+            message=message,
+            out=str(out),
+            files=previews,
         )
 
     @app.post("/answer")
@@ -624,12 +768,12 @@ def create_app(session: Session) -> Flask:
     def missing(_error: object) -> tuple[str, int]:
         """A page this walk does not have, shaped like the walk.
 
-        `/write` is the one a reader reaches by pressing a button: the done
-        screen offers the write action because spec section 7 requires it,
-        and the route that performs it is not served by this build. Werkzeug's
-        stock page for that -- no navigation, no way back, "check your
-        spelling" -- makes the terminal action of the walk look like an error,
-        which is the one thing section 7 says it must not look like.
+        Reached by a mistyped address, and by a question index this
+        conversion does not ask -- `/questions/9` on a walk with two
+        questions, which is one keystroke away from a link that works.
+        Werkzeug's stock page for that has no navigation, no way back and
+        "check your spelling" on it, which leaves a reader outside the walk
+        with nothing on the page to get them back into it.
         """
         view = _view()
         screens = _screens(view) if isinstance(view, SessionView) else ()

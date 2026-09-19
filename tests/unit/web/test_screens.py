@@ -26,10 +26,12 @@ from tests.unit.web.helpers import (
 from tests.unit.web.page import Page, normalised, read, words
 
 import dbtw.web
+from dbtw.core.context import read_project
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
     PLACEHOLDER_NOTICE,
     SUPPOSED_ROW_LABEL,
+    emit,
     worked_example,
 )
 from dbtw.core.teach import terms_in
@@ -82,24 +84,39 @@ def _engine(page: Page) -> set[str]:
 
 
 # The states a screen of this walk is rendered in. Every cross-cutting guard
-# runs in all four, because five of the six screens change under the answer
+# runs in all six, because five of the six screens change under the answer
 # loop and a guard evaluated only before the first answer is a guard evaluated
 # in the one state where it cannot fail. "downgraded" is the answer the engine
 # accepts and then does not apply -- a key the model does not select -- which
 # is the state that puts a Decision on the page that no pristine run carries.
+#
+# The last two are the states a reader is in once they have pressed the one
+# control in the walk that touches their disk. They are here because the
+# write screens are screens: a guard that only ever ran over GET-served pages
+# on a pristine walk is how ten of the last review's twelve survivors
+# survived.
 _PRISTINE = "pristine"
 _ANSWERED = "answered"
 _DOWNGRADED = "downgraded"
 _STALE = "stale"
-_STATES = (_PRISTINE, _ANSWERED, _DOWNGRADED, _STALE)
+_WRITTEN = "written"
+_WRITE_FAILED = "write failed"
+_STATES = (_PRISTINE, _ANSWERED, _DOWNGRADED, _STALE, _WRITTEN, _WRITE_FAILED)
 
 
 def _append_key(session: Session) -> str:
     return next(d.key for d in session.view().questions if ".append." in d.key)
 
 
-def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str):  # type: ignore[no-untyped-def]
-    """The walk, put into one of the four states, and the session behind it."""
+def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Path, out_dir: Path):  # type: ignore[no-untyped-def]
+    """The walk in one of the six states: the app, a client, the session, and
+    the destination that walk writes to.
+
+    The destination is returned rather than assumed by the caller: one state
+    is built around a destination that refuses the write, and a caller that
+    took `out_dir` for granted would check the failure page against the
+    strings of a directory it was never aimed at.
+    """
     if state == _STALE:
         sql = sql_script(ONE_APPEND_ELSEWHERE)
         app, client, session = walk(sql)
@@ -108,7 +125,16 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str):  # type: ignor
             client.post("/answer", data={"key": question.key, "kind": "append"}).status_code == 302
         )
         sql.write_text(ONE_MERGE, encoding="utf-8")
-        return app, client, session
+        return app, client, session, out_dir
+
+    if state == _WRITE_FAILED:
+        # Aimed at the project itself, which `emit` refuses. The walk is
+        # then in the state a reader reaches by pressing write with a
+        # destination that cannot take it, and every screen still has to
+        # render around that.
+        app, client, session = walk(walk_sql, out=project_dir)
+        assert client.post("/write").status_code == 500
+        return app, client, session, project_dir
 
     app, client, session = walk(walk_sql)
     if state == _ANSWERED:
@@ -117,7 +143,9 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str):  # type: ignor
     elif state == _DOWNGRADED:
         answer = {"key": _append_key(session), "kind": "merge", "typed": "evnt_id"}
         assert client.post("/answer", data=answer).status_code == 302
-    return app, client, session
+    elif state == _WRITTEN:
+        assert client.post("/write").status_code == 200
+    return app, client, session, out_dir
 
 
 def _pristine_decisions(session: Session):  # type: ignore[no-untyped-def]
@@ -149,33 +177,61 @@ def _refusal_message(session: Session) -> str:
     raise AssertionError("the merge answer with no columns was accepted")
 
 
-def _produced(session: Session, state: str) -> frozenset[str]:
-    """Every string the engine produces for this state, the refusal included."""
-    strings = engine_strings(session)
+def _produced(session: Session, out: Path, state: str) -> frozenset[str]:
+    """Every string the engine produces for this state, both refusals included.
+
+    The two refusals are asked of the engine by *making the call*, never
+    written out here: each page renders the exception's own sentence, and a
+    test that spelled one out would be checking the page against a copy of
+    the message instead of against the message.
+    """
+    strings = engine_strings(session, out)
     if state == _STALE:
         return strings
-    return strings | {normalised(_refusal_message(session))}
+    strings |= {normalised(_refusal_message(session))}
+    if state == _WRITE_FAILED:
+        strings |= {normalised(_write_refusal(session, out))}
+    return strings
+
+
+def _write_refusal(session: Session, out: Path) -> str:
+    """What `emit` says when this conversion is aimed at `out`."""
+    try:
+        emit(session.view().change, read_project(session.project), out)
+    except ValueError as refusal:
+        return str(refusal)
+    raise AssertionError(f"emit accepted {out} as a destination")
 
 
 def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]:
-    """Every page a reader can land on in this state, screens and both
-    non-screens alike.
+    """Every page a reader can land on in this state, screens and non-screens
+    alike.
 
-    `/answer` and `/stale` are POST-only, so a screen list derived from the
-    routing table filters them out -- and the refusal page is the most likely
-    page in the whole walk for a first-time user to meet, because pressing
-    "merge on a unique key" without naming a column lands on it. A guard that
-    never visited it is a guard that never visited the page it matters most on.
+    `/answer`, `/stale` and `/write` are POST-only, so a screen list derived
+    from the routing table filters all three out. Two of the pages they
+    render are the pages a first-time user is most likely to be looking at:
+    the refusal, because pressing "merge on a unique key" without naming a
+    column lands on it, and the write result, because it is the last thing
+    the walk shows. A guard that never visited those is a guard that never
+    visited the pages it matters most on.
     """
     if state == _STALE:
         stranded = client.get("/")
         assert stranded.status_code == 409
-        return {"/ (stranded)": read(stranded.get_data(as_text=True))}
+        written = client.post("/write")
+        assert written.status_code == 409
+        return {
+            "/ (stranded)": read(stranded.get_data(as_text=True)),
+            "/write (stranded)": read(written.get_data(as_text=True)),
+        }
 
     pages = _pages(app, client, session)
     refusal = client.post("/answer", data={"key": _append_key(session), "kind": "merge"})
     assert refusal.status_code == 400
     pages["/answer (refused)"] = read(refusal.get_data(as_text=True))
+    result = client.post("/write")
+    assert result.status_code == (500 if state == _WRITE_FAILED else 200)
+    pages["/write"] = read(result.get_data(as_text=True))
     return pages
 
 
@@ -204,7 +260,9 @@ def test_the_walk_is_the_six_screens_its_own_routes_define(walk: Walk, walk_sql:
 
 
 @pytest.mark.parametrize("state", _STATES)
-def test_no_screen_authors_a_sentence(walk: Walk, sql_script, walk_sql: Path, state: str) -> None:
+def test_no_screen_authors_a_sentence(
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
+) -> None:
     """Spec section 6.1, mechanically.
 
     Two assertions, and they are one claim seen from both ends. A template
@@ -221,8 +279,8 @@ def test_no_screen_authors_a_sentence(walk: Walk, sql_script, walk_sql: Path, st
     empty. So the one state it was evaluated in was the one state where the
     two runs agree.
     """
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
-    produced = _produced(session, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    produced = _produced(session, out, state)
 
     for url, page in _guarded_pages(app, client, session, state).items():
         unclaimed = [run for run in page.engine if normalised(run) not in produced]
@@ -233,7 +291,7 @@ def test_no_screen_authors_a_sentence(walk: Walk, sql_script, walk_sql: Path, st
 
 
 def test_the_prose_check_sees_a_sentence_a_template_would_have_written(
-    walk: Walk, walk_sql: Path
+    walk: Walk, walk_sql: Path, out_dir: Path
 ) -> None:
     """The check above, shown failing. A clean page proves nothing about a
     detector that cannot fire: this plants the two sentences the mutation
@@ -259,19 +317,19 @@ def test_the_prose_check_sees_a_sentence_a_template_would_have_written(
     # And the marker buys nothing: claimed as the engine's, the same sentence
     # is no longer measured as authored, and is caught by the other assertion.
     salted = read(body.replace("</main>", marked + "</main>"))
-    produced = engine_strings(session)
+    produced = engine_strings(session, out_dir)
     assert [run for run in salted.engine if normalised(run) not in produced]
 
 
 @pytest.mark.parametrize("state", _STATES)
 def test_the_prose_check_has_something_left_to_look_at(
-    walk: Walk, sql_script, walk_sql: Path, state: str
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
     """Every page leaves authored text behind after the engine's is set
     aside -- headings, nav, buttons. A page whose authored side came back
     empty would pass the check above having inspected nothing.
     """
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     for url, page in _guarded_pages(app, client, session, state).items():
         assert page.authored, f"{state} {url} leaves nothing authored to inspect"
         assert page.engine, f"{state} {url} renders nothing from the engine"
@@ -319,9 +377,9 @@ def test_every_question_screen_shows_the_engine_s_example_or_no_example_at_all(
 
 @pytest.mark.parametrize("state", _STATES)
 def test_no_screen_renders_a_heading_with_an_empty_body(
-    walk: Walk, sql_script, walk_sql: Path, state: str
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     for url, page in _guarded_pages(app, client, session, state).items():
         assert page.empty_headings() == (), f"{state} {url} opens a section and says nothing in it"
 
@@ -335,7 +393,7 @@ def test_the_empty_heading_check_catches_one(walk: Walk, walk_sql: Path) -> None
 
 @pytest.mark.parametrize("state", _STATES)
 def test_every_count_is_the_length_of_what_is_listed_beside_it(
-    walk: Walk, sql_script, walk_sql: Path, state: str
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
     """Section 11.4(c), both halves.
 
@@ -348,7 +406,7 @@ def test_every_count_is_the_length_of_what_is_listed_beside_it(
     every run the templates wrote has to sit inside a `data-count` element,
     and that is the second assertion.
     """
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     seen = 0
     for url, page in _guarded_pages(app, client, session, state).items():
         assert page.counts, f"{state} {url} shows no derived count"
@@ -399,7 +457,7 @@ def test_not_null_is_declared_on_no_screen(walk: Walk, walk_sql: Path) -> None:
 
 @pytest.mark.parametrize("state", _STATES)
 def test_no_screen_gates_the_write_action(
-    walk: Walk, sql_script, walk_sql: Path, state: str
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
     """Three of three personas named the second acknowledgment checkbox
     theatre and said ticking it would be lying to the tool: it demanded a
@@ -415,7 +473,7 @@ def test_no_screen_gates_the_write_action(
     answer, not an acknowledgment -- so the claim is about the form that
     writes and about `required`, not about controls in general.
     """
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     pages = _guarded_pages(app, client, session, state)
 
     if state != _STALE:
@@ -435,7 +493,7 @@ def test_no_screen_gates_the_write_action(
 
 @pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])
 def test_every_decision_reaches_exactly_one_screen(
-    walk: Walk, sql_script, walk_sql: Path, state: str
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
     """Nothing is silent. Every Decision this conversion recorded is on a
     screen, and on one screen: a Decision rendered nowhere is a choice made
@@ -449,7 +507,7 @@ def test_every_decision_reaches_exactly_one_screen(
     first answer, the partition would be checked in the one state where
     nothing has moved.
     """
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     pages = _pages(app, client, session)
     decisions = session.view().change.decisions
     assert len(decisions) > 5, "this conversion should record more than a handful"
@@ -655,14 +713,14 @@ def test_each_screen_defines_the_dbt_words_it_uses_and_no_others(
 
 @pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])
 def test_no_screen_repeats_one_engine_string(
-    walk: Walk, sql_script, walk_sql: Path, state: str
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
     """The repetition a reviewer named as the thing most likely to train a
     reader to skip a block. One string, rendered twice on one screen, is
     either a mistake or noise; either way it is not the page saying something
     twice on purpose.
     """
-    app, client, session = _walk_in(walk, sql_script, walk_sql, state)
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     consequences = {
         normalised(text)
         for decision in session.view().change.decisions
@@ -746,6 +804,8 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "stale.html",
         "refused.html",
         "missing.html",
+        "written.html",
+        "write_failed.html",
     }
     for name in rendered:
         assert (package / "templates" / name).is_file(), name
@@ -857,15 +917,15 @@ def test_an_answer_the_engine_applied_as_given_says_nothing_extra(
 def test_a_page_the_walk_does_not_have_is_still_shaped_like_the_walk(
     walk: Walk, walk_sql: Path
 ) -> None:
-    """The write action is offered and its route is not served by this build,
-    so pressing it is the one 404 a reader reaches by pressing a button.
-    Werkzeug's stock page -- no navigation, no way back, "check your
-    spelling" -- makes the terminal action of the walk look like an error,
-    which is the one thing spec section 7 says it must not look like.
+    """A mistyped address, and a question index this conversion does not ask.
+    `/questions/9` is one keystroke from a link that works, so it is the 404
+    a reader reaches without doing anything odd. Werkzeug's stock page -- no
+    navigation, no way back, "check your spelling" -- leaves them outside the
+    walk with nothing on the page to get them back into it.
     """
     app, client, session = walk(walk_sql)
 
-    for response in (client.post("/write"), client.get("/questions/9")):
+    for response in (client.get("/nowhere"), client.get("/questions/9")):
         assert response.status_code == 404
         page = read(response.get_data(as_text=True))
         assert set(page.links) == set(_screen_urls(app, session))

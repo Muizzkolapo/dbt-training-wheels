@@ -302,15 +302,31 @@ def test_dropping_nothing_is_not_a_way_to_lose_an_answer(walk: Walk, walk_sql: P
     assert session.answers == {key: ("append", ())}
 
 
-def test_the_write_route_is_not_served_by_this_build(walk: Walk, walk_sql: Path) -> None:
-    """The done screen offers the write action; writing is the next task's,
-    and the guard that keeps a conversion out of the user's own project lives
-    on the CLI path only (`_refuse_output_inside_project`). Registering a
-    route that wrote without it is the one thing this build must not do, so
-    the route is absent and says so by being absent.
+def test_every_action_a_screen_offers_is_a_route_this_app_answers(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The done screen shipped its write button before the route behind it
+    existed, with a 404 page shaped like the walk as the interim -- so the
+    terminal action of the walk answered with "not here". What is asserted is
+    the pairing rather than one URL: every form action rendered on a screen is
+    read off the page, every POST rule is read off the routing table, and a
+    control the app cannot answer fails here whichever screen offers it.
+
+    What `/write` then does is `tests/unit/web/test_write.py`'s; this says
+    only that pressing it reaches something.
     """
-    _app, client, _session = walk(walk_sql)
-    assert client.post("/write").status_code == 404
+    app, client, session = walk(walk_sql)
+    served = {rule.rule for rule in app.url_map.iter_rules() if "POST" in (rule.methods or set())}
+
+    offered: set[str] = set()
+    for url in ("/", "/questions/0", "/questions/1", "/caveats", "/files", "/done"):
+        page = read(client.get(url).get_data(as_text=True))
+        offered |= {form["action"] for form in page.forms if form.get("action")}
+
+    assert offered, "no screen of the walk offers an action at all"
+    assert offered <= served, f"the walk offers {sorted(offered - served)}, which nothing answers"
+    for action in sorted(offered):
+        assert client.post(action).status_code != 404, action
 
 
 @pytest.mark.parametrize(
