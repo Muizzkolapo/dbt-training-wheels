@@ -1,0 +1,20 @@
+{#
+  The script changed under an answer that was already given, so the key that
+  answer was recorded against is one this conversion no longer issues and
+  every other accessor refuses. `stale_answers` is the one that still
+  answers, so this screen can name them and offer the way out rather than
+  show an error with no subject.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Answers with no question</h1>
+<p class="tally"><span data-count="stale">{{ stale | length }}</span> answers</p>
+<ul class="stale">
+  {%- for key in stale %}
+  <li data-item="stale"><span data-engine>{{ key }}</span></li>
+  {%- endfor %}
+</ul>
+<form method="post" action="/stale">
+  <button type="submit">Forget them</button>
+</form>
+{% endblock %}

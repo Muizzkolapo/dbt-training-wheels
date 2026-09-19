@@ -1,0 +1,23 @@
+{#
+  What landed, and where.
+
+  The destination is named here for the same reason it is named on the screen
+  the button was pressed from: a reader who typed the command minutes ago has
+  no other way to find out which directory to open, and "it worked" over no
+  path is the terminal step of the walk telling them nothing.
+
+  The paths are project-relative, as they are on the files screen, and they
+  are the ones `emit` reported writing rather than a second derivation of
+  where it puts things. The count beside them is the length of that list.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Written</h1>
+<p class="destination"><span data-engine>{{ out }}</span></p>
+<p class="tally"><span data-count="written">{{ files | length }}</span> files</p>
+<ul class="written">
+  {%- for path in files %}
+  <li data-item="written"><span data-engine>{{ path }}</span></li>
+  {%- endfor %}
+</ul>
+{% endblock %}

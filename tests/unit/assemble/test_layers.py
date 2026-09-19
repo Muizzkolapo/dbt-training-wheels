@@ -8,6 +8,7 @@ FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
 def _ctx(*layers: LayerInfo) -> ProjectContext:
     return ProjectContext(
+        root=Path("/nowhere"),
         project_name="p",
         model_paths=("models",),
         layers=layers,

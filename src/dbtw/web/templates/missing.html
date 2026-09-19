@@ -1,0 +1,14 @@
+{#
+  A page this walk does not have.
+
+  Reached by a mistyped address, and by a question index this conversion
+  does not ask -- /questions/9 on a walk with two questions, one keystroke
+  away from a link that works. Werkzeug's stock page for that has no
+  navigation, no way back and "check your spelling" on it; this one keeps
+  the walk's own shape around a reader who lands here.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Not here</h1>
+<p class="onward"><a data-link="back" href="/">Start</a></p>
+{% endblock %}

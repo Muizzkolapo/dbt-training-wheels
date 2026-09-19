@@ -11,8 +11,10 @@ from dbtw.core.emit.writer import (
     DuplicateSourceEntryError,
     EmitResult,
     OrphanSchemaTestError,
+    OutputInsideProjectError,
     UnsafeOutputPathError,
     emit,
+    refuse_output_inside_project,
 )
 
 __all__ = [
@@ -23,8 +25,10 @@ __all__ = [
     "EmitResult",
     "Example",
     "OrphanSchemaTestError",
+    "OutputInsideProjectError",
     "UnsafeOutputPathError",
     "emit",
+    "refuse_output_inside_project",
     "render_model",
     "render_report",
     "render_schema_yaml",

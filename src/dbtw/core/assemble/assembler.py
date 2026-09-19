@@ -7,8 +7,11 @@ import heapq
 from collections.abc import Mapping
 from typing import Literal
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+
 from dbtw.core.assemble.layers import layer_roles, role_for
-from dbtw.core.assemble.projections import known_projections
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.resolve import resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
@@ -24,6 +27,7 @@ from dbtw.core.passes.types import (
     PassState,
     SchemaTest,
     Subject,
+    Tier,
     append_option,
     inline_option,
     merge_option,
@@ -31,6 +35,7 @@ from dbtw.core.passes.types import (
     var_option,
     verify_option,
 )
+from dbtw.core.projections import known_projections
 
 # Fixed priority used once the role-appropriate layer is missing. "role" itself
 # is always tried first by the caller; this is the order the remaining roles
@@ -38,15 +43,30 @@ from dbtw.core.passes.types import (
 _FALLBACK_ROLE_ORDER = ("mart", "staging", "intermediate")
 
 
-def _decision(kind: str, name: str, action: str, reason: str) -> Decision:
+def _decision(
+    kind: str,
+    name: str,
+    action: str,
+    reason: str,
+    plain_reason: str = "",
+    # Tier 1 by default because most of what assemble does is mechanical --
+    # placement, naming, dependency order: unambiguous mappings applied
+    # without asking (RFC section 6). A Decision recording something this
+    # conversion could NOT settle from the SQL asks for tier 2 explicitly, and
+    # where a reader meets it turns on that: section 5.2 collapses Tier 1 into
+    # "mechanical changes, with a count", the right treatment for a rename and
+    # the wrong one for a gap the reader has to act on.
+    tier: Tier = 1,
+) -> Decision:
     return Decision(
         key=f"assemble.{kind}.{name}",
-        tier=1,
+        tier=tier,
         action=action,
         reason=reason,
         source_file="",
         line_start=0,
         line_end=0,
+        plain_reason=plain_reason,
     )
 
 
@@ -103,6 +123,37 @@ def _final_name(
     layer: LayerInfo | None,
     detections: Mapping[str, Detection],
 ) -> tuple[str, list[Decision]]:
+    """The name this draft's model file will carry, and the Decision that says
+    why it changed and what changing it leaves behind.
+
+    The convention half is the easy half. The half that matters is the
+    cutover: a rename here is not a migration. dbt writes the relation its own
+    model names, `draft_name` is not that relation, and nothing in the
+    generated project ever writes to it -- so the original stands exactly as
+    it was, and every query, job and dashboard still selecting from it goes on
+    selecting from it. A backend engineer in the persona walkthroughs read the
+    rename as a Django `RenameModel` ("atomic, data-preserving, references
+    updated for me") and reported that saying so plainly was the single piece
+    of expectation-management that stopped a real incident; two of five asked
+    for it unprompted (spec section 11.6).
+
+    Both registers state it, in their own terms, because they are for two
+    readers: the dbt-native one keeps the prefix evidence that answers "why
+    was it renamed at all", which the plain one has no use for.
+
+    Neither describes the escape hatch -- naming the model back to the
+    original so dbt adopts the table already there. Section 11.6 records that
+    as the scariest sentence on the page for both engineers, and it needs
+    mechanics this slice cannot supply. Saying what happens is this Decision's
+    job; offering a manoeuvre it cannot explain is not.
+
+    Deliberately materialization-free in both registers. This function is
+    handed a name and a layer, never a draft, so it cannot know whether dbt
+    will create a table or a view for the model -- and it does not need to:
+    the original is left alone either way. It also says what the conversion
+    does rather than what the original contains, so the sentence stays true
+    for a script whose target does not exist in the database yet.
+    """
     if layer is None or layer.prefix is None:
         return draft_name, []
     if draft_name.startswith(layer.prefix):
@@ -111,8 +162,232 @@ def _final_name(
     detection = detections.get(f"layer.{layer.name}.prefix")
     evidence = detection.evidence if detection is not None else f"{layer.prefix} prefix"
     action = f"renamed {draft_name} to {final_name} (prefix {layer.prefix!r} — {evidence})"
-    reason = f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}"
-    return final_name, [_decision("rename", draft_name, action, reason)]
+    # One fact per sentence, which is how these read best and also how they
+    # are checked: `tests/unit/register_claims.py` scopes a negation forward
+    # to the end of the sentence it sits in, so a sentence that denies one
+    # thing cannot also be read as asserting another. An earlier version of
+    # this comment asked future editors to place a comma where a test wanted
+    # one; that was the test's shape being wrong, and it has been fixed rather
+    # than accommodated.
+    #
+    # Neither register says what the original table CONTAINS, only what this
+    # conversion does to it: the sentence has to stay true for a script whose
+    # target does not exist in the database yet.
+    reason = (
+        f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}. "
+        f"The rename is not a migration. dbt writes the relations its own models name, and "
+        f"{draft_name} is not one of them, so dbt creates {final_name} beside it. "
+        f"{draft_name} is left exactly as it was. Nothing in this project writes to it "
+        f"again. Everything still selecting from {draft_name} goes on reading {draft_name}. "
+        f"It never sees a row only {final_name} has. Repointing those readers at "
+        f"{final_name} is manual work this conversion leaves to you."
+    )
+    plain_reason = (
+        f"Renaming does not move the table. Afterwards there are two of them. {draft_name} "
+        f"is left exactly as it was. {final_name} is the new one, and it is the only one "
+        f"anything here writes to. A dashboard, a scheduled job or a saved query pointed at "
+        f"{draft_name} goes on reading {draft_name}. It never sees a row that only "
+        f"{final_name} has. Pointing each of those at {final_name} is a change someone has "
+        f"to make by hand."
+    )
+    return final_name, [_decision("rename", draft_name, action, reason, plain_reason=plain_reason)]
+
+
+def _row_source_queries(select: exp.Select) -> list[exp.Query]:
+    """The derived tables this SELECT draws rows from -- the FROM and every
+    JOIN, where the source is a subquery rather than a table.
+
+    Found by node type rather than by argument key. sqlglot spells the key
+    `from_` in the version pinned here and `from` in others, and reading it by
+    name returned None under the pinned one -- silently, which cost the
+    derived-table and CTE coverage until a shape test caught it.
+    """
+    queries: list[exp.Query] = []
+    for value in select.args.values():
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, (exp.From, exp.Join)) and isinstance(item.this, exp.Subquery):
+                inner = item.this.this
+                if isinstance(inner, exp.Query):
+                    queries.append(inner)
+    return queries
+
+
+def _row_filters(query: exp.Query, dialect: str | None) -> tuple[str, ...]:
+    """The conditions that decide which rows this model's own query returns.
+
+    The query SPINE, not every `WHERE` in the tree: the outer query, the
+    branches of a set operation, the CTEs that feed it, and any derived table
+    it selects from. Each of those contributes rows to the model, so a
+    condition on one is a condition on the model.
+
+    What the spine deliberately excludes is the reason this is a walk rather
+    than a `find_all`. A predicate inside a scalar subquery in the select list
+    (`SELECT id, (SELECT max(v) FROM lookup l WHERE l.id = e.id) AS v`) filters
+    the lookup, not the model: every row of the model's own source is still
+    returned, with a null where nothing matched. Reporting it as this model's
+    filter put a sentence in the report -- "a row that does not match is
+    selected by no run at all" -- that the model file beside it contradicts.
+    A `WHERE EXISTS (...)` is the mirror image: the outer condition IS the row
+    filter and is reported whole, while descending into it reported the same
+    filter twice and called the model "filtered by 2 WHERE clauses".
+
+    Deduplicated, in spine order: CTEs, then derived tables, then this query's
+    own WHERE -- which is source order for every shape the tests cover.
+    """
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def visit(node: exp.Query) -> None:
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        for cte in node.ctes:
+            if isinstance(cte.this, exp.Query):
+                visit(cte.this)
+        if isinstance(node, exp.SetOperation):
+            for branch in (node.this, node.expression):
+                if isinstance(branch, exp.Query):
+                    visit(branch)
+            return
+        if not isinstance(node, exp.Select):
+            return
+        for source in _row_source_queries(node):
+            visit(source)
+        where = node.args.get("where")
+        if where is not None:
+            found.append(where.this.sql(dialect=dialect))
+
+    visit(query)
+    return tuple(dict.fromkeys(found))
+
+
+def _incremental_filter_caveat(
+    draft: ModelDraft, final_name: str, dialect: str | None
+) -> list[Decision]:
+    """The Decision recording what an incremental model's copied-over filter
+    costs, or none where there is no filter to record.
+
+    Choosing merge fixes duplication and leaves the script's `WHERE` exactly
+    where it was. dbt does not narrow that condition between runs, and this
+    conversion deliberately does not wrap it in an `is_incremental()` guard --
+    nothing here can tell a watermark from an ordinary business filter, and
+    guarding the wrong one would change which rows the model produces
+    (`passes.tier2.append_pass` records the same refusal from the other side,
+    where it names the WHERE as evidence for a human to confirm). So the model
+    re-reads everything the condition matches on every run, and a row that
+    does not match it is selected by no run at all.
+
+    This is not a fix for that gap. It is the gap given a Decision, which is
+    the standing rule for anything this conversion leaves for the reader: it
+    was the warehouse engineer's single change request in both persona rounds,
+    the only finding to survive a full rebuild unaddressed, and until it is
+    closed the walk must not be silent about it (spec section 11.6).
+
+    Only for an incremental model. A `table` materialization is rebuilt from
+    nothing every run by design, so re-reading everything the filter matches
+    is what it is for -- nobody was promised a narrowing there and none is
+    withheld.
+
+    Emitted here rather than in the pass that built the draft, because the gap
+    belongs to the model and not to the statement's shape: an INSERT and a
+    MERGE whose USING subquery carries the same WHERE produce the same model
+    with the same cost, and a caveat raised only where the append pass happens
+    to look would cover half of them.
+
+    Every condition on the query SPINE counts, and nothing else does --
+    `_row_filters` above owns that rule and says what it keeps and drops. Two
+    earlier versions got the scope wrong in opposite directions and both were
+    found by a reader, not by a test: reading the outermost `WHERE` alone told
+    the reader of a CTE, a UNION or a derived table nothing at all, and
+    `find_all` then told the reader of a scalar-subquery predicate something
+    the model file contradicts. The text below says these conditions decide
+    which rows the model takes, which is true of a spine condition and false
+    of any other, so the scope is what makes the sentence honest rather than
+    the wording. `test_incremental_filter` pins both directions.
+
+    Runs against the RAW draft body and so must run before `rewrite_body`:
+    a body already rewritten into dbt Jinja does not parse, `parse_one` raises
+    `SqlglotError`, and this would silently record nothing. That is a real
+    dependency on the order in `assemble`, not an incidental one, and
+    test_a_body_already_rewritten_into_jinja_yields_no_caveat is what makes
+    reordering fail rather than go quiet. The refusal itself is right --
+    with no readable body there is no condition to quote, and a caveat about
+    a filter it could not read would be worse than silence -- but "should
+    never happen" is not a reason to leave it untested.
+    """
+    if draft.incremental_strategy is None:
+        return []
+    try:
+        node = sqlglot.parse_one(draft.body, read=dialect)
+    except SqlglotError:
+        return []
+    if not isinstance(node, exp.Query):
+        return []
+    conditions = _row_filters(node, dialect)
+    if not conditions:
+        return []
+    named = "; ".join(conditions)
+    quoted = (
+        f"the script's WHERE ({named})"
+        if len(conditions) == 1
+        else f"the script's {len(conditions)} WHERE clauses ({named})"
+    )
+    action = (
+        f"caveat: {final_name} keeps {quoted} exactly as written, so every run re-selects "
+        "everything matching it"
+    )
+    # `is_incremental()` is named in this function's docstring and nowhere in
+    # the text below. It is a dbt word; the report's glossary heading promises
+    # to define the dbt words the report uses; and the glossary provably
+    # cannot take it, because every spelling of it contains `incremental`,
+    # which is already a term, and test_no_term_s_spelling_is_hidden_inside_
+    # another_s refuses a spelling nested inside another. Naming the category
+    # instead costs a dbt reader nothing they cannot recover from the model.
+    #
+    # The conditions are quoted once, in a clause of their own, and never
+    # inside a clause carrying a claim: a condition is arbitrary user SQL, and
+    # `WHERE x IS NOT NULL` would drop a negation into the clause that says
+    # every run re-reads the whole source.
+    reason = (
+        f"{final_name}'s filtering is the script's own, copied verbatim: {named}. Nothing "
+        "here can tell whether it was meant as this model's incremental watermark. "
+        "Narrowing a condition that was not meant as one would change which rows the model "
+        "produces. So no guard was written around it. It stays a fixed condition: every "
+        "run evaluates it over the whole of this model's source rather than over what "
+        "arrived since the last run. The work re-done grows with the table. A row that "
+        "does not match is selected by no run at all, however late it arrives. If the "
+        "filtering compares a date, a row turning up afterwards carrying an earlier one "
+        f"never enters {final_name}. Narrowing or guarding the filtering is manual work "
+        "this conversion leaves to you."
+    )
+    plain_reason = (
+        f"The filtering that decides which rows this takes -- {named} -- comes from your "
+        'script, copied word for word and left alone. It does not mean "only what is new '
+        'since last time". It means the same thing every time. So each run goes back over '
+        "the whole of that table again, however much has piled up. A row that does not "
+        "match is taken by no run at all, however late it turns up. If the filtering "
+        "compares a date, a row arriving afterwards with an earlier date on it never gets "
+        "in. Narrowing the filtering so that it asks only for what is new is something "
+        "someone has to do by hand."
+    )
+    return [
+        _decision(
+            "incremental_filter",
+            draft.name,
+            action,
+            reason,
+            plain_reason=plain_reason,
+            # Tier 2, with every other caveat, rather than Tier 1 with the
+            # renames beside it. The mapping here is not the unambiguous kind
+            # Tier 1 names: whether the condition was this model's watermark
+            # or an ordinary business filter is exactly the intent this
+            # conversion cannot settle from the SQL. It also decides where a
+            # reader meets it -- section 5.2 collapses Tier 1 into a count,
+            # and a finding that survived two persona rounds unaddressed is
+            # not one to bury under "3 mechanical changes".
+            tier=2,
+        )
+    ]
 
 
 def _source_entries(
@@ -350,12 +625,17 @@ def _upgrade_to_merge(
     "Accounted for", not "answerable": these rewritten labels name the key
     ("merge on order_id, checked on every run") while the pristine question
     `answers` are validated against spells the same options without one, so
-    re-sending a label read off THIS Decision is refused. That is a real
-    boundary, still open, pinned by
-    `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`
-    and deferred to the guided-walk slice, which would close it by giving
-    `Option` a stable kind so that no caller has to match on prose. `Option`
-    has no such field today.
+    re-sending a label read off THIS Decision is still refused, and is pinned
+    by
+    `test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today`.
+    The engine's side of that has not changed and is not wrong: it cannot know
+    that two spellings are one answer. What changed is the caller's side --
+    `Option.kind` is that stable identity now, and `passes.answer_for` turns a
+    kind back into the label whichever question is being answered offers. A
+    consumer reads `kind` off this rewritten Decision and resolves it against
+    the pristine one, so no label text crosses between two runs. The round
+    trip is
+    `test_answer_for_is_how_a_caller_re_sends_an_answer_across_a_rebuild`.
     """
     merge_answer = merge_option(keys)
     # dbt's built-in `unique` test checks one column, so the checked answer
@@ -407,6 +687,16 @@ def _upgrade_to_merge(
         ),
         chosen=chosen_option.label,
         options=(merge_answer, append_option()) + checked,
+        # The key this question now turns on. Every other field here says the
+        # model merges on `keys`; a Subject still reporting no key would put
+        # the rewritten Decision in the one shape `Subject`'s docstring
+        # describes as an append that has not been answered yet -- and a
+        # screen reading it that way renders a column picker on a question the
+        # user has already answered. `candidates` is left alone: it is what the
+        # model projects, which answering did not change.
+        subject=(
+            dataclasses.replace(dec.subject, columns=keys) if dec.subject is not None else None
+        ),
     )
 
 
@@ -521,12 +811,26 @@ def _flag_overridden_decision(
     taken = f"{answered.option.label!r}"
     if answered.keys and answered.option.columns_prompt:
         taken += f" with {_keys_str(answered.keys)}"
+    # What the model came out doing, in the plain register's terms and read
+    # off `after` rather than off which branch this is. The dbt register can
+    # spell it in dbt's own config vocabulary; this one cannot, and a reader
+    # who has just been told a key was not used still has to be told what the
+    # table does instead.
+    left = (
+        f"matching rows on {_keys_str(after.unique_key)}"
+        if after.unique_key
+        else "adding every row it finds, every run"
+    )
     # The answer took effect exactly when the model came out carrying the key
     # it asked for -- an empty one for "append every row", the named one for a
     # merge.
     if after.unique_key == answered.keys:
         outcome = f"its own question was answered {taken} instead"
         aftermath = "so it was taken and the flag was not applied here"
+        plain_aftermath = (
+            f"So that answer was taken for {draft_name}, and {keys_str} was not used here. "
+            f"{draft_name} is left {left}."
+        )
     else:
         # Spelled in dbt's own config vocabulary, the same way `_upgrade_to_merge`
         # names an outcome, rather than in prose needing an article the strategy
@@ -547,6 +851,11 @@ def _flag_overridden_decision(
             "then declined on its own merits, for the reason recorded in the Decision "
             "beside this one"
         )
+        plain_aftermath = (
+            f"So {keys_str} was not used here. The answer that displaced it was then turned "
+            "down for a reason of its own, written in the record beside this one. "
+            f"{draft_name} was left {left}."
+        )
     return Decision(
         key=f"assemble.unique_key_overridden.{draft_name}",
         tier=2,
@@ -555,6 +864,12 @@ def _flag_overridden_decision(
             "--unique-key answers every incremental question in this run at once, "
             "and this model's own question was answered separately; the answer "
             f"naming this one model is the more specific of the two, {aftermath}"
+        ),
+        plain_reason=(
+            f"{keys_str} was asked for on the command line, which asks the same thing of "
+            f"every table in this run at once. {draft_name} was asked about on its own, and "
+            f"answered on its own. An answer about one table is the more particular of the "
+            f"two. {plain_aftermath}"
         ),
         source_file="",
         line_start=0,
@@ -671,19 +986,29 @@ def _apply_unique_key(
                 all_matched = all(status == "matched" for _, status, _ in statuses)
 
                 if missing and not has_star:
+                    absent = _keys_str(tuple(missing))
                     extra_decisions.append(
                         Decision(
                             key=f"assemble.unique_key_not_selected.{draft_name}",
                             tier=2,
                             action=(
                                 f"{requested} was not applied to "
-                                f"{draft_name}: it does not select {_keys_str(tuple(missing))}"
+                                f"{draft_name}: it does not select {absent}"
                             ),
                             reason=(
                                 "a merge's unique_key must be one of the model's own "
                                 "output columns; forcing this key onto a model that "
                                 "doesn't select it would fail at dbt run time, so it "
                                 "was left as an append incremental instead"
+                            ),
+                            plain_reason=(
+                                f"{draft_name} does not select {absent}, so nothing was set "
+                                "up to match rows on it. Matching a new row against one "
+                                "already in the table needs a column the model itself gives "
+                                f"back. {draft_name} goes on adding every row it finds, every "
+                                "run, which is what naming a column was meant to stop. Name a "
+                                "column this model does select, or change the query so that "
+                                f"it selects {absent}."
                             ),
                             source_file="",
                             line_start=0,
@@ -695,6 +1020,12 @@ def _apply_unique_key(
 
                 if ambiguous and not has_star and not missing:
                     named = ", ".join(f'{k} as "{name}"' for k, name in ambiguous)
+                    # The two halves the plain register needs separately: what
+                    # was asked for, and what the model writes. The dbt
+                    # register pairs them with SQL's own `as`, which is the
+                    # spelling this one may not lean on.
+                    asked = _keys_str(tuple(k for k, _ in ambiguous))
+                    written = ", ".join(f'"{name}"' for _, name in ambiguous)
                     extra_decisions.append(
                         Decision(
                             key=f"assemble.unique_key_ambiguous.{draft_name}",
@@ -712,6 +1043,20 @@ def _apply_unique_key(
                                 "naming.compare_targets uses for cross-statement "
                                 "target identity; left as an append incremental "
                                 "rather than guessing either way"
+                            ),
+                            plain_reason=(
+                                f"The column named was {asked}, written without quote marks. "
+                                f"{draft_name} selects "
+                                f"{written} instead, with quote marks around it, and quote "
+                                "marks make the capital and small letters part of a column's "
+                                "name. There is nothing in the text of the query that settles "
+                                "whether those are one column spelled two ways or two "
+                                "different columns. Guessing wrong would match rows on the "
+                                f"wrong column, so nothing was set up to match on {asked} at "
+                                f"all. {draft_name} goes on adding every row it finds, every "
+                                "run. Ask for it with the same capital and small letters the "
+                                "query uses, or take the quote marks off that column in the "
+                                "query."
                             ),
                             source_file="",
                             line_start=0,
@@ -834,6 +1179,17 @@ def _apply_unique_key(
                             "the command line, so the script-derived key was kept "
                             "instead of the flag's"
                         ),
+                        plain_reason=(
+                            "The statement this model came from already names the column "
+                            f"{draft_name} matches rows on, which is "
+                            f"{_keys_str(model.unique_key)}. {keys_str} was asked for on the "
+                            "command line, which asks the same thing of every table in this "
+                            "run at once. A column the statement itself names is evidence "
+                            f"about this one table in particular. So {draft_name} goes on "
+                            f"matching rows on {_keys_str(model.unique_key)}. {keys_str} was "
+                            "not used here. To change that, change the statement in your "
+                            "script."
+                        ),
                         source_file="",
                         line_start=0,
                         line_end=0,
@@ -880,6 +1236,14 @@ def _apply_unique_key(
                     "no model converted from this SQL has an append or merge "
                     "incremental strategy, so there was nothing for --unique-key to "
                     "apply to -- check for a typo in the flag or in the input SQL"
+                ),
+                plain_reason=(
+                    "Nothing this conversion built is brought up to date by adding to what "
+                    f"is already in it, so there was nothing for {keys_str} to be used on. "
+                    "Matching rows on a column is only a choice for a table that is added "
+                    "to; every table here is worked out again from nothing each time. "
+                    "Check the spelling of what was typed, and check that the script really "
+                    "does add rows to a table that is already there."
                 ),
                 source_file="",
                 line_start=0,
@@ -1137,6 +1501,12 @@ def assemble(
             )
         else:
             materialization = draft.materialization
+
+        # Into this draft's own list, not straight into new_decisions: a draft
+        # dropped for a final-name collision below has its file never written,
+        # and a caveat about the filter in a model nobody will read is one
+        # more thing the report says that is not there.
+        local_decisions.extend(_incremental_filter_caveat(draft, final_name, state.dialect))
 
         placed[draft_index] = AssembledModel(
             name=final_name,

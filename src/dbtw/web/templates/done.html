@@ -1,0 +1,33 @@
+{#
+  The write action, and the commands. Nothing is ticked first: three of three
+  personas named the acknowledgment checkbox theatre and said ticking it
+  would be lying to the tool, because it demanded a certification the page
+  gave them no way to obtain. Gates buy attention, not comprehension.
+
+  The destination is named before the button and not after it. This is the
+  one control in the whole walk that touches the reader's disk, and where it
+  goes came from a command they typed some time ago; a page that only said so
+  afterwards would be telling them where their files went rather than asking
+  whether that is where they want them.
+
+  The commands are named here and defined once, in the block above, which is
+  where every word on every screen is defined. Five of five asked for the set
+  related to one another rather than introduced one at a time; the glossary
+  is where that was written.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Done</h1>
+<p class="destination"><span data-engine>{{ out }}</span></p>
+<form method="post" action="/write">
+  <button type="submit">Write these files</button>
+</form>
+
+<h2>Commands</h2>
+<p class="tally"><span data-count="command">{{ commands | length }}</span> commands</p>
+<ul class="commands">
+  {%- for command in commands %}
+  <li data-item="command"><span data-engine>{{ command }}</span></li>
+  {%- endfor %}
+</ul>
+{% endblock %}

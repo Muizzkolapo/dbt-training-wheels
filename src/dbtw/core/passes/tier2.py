@@ -29,6 +29,40 @@ from dbtw.core.passes.types import (
     merge_option,
     verify_option,
 )
+from dbtw.core.projections import known_projections
+
+
+def _projected_columns(body: str, dialect: str | None) -> tuple[str, ...]:
+    """The output column names a model body projects, for `Subject.candidates`
+    -- or empty when they are not all knowable.
+
+    Takes the body rather than the draft it came off because the body is all
+    it reads, and a signature that asked for the whole draft would suggest
+    otherwise.
+
+    Both flags `known_projections` returns mean the same thing here, so both
+    collapse to the same answer: the list of names is not the whole output
+    row, and offering a partial list as the choices would name some of the
+    user's columns while silently omitting the rest -- a dropdown that has
+    invented the shape of their table. Empty is read as "none known" (see
+    `Subject`), so the consumer falls back to free text and every column
+    stays reachable; a partial list makes the ones it left out invisible.
+
+    None -- a body that did not parse as a query -- is a third unknown and
+    is kept apart from the star case in `known_projections` for that reason,
+    but a picker has only the two answers to give, so it lands on the same
+    empty one. An append draft's body is always the INSERT's own SELECT
+    rendered and re-parsed with a single dialect, so this branch is not
+    reachable from the pass; it is here because folding None into a claim
+    about the query would be the guess `known_projections` warns against.
+    """
+    parsed = known_projections(body, dialect)
+    if parsed is None:
+        return ()
+    names, has_star, has_unnamed = parsed
+    if has_star or has_unnamed:
+        return ()
+    return tuple(name for name, _quoted in names)
 
 
 def _parse(stmt: ClassifiedStatement, dialect: str | None) -> exp.Expr:
@@ -1250,6 +1284,15 @@ def merge_pass(state: PassState) -> PassState:
                 chosen=merge_answer.label,
                 options=(merge_answer, append_option())
                 + ((verify_option(keys),) if len(keys) == 1 else ()),
+                # `columns` and no `candidates`: every option this question
+                # offers is already spelled with the key the ON clause named,
+                # so none of them carries a `columns_prompt` and there is no
+                # picker here to fill. Collecting candidates anyway would add
+                # a field with no reader, and one that is misleading for the
+                # commonest MERGE shape at that -- a plain-table USING renders
+                # as `SELECT * FROM <source>`, whose star makes the honest
+                # answer empty. If a keyless option is ever offered here, this
+                # is the decision to remake.
                 subject=Subject(table=table.name, columns=keys),
             )
         )
@@ -1522,7 +1565,14 @@ def append_pass(state: PassState) -> PassState:
                 ),
                 chosen=append_answer.label,
                 options=(append_answer, merge_option(), verify_option()),
-                subject=Subject(table=draft.name),
+                # `candidates`, not `columns`: no key has been named yet --
+                # that is the question -- and these are the columns it could
+                # be answered with. Both merge options above leave their key
+                # unsaid (`columns_prompt`), so without them a consumer has
+                # nowhere but its own imagination to get one from.
+                subject=Subject(
+                    table=draft.name, candidates=_projected_columns(draft.body, state.dialect)
+                ),
             )
         )
     return PassState(

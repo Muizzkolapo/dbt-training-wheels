@@ -1,0 +1,56 @@
+{#
+  Everything this conversion decided without asking -- where dbt will act
+  unlike the script, in the engine's own words, in pipeline order.
+
+  It does not soften and it does not rank. A round-two persona flagged
+  "neither needs a decision, and neither is a mistake" as softening exactly
+  where the page should not, so nothing here introduces the list. Severity is
+  not ranked because the engine records none: an order written here would be
+  this layer's judgement of which caveat matters most, and that is a thing
+  only a Decision may carry.
+
+  Actions that share one explanation are listed together under it, rather
+  than each carrying its own copy of the same paragraph.
+
+  Statements the pipeline could not take are on this screen too, each with
+  the classification and the reason the parser gave -- spec section 7's "the
+  rest of the conversion still renders; one bad statement does not blank the
+  page".
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Decided for you</h1>
+<p class="tally"><span data-count="caveat">{{ decided }}</span> decisions</p>
+<ul class="caveats">
+  {%- for consequence in caveats %}
+  <li>
+    <ul class="actions">
+      {%- for decision in consequence.decisions %}
+      <li data-item="caveat">
+        <p class="action"><span data-engine>{{ decision.action }}</span></p>
+        {%- if decision.chosen %}
+        <p class="chose"><span data-engine>{{ decision.chosen }}</span></p>
+        {%- endif %}
+      </li>
+      {%- endfor %}
+    </ul>
+    <p><span data-engine>{{ consequence.reason }}</span></p>
+    {%- if consequence.plain_reason %}
+    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ consequence.plain_reason }}</span></p>
+    {%- endif %}
+  </li>
+  {%- endfor %}
+</ul>
+
+<h2>Still pending</h2>
+<p class="tally"><span data-count="pending">{{ pending | length }}</span> statements</p>
+<ul class="pending">
+  {%- for statement in pending %}
+  <li data-item="pending">
+    <p class="action"><span data-engine>{{ statement.kind }}</span></p>
+    <pre data-engine>{{ statement.raw.text }}</pre>
+    <p><span data-engine>{{ statement.reason }}</span></p>
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

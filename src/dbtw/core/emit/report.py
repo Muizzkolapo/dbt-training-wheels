@@ -18,6 +18,7 @@ from dbtw.core.emit.example import (
 )
 from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision, statement_index
+from dbtw.core.teach import terms_in
 
 _NOT_DONE_YET = """\
 ## Not done yet
@@ -35,8 +36,8 @@ before treating any of this as final.\
 
 
 def render_report(change: ProjectChange, ctx: ProjectContext) -> str:
+    summary = _render_summary(change)
     sections = [
-        _render_summary(change),
         _render_conventions(ctx),
         _render_models(change),
         _render_sources(change),
@@ -50,7 +51,15 @@ def render_report(change: ProjectChange, ctx: ProjectContext) -> str:
             _NOT_DONE_YET,
         ]
     )
-    return "\n\n".join(sections) + "\n"
+    # Second, not last. The glossary is read off the report rather than
+    # authored, so it has to be built after the rest of the report exists --
+    # but it is placed before the first section that uses any of the words.
+    # The conventions section below already says "materialization" and
+    # "staging", and a reader who has to go looking for a definition has
+    # already been shown to give up: four of five personas never reached the
+    # round-1 glossary, which sat at the end.
+    glossary = _render_glossary("\n\n".join([summary, *sections]))
+    return "\n\n".join([summary, glossary, *sections]) + "\n"
 
 
 def _render_summary(change: ProjectChange) -> str:
@@ -66,6 +75,30 @@ def _render_summary(change: ProjectChange) -> str:
         f"- **Dialect**: {dialect}",
     ]
     return "\n".join(lines)
+
+
+_GLOSSARY_HEADING = "## Words this report uses"
+_GLOSSARY_INTRO = (
+    "Each dbt word this report uses, in the order it first appears. "
+    "A word the report does not use is not listed here."
+)
+
+
+def _render_glossary(body: str) -> str:
+    """The dbt words `body` uses, defined, and no others.
+
+    Read off the assembled report rather than authored, for the reason the
+    section exists at all: a hand-kept list is a claim about what the report
+    says, and it goes stale the first time a Decision is reworded. This one
+    cannot say `dbt build` while the report never mentions it, and cannot
+    leave `materialized` undefined while the models table prints it.
+
+    There is no empty case to handle: `_NOT_DONE_YET` is rendered by every
+    report and names four of these words on its own -- see
+    test_the_closing_section_alone_guarantees_the_glossary_is_never_empty.
+    """
+    defined = [f"- **{term.name}** — {term.plain}" for term in terms_in(body)]
+    return "\n".join([_GLOSSARY_HEADING, "", _GLOSSARY_INTRO, "", *defined])
 
 
 def _render_conventions(ctx: ProjectContext) -> str:
@@ -306,6 +339,20 @@ def _render_decisions(change: ProjectChange) -> str:
         for d in by_tier[tier]:
             location = f" ({d.source_file}:{d.line_start})" if d.source_file else ""
             block_lines.append(f"- **{d.action}** — {d.reason}{location}")
+            # Under the dbt-native reason it restates, never instead of it,
+            # and with the same "In plain words:" opening the plain question
+            # and each option's plain wording already use. That repeated
+            # opening is how a reader tells the two registers apart -- a
+            # heading naming the audience ("for beginners") would sort the
+            # readers instead of the sentences, and the dbt-native reader has
+            # as much use for the plain one as the other way round.
+            #
+            # Outside the `if d.question` branch below, because the Decision
+            # this exists for asks nothing: a rename is Tier 1 and carries no
+            # question at all. Rendering it inside would have left the whole
+            # cutover invisible.
+            if d.plain_reason:
+                block_lines.append(f"  - In plain words: {d.plain_reason}")
             if d.question:
                 block_lines.append(f"  - Question: {d.question}  Chose: {d.chosen}")
                 # The plain register, beside the dbt one rather than instead
@@ -316,8 +363,17 @@ def _render_decisions(change: ProjectChange) -> str:
                 # consecutive lines in a list item into one paragraph, so an
                 # unbulleted continuation would run "Chose: append every row"
                 # straight into the plain question as a single sentence.
+                # One level deeper than the plain reason above, because it
+                # restates the Question line rather than the Decision's own
+                # bullet. Both opened at the same indent while a Decision
+                # could only carry one of them; a Decision carrying both --
+                # which nothing builds today and the caveats scheduled for a
+                # plain register will -- printed two identical labels as
+                # siblings, with nothing on the page saying which restated
+                # what. The indents now run 2/4/6 for reason, question, and
+                # option, matching what each one is under.
                 if d.plain_question:
-                    block_lines.append(f"  - In plain words: {d.plain_question}")
+                    block_lines.append(f"    - In plain words: {d.plain_question}")
                 # Every option, chosen one included, with the effect the
                 # engine wrote for it. A reader deciding whether to change
                 # the answer needs to know what the other one would do, and

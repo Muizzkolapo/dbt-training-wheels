@@ -13,7 +13,14 @@ from tests.unit.assemble.helpers import convert
 
 from dbtw.core.assemble import UnknownAnswerError
 from dbtw.core.emit.render import render_model
-from dbtw.core.passes.types import Answer, SchemaTest, append_option, merge_option, verify_option
+from dbtw.core.passes.types import (
+    Answer,
+    SchemaTest,
+    answer_for,
+    append_option,
+    merge_option,
+    verify_option,
+)
 
 APPEND_SQL = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
 MERGE_SQL = (
@@ -295,12 +302,15 @@ def test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today
     the passes hand out, which is always the keyless one -- so a caller that
     echoes back the label it was just shown is refused.
 
-    Not a defect this task hides: the refusal is explicit and names what the
+    Not a defect this test hides: the refusal is explicit and names what the
     question does offer. It is a translation the session in front of these
     runs has to do -- keep the keyed label for display, send the keyless label
-    and the column back -- and it is deferred to B3. The merge question has no
-    such gap, because its labels name the key from the start (see the
-    downgrade test below, where the same echo is accepted).
+    and the column back -- and it is no longer done by hand: `Option.kind` and
+    `answer_for` are that translation, and the round trip is the test directly
+    below. The refusal itself stays, because the engine still cannot know that
+    two spellings mean one answer. The merge question has no such gap, because
+    its labels name the key from the start (see the downgrade test below,
+    where the same echo is accepted).
     """
     key = _key_for(APPEND_SQL, "revenue_events")
     merged = convert(APPEND_SQL, answers={key: Answer(merge_option().label, ("order_id",))})
@@ -320,6 +330,56 @@ def test_re_sending_an_append_questions_rewritten_checked_label_is_refused_today
     # The translation that does work, so the boundary comes with its way out.
     translated = convert(APPEND_SQL, answers={key: Answer(verify_option().label, ("order_id",))})
     assert len(translated.tests) == 1
+
+
+def test_answer_for_is_how_a_caller_re_sends_an_answer_across_a_rebuild():
+    """The refusal above is still right -- the engine cannot know that two
+    spellings mean one answer. `answer_for` is where that knowledge lives,
+    and this is the round trip the web loop makes on every answer after the
+    first.
+
+    What crosses between the two runs is `Option.kind`, read as a field off
+    the Decision the screen rendered, and resolved back into a label against
+    the pristine question every run validates answers against. The keyed
+    spelling the screen displayed is never carried anywhere: the caller sends
+    the wording the question it is answering actually offers, which is the
+    translation the docstring above describes and no longer has to be done by
+    hand.
+
+    The FIRST answer is sent as a literal `Answer`, the way every other test
+    in this file sends one, so that what this test exercises is only the
+    re-send. Routing the first answer through `answer_for` too would move
+    every failure onto that call and leave the assertions below unable to
+    fail on their own.
+    """
+    key = _key_for(APPEND_SQL, "revenue_events")
+    pristine = _question_for(convert(APPEND_SQL), "revenue_events")
+
+    first = convert(APPEND_SQL, answers={key: Answer(verify_option().label, ("order_id",))})
+    assert len(first.tests) == 1
+
+    # The next screen renders the rewritten question, and the user takes the
+    # checked answer off it again. What a consumer records is the kind.
+    rebuilt = _question_for(first, "revenue_events")
+    (picked,) = [o for o in rebuilt.options if o.label == verify_option(("order_id",)).label]
+    assert picked.kind == "merge_checked"
+
+    # One kind, two Decisions, two labels, and `answer_for` faithful to
+    # whichever it is handed. That these two come back DIFFERENT is the
+    # translation itself, and it is the whole reason a caller resolves
+    # against the pristine question rather than against the Decision in front
+    # of the user: an `answer_for` that returned the keyed spelling here --
+    # the likeliest wrong implementation, since the keyed one is what the
+    # screen showed -- passes every other assertion in this test and fails on
+    # this line.
+    displayed = answer_for(rebuilt, picked.kind)
+    assert displayed.label == picked.label
+    resent = answer_for(pristine, picked.kind, ("order_id",))
+    assert resent.label != displayed.label
+
+    second = convert(APPEND_SQL, answers={key: resent})
+    assert second.models == first.models
+    assert second.tests == first.tests
 
 
 def test_a_checked_answer_on_a_star_model_merges_with_the_caveat_and_records_the_test():

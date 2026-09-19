@@ -1,0 +1,32 @@
+{#
+  A write that did not happen, or did not finish.
+
+  Spec section 7 asks for three things on this page and they are the three
+  things here: the error in the engine's own words, the path it was aimed at,
+  and the models still on screen. The heading says "Not written" and the word
+  "Written" appears nowhere, because a half-finished directory reported under
+  a heading a reader scans as success is the failure that row exists to
+  prevent.
+
+  The files listed are the conversion's, not the directory's. A write that
+  failed part way left some of them on disk and not others, and a list of
+  what landed would read as a result; what a reader needs here is what this
+  conversion is, so they can fix where it was going and press again.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Not written</h1>
+<p><span data-engine>{{ message }}</span></p>
+<p class="destination"><span data-engine>{{ out }}</span></p>
+
+<h2>Files</h2>
+<p class="tally"><span data-count="file">{{ files | length }}</span> files</p>
+<ul class="files">
+  {%- for file in files %}
+  <li data-item="file">
+    <h3><span data-engine>{{ file.path }}</span></h3>
+    <pre data-engine>{{ file.contents }}</pre>
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

@@ -116,10 +116,35 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
                 line_end=9,
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
+                # Three real answers under wording no pass produces, which is
+                # what lets this assert that the renderer prints the strings
+                # it is given verbatim rather than any wording it knows: no
+                # label or effect below is one a factory in `passes/types.py`
+                # builds. They are consistent triples, not placeholders --
+                # with `Option.kind` a closed set over the answers this tool
+                # offers, an Option standing for a non-answer is no longer
+                # something the record can express, so a made-up option is
+                # made up in its wording, not in its identity.
                 options=(
-                    Option(label="merge", effect="updates matching rows and inserts the rest"),
-                    Option(label="append", effect="re-inserts everything selected"),
-                    Option(label="full refresh", effect="rebuilds the table from scratch"),
+                    Option(
+                        label="merge",
+                        kind="merge",
+                        effect="updates matching rows and inserts the rest",
+                    ),
+                    Option(label="append", kind="append", effect="re-inserts everything selected"),
+                    Option(
+                        label="merge, and check the key",
+                        kind="merge_checked",
+                        effect="the same merge, and dbt checks the chosen column",
+                        # Set, not defaulted: this option says in its effect
+                        # that dbt checks the column, and `declares_test` is
+                        # the field that makes that true. Leaving it "" would
+                        # be a record contradicting its own text, which is the
+                        # thing this file's renderer exists to never do -- and
+                        # the invariant test over the factories cannot reach a
+                        # hand-built option like this one.
+                        declares_test="unique",
+                    ),
                 ),
             ),
         )
@@ -133,7 +158,8 @@ def test_question_bearing_decision_renders_question_chosen_and_every_effect():
     # and its whole effect, so dropping either fails here.
     assert "    - merge (chosen) — updates matching rows and inserts the rest" in out
     assert "    - append — re-inserts everything selected" in out
-    assert "    - full refresh — rebuilds the table from scratch" in out
+    checked = "    - merge, and check the key — the same merge, and dbt checks the chosen column"
+    assert checked in out
     # Only the option that stands is marked as taken.
     assert out.count("(chosen)") == 1
 
@@ -289,7 +315,11 @@ def test_question_bearing_decision_with_one_option_renders_only_that_option():
                 question="How should late-arriving rows be handled?",
                 chosen="merge",
                 options=(
-                    Option(label="merge", effect="updates matching rows and inserts the rest"),
+                    Option(
+                        label="merge",
+                        kind="merge",
+                        effect="updates matching rows and inserts the rest",
+                    ),
                 ),
             ),
         )

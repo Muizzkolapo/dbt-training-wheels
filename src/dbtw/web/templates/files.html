@@ -1,0 +1,22 @@
+{#
+  Every file this conversion will write, with what will be in it. The list is
+  what `emit` writes, read back from a run into a directory that is thrown
+  away, so the count beside it is the length of that list and the contents
+  are the bytes.
+
+  Contents rather than names: "'Trust me' is exactly the thing I'm not
+  supposed to accept before something lands in a repo."
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Files</h1>
+<p class="tally"><span data-count="file">{{ files | length }}</span> files</p>
+<ul class="files">
+  {%- for file in files %}
+  <li data-item="file">
+    <h2><span data-engine>{{ file.path }}</span></h2>
+    <pre data-engine>{{ file.contents }}</pre>
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

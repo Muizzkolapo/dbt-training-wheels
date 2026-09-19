@@ -1,0 +1,123 @@
+{#
+  One question. The plain wording leads, the dbt wording stands under it, and
+  the two are told apart by the same "In plain words:" opening the report
+  uses -- not by a heading naming the audience, which would sort the readers
+  instead of the sentences.
+
+  Each answer is its own form, so the columns an answer needs are submitted
+  with that answer and with no other. Whether an answer needs them is
+  `choice.prompt`, read off the pristine question: after the first answer the
+  options on this screen name their key and carry no prompt at all, and a
+  picker built from them would leave "append" as the only answer still
+  reachable.
+
+  An answer the engine accepts and then does not apply -- a key the model
+  does not select -- comes back as an append with "append every row" marked
+  chosen. What the engine recorded about that sits at the top of this screen,
+  beside the question it answers, rather than two screens away: the redirect
+  after an answer exists so the reader watches their answer take effect, and
+  a screen that showed nothing taking effect would invert it.
+
+  The worked example is the single most effective element measured, named
+  unprompted by four of five and then five of five. Where `worked_example`
+  refuses one -- a model whose columns are not knowable -- nothing renders in
+  its place. The refusal is documented and is not a hole to fill with prose.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1><span data-engine>{{ decision.plain_question }}</span></h1>
+<p><span data-engine>{{ decision.question }}</span></p>
+
+{%- if produced %}
+<h2>From your answer</h2>
+<p class="tally"><span data-count="produced">{{ produced | length }}</span> records</p>
+<ul class="produced">
+  {%- for record in produced %}
+  <li data-item="produced">
+    <p class="action"><span data-engine>{{ record.action }}</span></p>
+    <p><span data-engine>{{ record.reason }}</span></p>
+    {%- if record.plain_reason %}
+    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ record.plain_reason }}</span></p>
+    {%- endif %}
+  </li>
+  {%- endfor %}
+</ul>
+{%- endif %}
+
+<h2>Evidence</h2>
+<p><span data-engine>{{ decision.action }}</span></p>
+<p><span data-engine>{{ decision.reason }}</span></p>
+{%- if decision.plain_reason %}
+<p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ decision.plain_reason }}</span></p>
+{%- endif %}
+
+<h2>Answers</h2>
+<p class="tally"><span data-count="answer">{{ choices | length }}</span> answers</p>
+<ul class="answers">
+  {%- for choice in choices %}
+  <li data-item="answer"{% if choice.chosen %} class="chosen"{% endif %}>
+    <form method="post" action="/answer">
+      <input type="hidden" name="key" value="{{ decision.key }}">
+      <input type="hidden" name="kind" value="{{ choice.option.kind }}">
+      <p><span data-engine>{{ choice.option.effect }}</span></p>
+      <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ choice.option.plain }}</span></p>
+      {%- if choice.prompt %}
+      <fieldset>
+        <legend><span data-engine>{{ choice.prompt }}</span></legend>
+        <ul class="columns">
+          {%- for column in choice.columns %}
+          <li data-item="column">
+            {%- if column.tick %}
+            <label><input type="checkbox" name="columns" value="{{ column.name }}"> <span data-engine>{{ column.name }}</span></label>
+            {%- else %}
+            <span data-engine>{{ column.name }}</span>
+            {%- endif %}
+          </li>
+          {%- endfor %}
+        </ul>
+        <label>Or type <input type="text" name="typed"></label>
+      </fieldset>
+      {%- endif %}
+      <button type="submit"><span data-engine>{{ choice.option.label }}</span></button>
+      {%- if choice.chosen %}<p class="mark">Chosen</p>{% endif %}
+    </form>
+  </li>
+  {%- endfor %}
+</ul>
+
+{%- if example %}
+<h2>Worked example</h2>
+<p><span data-engine>{{ example_notice }}</span></p>
+{%- if example.key %}
+<p class="matched"><span data-engine>{{ example.key }}</span></p>
+{%- endif %}
+<table>
+  <thead>
+    <tr>
+      <th></th>
+      {%- for column in example.columns %}
+      <th><span data-engine>{{ column }}</span></th>
+      {%- endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {%- for row in example.before %}
+    <tr>
+      <th>{% if loop.first %}<span data-engine>{{ supposed_label }}</span>{% endif %}</th>
+      {%- for cell in row %}
+      <td><span data-engine>{{ cell }}</span></td>
+      {%- endfor %}
+    </tr>
+    {%- endfor %}
+    {%- for row in example.model_after %}
+    <tr>
+      <th>{% if loop.first %}<span data-engine>{{ after_label }}</span>{% endif %}</th>
+      {%- for cell in row %}
+      <td><span data-engine>{{ cell }}</span></td>
+      {%- endfor %}
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+{%- endif %}
+{% endblock %}
