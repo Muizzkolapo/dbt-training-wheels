@@ -113,6 +113,10 @@ class Session:
     dialect: str | None = None
     answers: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     descriptions: dict[str, str] = field(default_factory=dict)
+    # Tags per model, keyed by final model name. The third thing that is the
+    # reader's alone: nothing in a script says which models somebody means to
+    # run together six months from now.
+    tags: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Other dbt projects to check this conversion's tables against. Paths
     # rather than read contexts, and re-read on every run for the reason the
     # target project is: a screen has to be current with a project being
@@ -129,8 +133,8 @@ class Session:
         screen needs more than this.
         """
         if not self.answers:
-            return self._run(None, self.descriptions)
-        return self._run(self._resolve(self._pristine()), self.descriptions)
+            return self._run(None, self.descriptions, self.tags)
+        return self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
 
     def view(self) -> SessionView:
         """One screen: the change, its questions, and every question's column
@@ -148,9 +152,9 @@ class Session:
         # when the call returns. Descriptions are in that condition because
         # `_pristine` carries none: reusing it for a session that holds one
         # would render a screen with the reader's own words missing from it.
-        described = bool(resolved or self.descriptions)
+        described = bool(resolved or self.descriptions or self.tags)
         change, statements = (
-            self._convert(resolved, self.descriptions) if described else (pristine, read)
+            self._convert(resolved, self.descriptions, self.tags) if described else (pristine, read)
         )
         return SessionView(
             change=change,
@@ -294,7 +298,7 @@ class Session:
             # -- the answer would be accepted and every render afterwards
             # would raise `UnknownModelError`, with the description that
             # became impossible never named.
-            self._run(self._resolve(self._pristine()), self.descriptions)
+            self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
         except Exception:
             self.answers.clear()
             self.answers.update(previous)
@@ -329,10 +333,44 @@ class Session:
         # the session recorded and nothing it refused.
         self.descriptions[model] = text
         try:
-            self._run(self._resolve(self._pristine()), self.descriptions)
+            self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
         except Exception:
             self.descriptions.clear()
             self.descriptions.update(previous)
+            raise
+
+    def tag(self, model: str, tags: Sequence[str]) -> None:
+        """Record the tags for `model`, or refuse.
+
+        The whole list each time, not one tag added to what is held: the
+        screen shows a reader every tag on a model and takes back what they
+        leave there, so a call that merged would make removing one
+        impossible.
+
+        Applied before it is kept, like every other answer here, so a refused
+        list is not held and the next render does not raise for it.
+        """
+        cleaned = tuple(tag.strip() for tag in tags if tag.strip())
+        previous = dict(self.tags)
+        if cleaned:
+            self.tags[model] = cleaned
+        else:
+            # No tags is no entry, not an empty one. The describe screen
+            # saves a model's description and its tags in one press, so
+            # holding `{model: ()}` would put every described model in this
+            # dict -- and an edit to the SQL would then strand a tag list
+            # nobody wrote, on a screen telling a reader they are about to
+            # lose tags they never had.
+            #
+            # What that costs: an empty list against a model this conversion
+            # does not build removes nothing and is not refused. There is
+            # nothing there to lose, so there is nothing to be told about.
+            self.tags.pop(model, None)
+        try:
+            self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
+        except Exception:
+            self.tags.clear()
+            self.tags.update(previous)
             raise
 
     def stale_descriptions(self) -> tuple[str, ...]:
@@ -356,6 +394,24 @@ class Session:
         """
         carried = {model.name for model in self._run(self._resolve(self._pristine())).models}
         return tuple(name for name in self.descriptions if name not in carried)
+
+    def stale_tags(self) -> tuple[str, ...]:
+        """The tags held for models this conversion no longer builds.
+
+        The tag half of `stale_descriptions`, reached the same way and
+        answerable for the same reason: computed from a run carrying neither
+        descriptions nor tags, so it still answers while every ordinary
+        accessor refuses.
+        """
+        carried = {model.name for model in self._run(self._resolve(self._pristine())).models}
+        return tuple(name for name in self.tags if name not in carried)
+
+    def drop_stale_tags(self) -> tuple[str, ...]:
+        """Forget the tags `stale_tags` names, and return them."""
+        stale = self.stale_tags()
+        for name in stale:
+            del self.tags[name]
+        return stale
 
     def drop_stale_descriptions(self) -> tuple[str, ...]:
         """Forget the descriptions `stale_descriptions` names, and return them.
@@ -414,6 +470,7 @@ class Session:
         self,
         answers: Mapping[str, Answer] | None,
         descriptions: Mapping[str, str] | None = None,
+        tags: Mapping[str, Sequence[str]] | None = None,
     ) -> tuple[ProjectChange, tuple[ClassifiedStatement, ...]]:
         """One conversion, and the statements it was built from.
 
@@ -431,6 +488,7 @@ class Session:
             answers=answers,
             descriptions=descriptions,
             elsewhere=tuple(read_project(path) for path in self.elsewhere),
+            tags=tags,
         )
         return change, classified
 
@@ -438,6 +496,7 @@ class Session:
         self,
         answers: Mapping[str, Answer] | None,
         descriptions: Mapping[str, str] | None = None,
+        tags: Mapping[str, Sequence[str]] | None = None,
     ) -> ProjectChange:
         """One conversion of these two paths, with `answers` and `descriptions`
         applied.
@@ -450,7 +509,7 @@ class Session:
         them would make both raise `UnknownModelError` in exactly the state
         they exist to get a reader out of.
         """
-        return self._convert(answers, descriptions)[0]
+        return self._convert(answers, descriptions, tags)[0]
 
     def _resolve(self, pristine: ProjectChange) -> dict[str, Answer]:
         return {

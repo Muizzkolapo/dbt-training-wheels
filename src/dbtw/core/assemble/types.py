@@ -36,6 +36,11 @@ class AssembledModel:
     folded_indices: tuple[int, ...] = ()
     incremental_strategy: str | None = None  # None means "not incremental"
     unique_key: tuple[str, ...] = ()  # empty means no unique key
+    # Labels so models can be run in groups later -- `dbt run --select
+    # tag:finance`. Empty unless a reader asked for them: a tag is a name for
+    # a set somebody intends to run together, and no reading of SQL knows
+    # what those sets are.
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
