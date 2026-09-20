@@ -51,3 +51,12 @@ DUPLICATE_CANDIDATES = (
 # A star projection: the columns are not knowable at convert time, so
 # `Subject.candidates` is empty and a picker has nothing to offer.
 STAR_PROJECTION = "INSERT INTO revenue_events SELECT * FROM stg_orders;\n"
+
+# One model built from another, so a describe row has something to say about
+# where its model comes from. Nothing else in these scripts produces a
+# `depends_on`, and a template branch nothing renders is a branch nothing
+# checks.
+CHAINED_INSERTS = (
+    "INSERT INTO revenue_events SELECT order_id, amount FROM raw_orders;\n"
+    "INSERT INTO revenue_daily SELECT order_id, amount FROM revenue_events;\n"
+)

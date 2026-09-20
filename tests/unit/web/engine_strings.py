@@ -18,10 +18,11 @@ claim holds is the one with no answers. That made the strongest assertion on
 the branch true by construction, which is the shape of guard blind review
 keeps finding here.
 
-The stale state is the third: while an answer is held whose question the
-current SQL no longer asks, the answered run cannot be computed at all. Then
-the set is the pristine run plus the keys `stale_answers` names, which is
-exactly what that screen renders.
+The stale states are the third and fourth: while an answer is held whose
+question the current SQL no longer asks -- or a description of a model it no
+longer builds -- the answered run cannot be computed at all. Then the set is
+the pristine run plus what the screen that gets the reader out renders, which
+is the keys `stale_answers` names or the models `stale_descriptions` does.
 
 The files are gathered by running `emit` into a temporary directory and
 reading back what it wrote, rather than by re-deriving the paths: emit
@@ -38,7 +39,7 @@ from pathlib import Path
 
 from tests.unit.web.page import normalised
 
-from dbtw.core.assemble import ProjectChange, UnknownAnswerError
+from dbtw.core.assemble import ProjectChange, UnknownAnswerError, UnknownModelError
 from dbtw.core.context import read_project
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
@@ -97,6 +98,15 @@ def _from_change(change: ProjectChange) -> Iterator[str]:
 
     for test in change.tests:
         yield from (test.model, test.column, test.test)
+
+    # The reader's own words, carried back out of the engine. They are
+    # rendered on the describe screen and inside the .yml the files screen
+    # shows, and both claim them as engine runs -- which they are, in the one
+    # sense the claim is about: the text on screen is exactly what
+    # `change.descriptions` holds, so a template that altered a word of it
+    # fails the same exact-match check a Decision's reason does.
+    for described in change.descriptions:
+        yield from (described.model, described.text)
 
     for _, statement in change.pending:
         yield from (statement.kind, statement.reason, statement.raw.text, statement.raw.source_file)
@@ -177,11 +187,19 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
 
     try:
         change = session.view().change
-    except UnknownAnswerError:
-        # A held answer the current SQL no longer asks for. Nothing but the
-        # pristine run can be computed, and the stale screen renders the keys.
+    except (UnknownAnswerError, UnknownModelError):
+        # Something the reader holds that the current SQL no longer has a
+        # place for: an answer to a question it no longer asks, or a
+        # description of a model it no longer builds. Nothing but the pristine
+        # run can be computed, and the screen that gets them out renders the
+        # keys or the model names.
         produced.extend(session.stale_answers())
         produced.extend(session.answers)
+        if not session.stale_answers():
+            # Only askable once the answers resolve -- see
+            # `Session.stale_descriptions`, which raises while they do not.
+            produced.extend(session.stale_descriptions())
+            produced.extend(session.descriptions)
     else:
         produced.extend(_from_change(change))
         produced.extend(_from_examples(change))

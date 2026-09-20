@@ -102,9 +102,9 @@ def _engine(page: Page) -> set[str]:
 
 
 # The states a screen of this walk is rendered in. Every cross-cutting guard
-# runs in all six, because five of the six screens change under the answer
-# loop and a guard evaluated only before the first answer is a guard evaluated
-# in the one state where it cannot fail. "downgraded" is the answer the engine
+# runs in all of them, because most of the walk's screens change under the
+# answer loop and a guard evaluated only before the first answer is a guard
+# evaluated in the one state where it cannot fail. "downgraded" is the answer the engine
 # accepts and then does not apply -- a key the model does not select -- which
 # is the state that puts a Decision on the page that no pristine run carries.
 #
@@ -117,6 +117,11 @@ _PRISTINE = "pristine"
 _ANSWERED = "answered"
 _DOWNGRADED = "downgraded"
 _STALE = "stale"
+# The same edit, under the other thing a reader holds. `stale.html` has had
+# every cross-cutting guard run over it since it was written; its sibling
+# would have had none, which is the shape of the unguarded-screen defect this
+# file has already been fixed for twice.
+_STALE_DESCRIPTION = "stale description"
 _WRITTEN = "written"
 _WRITE_FAILED = "write failed"
 # The two states a reader reaches by pressing the second button that touches
@@ -126,16 +131,39 @@ _WRITE_FAILED = "write failed"
 # wrong-coverage-set defect this file has already been fixed for twice.
 _DELIVERED = "delivered"
 _DELIVERY_REFUSED = "delivery refused"
+# The walk with a description written into it. The describe screen renders
+# nothing of the reader's until they have written one, and neither does the
+# .yml on the files screen -- so a guard that only ever met a blank walk met
+# the one state in which this screen has nothing on it to be wrong about,
+# which is how sixteen wrong-coverage-set defects have been found in this
+# file and in the guards around it.
+_DESCRIBED = "described"
 _STATES = (
     _PRISTINE,
     _ANSWERED,
     _DOWNGRADED,
+    _DESCRIBED,
     _STALE,
+    _STALE_DESCRIPTION,
     _WRITTEN,
     _WRITE_FAILED,
     _DELIVERED,
     _DELIVERY_REFUSED,
 )
+
+# What a reader writes on the describe screen in the state built around it.
+# Long enough to be a sentence by `_SENTENCE`, because that is the point: a
+# description short enough to pass the prose threshold on its own would leave
+# the threshold untested against the one text on these screens that is
+# neither the engine's nor a template's.
+#
+# And it uses a glossary word. A reader who writes "incremental" in a
+# sentence about their own data has not made the screen use the word, and the
+# screen must not answer them with dbt's definition of it -- so the box is
+# marked as an identifier region and the glossary is built without it. With a
+# description that happened to contain no dbt word, that marking would be
+# unfalsifiable: every state would pass with it and without it.
+_DESCRIPTION = "One row per revenue event, at the grain the incremental load writes it."
 
 
 def _append_key(session: Session) -> str:
@@ -158,6 +186,15 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         assert (
             client.post("/answer", data={"key": question.key, "kind": "append"}).status_code == 302
         )
+        sql.write_text(ONE_MERGE, encoding="utf-8")
+        return app, client, session, out_dir
+
+    if state == _STALE_DESCRIPTION:
+        sql = sql_script(ONE_APPEND_ELSEWHERE)
+        app, client, session = walk(sql)
+        (model,) = session.view().change.models
+        described = client.post("/describe", data={"model": model.name, "text": _DESCRIPTION})
+        assert described.status_code == 302
         sql.write_text(ONE_MERGE, encoding="utf-8")
         return app, client, session, out_dir
 
@@ -186,7 +223,13 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         return app, client, session, out_dir
 
     app, client, session = walk(walk_sql)
-    if state == _ANSWERED:
+    if state == _DESCRIBED:
+        described = client.post(
+            "/describe",
+            data={"model": session.view().change.models[0].name, "text": _DESCRIPTION},
+        )
+        assert described.status_code == 302
+    elif state == _ANSWERED:
         answer = {"key": _append_key(session), "kind": "merge_checked", "typed": "event_id"}
         assert client.post("/answer", data=answer).status_code == 302
     elif state == _DOWNGRADED:
@@ -208,6 +251,28 @@ def _pristine_decisions(session: Session):  # type: ignore[no-untyped-def]
         .view()
         .change.decisions
     )
+
+
+# A model name no conversion here builds. Pressed on the describe screen in
+# every state, so the page that refuses a description is inside the coverage
+# set of every cross-cutting guard -- the answer refusal has been since it was
+# written, and a second refusal page outside it is the same
+# wrong-coverage-set defect wearing a different route.
+_NOT_A_MODEL = "not_a_model_this_conversion_builds"
+
+
+def _description_refusal(session: Session) -> str:
+    """What the engine says when a description names a model nothing builds.
+
+    Asked of the engine by making the call, for the reason `_refusal_message`
+    gives. `Session.describe` restores what it held when a run refuses, so
+    asking costs the session nothing.
+    """
+    try:
+        session.describe(_NOT_A_MODEL, "a description of nothing")
+    except ValueError as refusal:
+        return str(refusal)
+    raise AssertionError("a description naming no model was accepted")
 
 
 def _refusal_message(session: Session) -> str:
@@ -235,11 +300,12 @@ def _produced(session: Session, out: Path, state: str) -> frozenset[str]:
     the message instead of against the message.
     """
     strings = engine_strings(session, out)
-    if state == _STALE:
+    if state in (_STALE, _STALE_DESCRIPTION):
         return strings
-    # Every state but the stranded one renders the answer refusal, because
-    # `_guarded_pages` presses the misstep that produces it.
+    # Every state but the stranded ones renders both refusals, because
+    # `_guarded_pages` presses the misstep that produces each.
     strings |= {normalised(_refusal_message(session))}
+    strings |= {normalised(_description_refusal(session))}
     if state == _WRITE_FAILED:
         strings |= {normalised(_write_refusal(session, out))}
     if state in (_DELIVERED, _DELIVERY_REFUSED):
@@ -324,15 +390,19 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     """Every page a reader can land on in this state, screens and non-screens
     alike.
 
-    `/answer`, `/stale` and `/write` are POST-only, so a screen list derived
-    from the routing table filters all three out. Two of the pages they
-    render are the pages a first-time user is most likely to be looking at:
-    the refusal, because pressing "merge on a unique key" without naming a
-    column lands on it, and the write result, because it is the last thing
-    the walk shows. A guard that never visited those is a guard that never
-    visited the pages it matters most on.
+    `/answer`, `/describe`, `/stale` and `/write` are POST-only or POST as
+    well, so a screen list derived from the routing table filters them out.
+    Three of the pages they render are pages a reader really lands on: the
+    answer refusal, because pressing "merge on a unique key" without naming a
+    column lands on it; the describe refusal, which a reader reaches by
+    holding a describe form open across a change to their SQL; and the write
+    result, because it is the last thing the walk shows. A guard that never
+    visited those is a guard that never visited the pages it matters most on
+    -- and the describe refusal was outside this set for exactly as long as
+    it took a reviewer to plant a nineteen-word invented sentence on it and
+    watch the whole suite pass.
     """
-    if state == _STALE:
+    if state in (_STALE, _STALE_DESCRIPTION):
         stranded = client.get("/")
         assert stranded.status_code == 409
         written = client.post("/write")
@@ -346,6 +416,9 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     refusal = client.post("/answer", data={"key": _append_key(session), "kind": "merge"})
     assert refusal.status_code == 400
     pages["/answer (refused)"] = read(refusal.get_data(as_text=True))
+    described = client.post("/describe", data={"model": _NOT_A_MODEL, "text": "words"})
+    assert described.status_code == 400
+    pages["/describe (refused)"] = read(described.get_data(as_text=True))
     result = client.post("/write")
     assert result.status_code == (500 if state == _WRITE_FAILED else 200)
     pages["/write"] = read(result.get_data(as_text=True))
@@ -369,17 +442,25 @@ def _pages(app, client, session: Session) -> dict[str, Page]:
     return pages
 
 
-def test_the_walk_is_the_six_screens_its_own_routes_define(walk: Walk, walk_sql: Path) -> None:
+def test_the_walk_is_the_seven_screens_its_own_routes_define(walk: Walk, walk_sql: Path) -> None:
     """The conversion the ten walkthroughs were run against asks two
-    questions, so the walk is six screens: start, two questions, caveats,
-    files, done.
+    questions, so the walk is seven screens: start, two questions, describe,
+    caveats, files, done.
     """
     app, client, session = walk(walk_sql)
 
     urls = _screen_urls(app, session)
 
-    assert urls == ("/", "/caveats", "/done", "/files", "/questions/0", "/questions/1")
-    assert len(urls) == 6
+    assert urls == (
+        "/",
+        "/caveats",
+        "/describe",
+        "/done",
+        "/files",
+        "/questions/0",
+        "/questions/1",
+    )
+    assert len(urls) == 7
     for url in urls:
         assert client.get(url).status_code == 200, url
 
@@ -395,8 +476,8 @@ def test_no_screen_authors_a_sentence(
     one and marked it as the engine's fails the first, because the mark is
     checked by exact match against what `dbtw.core` actually produced.
 
-    In every state, because the walk has four and five of its six screens
-    change between them. Run only against a pristine walk, the first
+    In every state, because most of the walk's screens change between them.
+    Run only against a pristine walk, the first
     assertion held for a reason that had nothing to do with the templates:
     the page renders the *pristine* question's `columns_prompt` -- which is
     the design, and the only honest source for it -- while the set it was
@@ -548,10 +629,12 @@ def test_every_count_is_the_length_of_what_is_listed_beside_it(
             seen += 1
         undeclared = page.undeclared_numbers()
         assert not undeclared, f"{state} {url} shows a number that counts nothing: {undeclared}"
-    # The stranded state is one page with one count on it; every other state
-    # is seven pages, and a walk counting fewer than six things across them
-    # has stopped deriving numbers it used to derive.
-    assert seen >= (1 if state == _STALE else 6), f"{state} counts {seen} things"
+    # A stranded state is one page with one count on it; every other state is
+    # every screen of the walk plus the pages the POST-only routes render, and
+    # a walk counting fewer than six things across them has stopped deriving
+    # numbers it used to derive.
+    floor = 1 if state in (_STALE, _STALE_DESCRIPTION) else 6
+    assert seen >= floor, f"{state} counts {seen} things"
 
 
 def test_the_count_check_catches_a_number_that_does_not_match_its_list() -> None:
@@ -624,7 +707,7 @@ def test_no_screen_gates_the_write_action(
     app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     pages = _guarded_pages(app, client, session, state)
 
-    if state != _STALE:
+    if state not in (_STALE, _STALE_DESCRIPTION):
         done = pages["/done"]
         assert [form for form in done.forms if form.get("action") == "/write"]
         writing = [control for control in done.controls if control["form"] == "/write"]
@@ -639,7 +722,7 @@ def test_no_screen_gates_the_write_action(
         assert page.scripts == (), f"{state} {url} carries script that could gate it"
 
 
-@pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])
+@pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED, _DESCRIBED])
 def test_every_decision_reaches_exactly_one_screen(
     walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
@@ -910,6 +993,10 @@ def test_the_start_screens_glossary_does_not_depend_on_the_sql_files_directory_n
     assert "warehouse" not in {t.name for t in terms_in(salted_page.outside_asides())}
 
 
+# Not _DESCRIBED: this test looks for a repeated `Decision.reason`, and the
+# describe screen renders no Decision at all, so the extra state would add a
+# parameter with nothing in it that could fail -- coverage in the list and
+# none in the run.
 @pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED])
 def test_no_screen_repeats_one_engine_string(
     walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
@@ -998,10 +1085,12 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "entry.html",
         "start.html",
         "question.html",
+        "describe.html",
         "caveats.html",
         "files.html",
         "done.html",
         "stale.html",
+        "stale_descriptions.html",
         "refused.html",
         "missing.html",
         "written.html",
@@ -1021,7 +1110,7 @@ def test_every_screen_links_to_every_other(walk: Walk, walk_sql: Path) -> None:
     """
     app, client, session = walk(walk_sql)
     urls = set(_screen_urls(app, session))
-    assert len(urls) == 6
+    assert len(urls) == 7
 
     for url, page in _pages(app, client, session).items():
         assert set(page.links) == urls, f"{url} links to {sorted(set(page.links))}"

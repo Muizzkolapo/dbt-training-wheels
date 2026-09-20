@@ -34,6 +34,7 @@ def convert(
     unique_key: tuple[str, ...] = (),
     project: str = "jaffle_shop",
     dialect: str | None = None,
+    descriptions: Mapping[str, str] | None = None,
 ) -> ProjectChange:
     """Run the real ingest -> classify -> passes -> assemble pipeline over `sql`.
 
@@ -58,7 +59,13 @@ def convert(
 
     result = ingest(path, dialect)
     state = run_passes(classify_statements(result), result.dialect)
-    return assemble(state, context_for(project), unique_key=unique_key, answers=answers)
+    return assemble(
+        state,
+        context_for(project),
+        unique_key=unique_key,
+        answers=answers,
+        descriptions=descriptions,
+    )
 
 
 def state_with_variable() -> PassState:

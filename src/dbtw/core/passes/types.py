@@ -233,6 +233,26 @@ def var_option(name: str = "") -> Option:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelDescription:
+    """What a model is for, in the reader's own words.
+
+    Not an `Answer` and not a `Decision`. Those record a choice among options
+    this engine offered and can explain; a description is text only the reader
+    can write, because what a model is *for* is not derivable from the SQL
+    that builds it. The engine carries it, renders it, and never invents one
+    -- a model nobody described has no description, and the .yml says nothing
+    rather than guessing.
+
+    `model` is the FINAL name, for the same reason `SchemaTest.model` is: the
+    .yml's `models:` entry is resolved by name, and a description recorded
+    against a pre-rename draft would describe a model dbt has never heard of.
+    """
+
+    model: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class SchemaTest:
     """One dbt test to declare beside a model, because an answer asked for it.
 
