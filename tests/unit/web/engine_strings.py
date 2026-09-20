@@ -48,6 +48,7 @@ from dbtw.core.emit import (
     emit,
     worked_example,
 )
+from dbtw.core.intro import HEADLINE, LEDE, PILLARS, PRIVACY
 from dbtw.core.teach import GLOSSARY
 from dbtw.web import Session
 
@@ -204,6 +205,28 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
         produced.extend(_from_change(change))
         produced.extend(_from_examples(change))
         produced.extend(_from_files(session, change))
+
+    # The reader's own SQL, statement by statement, which the "what changed"
+    # screen renders beside each model. Produced by `ingest` rather than by a
+    # conversion -- it is the input -- and every word of it is on that screen
+    # claimed as the engine's, so it belongs in the set that claim is checked
+    # against.
+    produced.extend(statement.raw.text for statement in session.originals())
+    # What this costs, stated rather than discovered later: `produced` is one
+    # set checked against every page, so after this any template on any
+    # screen could wrap a whole statement of the reader's file in
+    # `data-engine` and pass. It is not avoidable while the what-changed
+    # screen renders their SQL -- unmarked, the same text is authored prose
+    # and fails the threshold instead -- so the check here is weaker by
+    # exactly the width of the reader's own file.
+
+    # What the tool says about itself on the screen a reader meets first.
+    # Engine-owned for the reason `dbtw.core.intro` gives -- a screen may not
+    # write a sentence -- so it belongs in the set every marked string on
+    # every screen is checked against.
+    produced.extend((HEADLINE, LEDE, PRIVACY))
+    for pillar in PILLARS:
+        produced.extend((pillar.number, pillar.name, pillar.plain))
 
     for term in GLOSSARY:
         produced.append(term.name)

@@ -31,6 +31,9 @@ class AssembledModel:
     depends_on: tuple[str, ...]  # final names of other models in this change
     leading_comments: tuple[str, ...]
     source_indices: tuple[int, ...]
+    # Statements that shaped this model without being what it was built from
+    # -- a GRANT folded into its config. See `ModelDraft.folded_indices`.
+    folded_indices: tuple[int, ...] = ()
     incremental_strategy: str | None = None  # None means "not incremental"
     unique_key: tuple[str, ...] = ()  # empty means no unique key
 

@@ -1,17 +1,27 @@
 {#
-  Where a reader brings their SQL in.
+  Where a reader brings their SQL in, in the shape the design opens with:
+  the promise, the box, and the four things this tool does with what goes in
+  it. (new_design/dbt Training Wheels.dc.html)
 
-  The one screen in this directory with no conversion behind it: every other
+  The one screen in this directory with no conversion behind it. Every other
   screen explains a conversion's Decisions, and rule 1 in base.html exists so
   those explanations cannot drift from the report beside them. There are no
-  Decisions here to explain.
+  Decisions here to explain -- and this screen still says something, because
+  a reader who has not yet pasted anything is exactly the reader who needs to
+  know what will happen to it.
 
-  It is held to rule 1 anyway, and passes it: what this screen writes are
-  labels, and a label is not an explanation. That is worth keeping true. The
-  moment this screen starts explaining something -- what a domain is, what
-  happens to an uploaded folder -- it is explaining without an engine string
-  behind it, and the right answer then is for the engine to carry the
-  sentence, not for this template to be excused from the rule.
+  So the four lines come from `dbtw.core.intro`, not from here. That is the
+  same rule as everywhere else rather than an exception to it: a sentence
+  written in this file would either be unmarked, and fail the prose
+  threshold, or marked, and fail the exact-match check against what
+  `dbtw.core` produced. Owning them in the engine is what makes the screen
+  able to speak at all, and it puts the claim the tool makes about itself
+  where every other claim it makes lives.
+
+  What the design shows here that this does not: tabs for "From warehouse"
+  and "From git", both marked SOON. They are a roadmap, and a roadmap
+  rendered as a disabled control is this screen promising something no code
+  here does. The two sources that exist are the two that are offered.
 
   The project path is an identifier this screen displays rather than prose it
   speaks -- `data-identifier`, for the reason the note on `Run` in
@@ -21,28 +31,46 @@
 #}
 {% extends "base.html" %}
 {% block main %}
-<h1>Bring your SQL</h1>
-<p class="source">Converting against
-  <span data-engine data-identifier>{{ project }}</span></p>
+<h1 class="hero"><span data-engine>{{ headline }}</span></h1>
+<p class="lede"><span data-engine>{{ lede }}</span></p>
 
 {%- if refusal %}
 <p class="refusal"><span data-engine>{{ refusal }}</span></p>
 {%- endif %}
 
 <form method="post" action="/source" enctype="multipart/form-data">
-  <fieldset>
-    <legend>Paste a query</legend>
-    <textarea name="pasted" rows="14" spellcheck="false"
-              placeholder="INSERT INTO ..."></textarea>
-  </fieldset>
+  <div class="source-card">
+    <div class="inner">
+      <fieldset>
+        <legend>Paste a query</legend>
+        <textarea name="pasted" rows="12" spellcheck="false"></textarea>
+      </fieldset>
 
-  <fieldset>
-    <legend>Or choose .sql files</legend>
-    <input type="file" name="files" accept=".sql" multiple>
-  </fieldset>
+      <fieldset class="dropzone">
+        <legend>Or choose .sql files</legend>
+        <input type="file" name="files" accept=".sql" multiple>
+      </fieldset>
 
-  <p class="onward"><button type="submit">Convert</button></p>
+      <p class="onward"><button type="submit">Convert</button></p>
+    </div>
+  </div>
 </form>
+
+<div class="rule-head">
+  <h3>What it does</h3>
+  <span class="line"></span>
+</div>
+<ul class="pillars">
+  {%- for pillar in pillars %}
+  <li data-item="pillar">
+    <span class="no" data-ordinal="pillar">{{ pillar.number }}</span>
+    <span class="name"><span data-engine>{{ pillar.name }}</span></span>
+    <p><span data-engine>{{ pillar.plain }}</span></p>
+  </li>
+  {%- endfor %}
+</ul>
+
+<p class="fineprint"><span data-engine>{{ privacy }}</span></p>
 
 {%- if started %}
 <p class="onward"><a data-link="back" href="/">Back to the walk</a></p>

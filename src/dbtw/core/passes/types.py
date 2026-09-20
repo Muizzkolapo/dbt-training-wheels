@@ -460,6 +460,19 @@ class ModelDraft:
     grants: tuple[tuple[str, tuple[str, ...]], ...]  # (privilege, principals)
     source_indices: tuple[int, ...]  # pipeline indices folded into this draft
     leading_comments: tuple[str, ...]  # statement-level comments, no delimiters
+    # Statements that changed this draft without being what it was built
+    # from. A GRANT is the only one: `grants_pass` attaches it to a draft that
+    # already exists, so it genuinely contributes a line to the model file
+    # while belonging to no `source_indices`.
+    #
+    # A field of its own rather than an extension of `source_indices`, and
+    # that is deliberate: `collisions` compares `max(source_indices)` to
+    # decide which of two drafts for one table was written later, so a GRANT
+    # arriving after both would silently change which draft survives. What
+    # this buys is a screen that can show every statement that shaped a model
+    # -- without it, a reader reading "is this still my query?" meets a
+    # `grants={...}` line with nothing on the page saying where it came from.
+    folded_indices: tuple[int, ...] = ()
     incremental_strategy: str | None = None  # None means "not incremental"
     unique_key: tuple[str, ...] = ()  # empty means no unique key
 

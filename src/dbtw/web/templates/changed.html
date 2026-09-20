@@ -1,0 +1,74 @@
+{#
+  Every model beside the SQL it was built from.
+
+  The one screen that answers a question the reader can check without knowing
+  any dbt: is this still my query? Everything else in the walk explains what
+  was decided; this shows what was done, in their own text and in dbt's, with
+  nothing between them.
+
+  Side by side where there is room and stacked where there is not, with the
+  reader's own SQL first in both. The order is the argument: what they wrote,
+  then what it became.
+
+  More than one statement under "before" is ordinary and is the case this
+  screen earns its place on -- a TRUNCATE and the INSERT that refills it are
+  two statements a reader typed and one model dbt runs, and no other screen
+  in the walk says so.
+
+  "Converted statements", not "statements". The number counts what is on
+  this screen, and what is on this screen is every statement that became a
+  model -- a statement this conversion could not use is on the caveats
+  screen, where what happened to it is said. Left as "4 statements" it is the
+  number a reader would use to check that nothing of theirs was dropped, and
+  on a script where one statement was deferred it would quietly read one
+  short. One word, and it is the difference between a tally and a claim
+  about their file.
+
+  The reader's own SQL is marked as an identifier as well as the engine's.
+  Both halves are true: it came back out of `ingest`, so it is exact-match
+  checked like any engine string, and it is *theirs*, so it should not build
+  the glossary on this screen -- the same rule the project path and the
+  description box are marked under.
+
+  The identifier half is currently unfalsifiable, and that is recorded
+  rather than papered over: a mutation removing it kills no test. It cannot,
+  because everything inside a statement reaches the model built from it --
+  comments are carried into the file, a GRANT's principal lands in the
+  config -- so every word in the left column is also in the right one, where
+  it legitimately builds the glossary. The marking is right for the day that
+  stops being true, and today it buys nothing a test can see.
+
+  The statement count is the page's, not each row's. A per-row "2 statements"
+  read against a page holding four is the exact shape of the finding that
+  cost this project the most trust -- "4 new files" over a list of five --
+  because `data-item` names a list on the page and not a list inside one row
+  of it. Counted once, over every statement shown, it is a number a reader
+  can check by counting the blocks; and "3 models, from 4 statements" is the
+  sentence this screen exists to say anyway.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>What changed</h1>
+<p class="tally"><span data-count="model">{{ conversions | length }}</span> models, from
+  <span data-count="statement">{{ statements }}</span> converted statements</p>
+<ul class="changed">
+  {%- for row in conversions %}
+  <li data-item="model">
+    <h2><span data-engine>{{ row.model.name }}</span></h2>
+    <div class="sides">
+      <section class="side">
+        <h3>You wrote</h3>
+        {%- for text in row.before %}
+        <pre data-item="statement" data-engine data-identifier>{{ text }}</pre>
+        {%- endfor %}
+      </section>
+      <section class="side">
+        <h3>dbt will run</h3>
+        <p class="path"><span data-engine data-identifier>{{ row.model.path }}</span></p>
+        <pre data-engine>{{ row.after }}</pre>
+      </section>
+    </div>
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

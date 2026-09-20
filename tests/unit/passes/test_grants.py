@@ -67,9 +67,21 @@ def test_revoke_dropped_with_note():
     assert "REVOKE" in dec.action
 
 
-def test_grants_pass_changes_only_the_grants_field():
+# What a GRANT is allowed to change on the draft it attaches to. It was
+# `grants` alone until a model's file could carry a `grants={...}` line with
+# nothing on the "what changed" screen saying which statement asked for it:
+# a GRANT is attached to a draft that already exists, so it belongs to no
+# `source_indices`, and `folded_indices` is how the statement stays
+# accounted for. Still not `source_indices` itself -- `collisions` compares
+# `max(source_indices)` to decide which of two drafts for one table was
+# written later, and a GRANT arriving after both would silently change which
+# draft survives.
+_GRANT_TOUCHES = frozenset({"grants", "folded_indices"})
+
+
+def test_grants_pass_changes_only_the_fields_a_grant_may_touch():
     """Locks the general property behind the incremental-fields regression:
-    grants_pass must change ONLY .grants on the draft it matches. Every
+    grants_pass must change only `_GRANT_TOUCHES` on the draft it matches. Every
     field is set to a non-default, distinguishable value up front and
     checked generically via dataclasses.fields, so a future ModelDraft field
     addition doesn't need this test rewritten to stay meaningful -- it was
@@ -97,13 +109,16 @@ def test_grants_pass_changes_only_the_grants_field():
     out = grants_pass(state)
     (result,) = out.drafts
     for field in dataclasses.fields(ModelDraft):
-        if field.name == "grants":
+        if field.name in _GRANT_TOUCHES:
             continue
         assert getattr(result, field.name) == getattr(draft, field.name), (
             f"grants_pass changed {field.name!r}, which a GRANT should never touch"
         )
     assert result.grants != draft.grants
     assert ("SELECT", ("reporting",)) in result.grants
+    # Both fields it may touch, asserted rather than merely exempted. An
+    # exemption list nothing checks is a list that grows by accident.
+    assert result.folded_indices == (*draft.folded_indices, 0)
 
 
 def test_non_grant_kinds_untouched():

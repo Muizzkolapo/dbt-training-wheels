@@ -1615,6 +1615,7 @@ def assemble(
             depends_on=(),  # filled in below, once every draft has a final name
             leading_comments=draft.leading_comments,
             source_indices=draft.source_indices,
+            folded_indices=draft.folded_indices,
             incremental_strategy=draft.incremental_strategy,
             unique_key=draft.unique_key,
         )

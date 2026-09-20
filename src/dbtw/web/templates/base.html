@@ -1,6 +1,7 @@
 {#
-  The frame every screen shares: the walk's own list of screens, the words
-  this screen uses, and the screen itself.
+  The frame every screen shares, in the shape the design gives it: an app bar
+  across the top, a rail of steps down the left, and the screen itself on the
+  right. (new_design/dbt Training Wheels.dc.html)
 
   Two rules hold for every template in this directory.
 
@@ -9,21 +10,48 @@
      those claims by exact match against what `dbtw.core` produced. Text
      outside such an element is this template's own, and no run of it may
      reach sentence length.
-  2. Every number is `len()` of the list beside it. The element showing the
-     number carries `data-count="<name>"` and each element of the list it
-     counts carries `data-item="<name>"`, so a test can hold the two against
-     each other on the page itself -- "4 new files" over a list of five is
-     the mismatch that cost this page the most trust.
+  2. Every number is `len()` of the list beside it, or a position in one. The
+     element showing a count carries `data-count="<name>"` and each element
+     of the list it counts carries `data-item="<name>"`; an element showing a
+     position carries `data-ordinal="<name>"` and is held against its own
+     place among those items. "4 new files" over a list of five is the
+     mismatch that cost this page the most trust, and a step numbered 03 that
+     is fourth in the rail is the same mistake about a different number.
 
-  The navigation is rendered only when there are screens to reach. While an
-  answer is held whose question the current SQL no longer asks, there are
-  none -- every screen refuses until it is dropped -- and a nav reading "0
-  screens" would say that as a defect rather than as a state.
+  The rail is rendered only when there are screens to reach. While an answer
+  is held whose question the current SQL no longer asks, there are none --
+  every screen refuses until it is dropped -- and a rail reading "0 screens"
+  would say that as a defect rather than as a state.
+
+  Each step carries a dot, and the dot is derived rather than decorative: a
+  question nobody has answered wants an answer, an answered one is answered,
+  and a screen with nothing to decide stands on its defaults. The legend
+  beneath spells all three out in words, so the colour repeats the meaning
+  instead of being the only thing carrying it -- and "Position in the flow
+  never marks a step done" is the design's own note, which this rail keeps by
+  deriving every dot from the conversion rather than from where the reader
+  has got to.
 
   The glossary sits above the screen rather than under it, as it does in the
   report and for the same reason: four of five personas never reached the
   block that sat at the end, and a definition the reader meets after the word
   is a definition they have already guessed at.
+
+  Each definition is folded, and the words are not. That is a correction made
+  by looking at the rendered pages rather than at the HTML: `terms_in` gives
+  a screen exactly the words it uses, which is the design, but the files
+  screen uses nine of them and the done screen four -- so the block that was
+  meant to save a reader from scrolling past twelve definitions was rendering
+  a wall of nine, and putting "Write these files", the one control in the
+  whole walk that touches their disk, below nine hundred pixels of glossary.
+  A reader meets the words in the same place as before and one click from
+  each meaning. `<details>` and not script, because
+  `test_no_screen_gates_the_write_action` asserts these pages carry none.
+
+  The typeface is the design's, fetched from Google Fonts with a system stack
+  behind it. It is the one thing on this page that leaves the machine, it
+  carries nothing about the reader's SQL, and the walk reads correctly in the
+  fallback when it does not arrive.
 #}
 <!doctype html>
 <html lang="en">
@@ -31,39 +59,71 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>dbt training wheels</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&family=Ubuntu+Mono:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
   <body>
-    {%- if screens %}
-    <nav>
-      <p class="tally"><span data-count="screen">{{ screens | length }}</span> screens</p>
-      <ul class="steps">
-        {%- for screen in screens %}
-        <li data-item="screen"{% if screen.url == here %} class="here"{% endif %}>
-          <a href="{{ screen.url }}">
-            {%- if screen.engine %}<span data-engine>{{ screen.label }}</span>
-            {%- else %}{{ screen.label }}{% endif -%}
-          </a>
-        </li>
-        {%- endfor %}
-      </ul>
-    </nav>
-    {%- endif %}
+    <header class="bar">
+      <span class="mark"></span>
+      <span class="name">training wheels</span>
+      <span class="arrow">sql &rarr; dbt</span>
+      <span class="spacer"></span>
+      <span class="project" data-engine data-identifier>{{ project_path }}</span>
+    </header>
 
-    {%- if terms %}
-    <section class="glossary" data-aside>
-      <h2>Words used here</h2>
-      <dl>
-        {%- for term in terms %}
-        <dt data-item="term"><span data-engine>{{ term.name }}</span></dt>
-        <dd><span data-engine>{{ term.plain }}</span></dd>
-        {%- endfor %}
-      </dl>
-    </section>
-    {%- endif %}
+    <div class="shell{% if not screens %} solo{% endif %}">
+      {%- if screens %}
+      <nav>
+        <div class="head">
+          <span class="title">Steps</span>
+          <span class="tally"><span data-count="screen">{{ screens | length }}</span> screens</span>
+        </div>
+        <ul class="steps">
+          {%- for screen in screens %}
+          <li data-item="screen"{% if screen.url == here %} class="here"{% endif %}>
+            <a href="{{ screen.url }}">
+              <span class="no" data-ordinal="screen">{{ "%02d" | format(loop.index) }}</span>
+              <span class="label">
+                {%- if screen.engine %}<span data-engine>{{ screen.label }}</span>
+                {%- else %}{{ screen.label }}{% endif -%}
+              </span>
+              <span class="dot {{ screen.state }}"></span>
+            </a>
+          </li>
+          {%- endfor %}
+        </ul>
+        <section class="legend">
+          <h3>What the dots mean</h3>
+          <ul>
+            <li><span class="dot ask"></span> Wants an answer</li>
+            <li><span class="dot ok"></span> Answered</li>
+            <li><span class="dot stands"></span> Defaults stand</li>
+          </ul>
+        </section>
+      </nav>
+      {%- endif %}
 
-    <main>
-      {%- block main %}{% endblock %}
-    </main>
+      <main>
+        {%- if terms %}
+        <section class="glossary" data-aside>
+          <h2>Words used here</h2>
+          <ul class="terms">
+            {%- for term in terms %}
+            <li data-item="term">
+              <details>
+                <summary><span data-engine>{{ term.name }}</span></summary>
+                <p><span data-engine>{{ term.plain }}</span></p>
+              </details>
+            </li>
+            {%- endfor %}
+          </ul>
+        </section>
+        {%- endif %}
+
+        {%- block main %}{% endblock %}
+      </main>
+    </div>
   </body>
 </html>

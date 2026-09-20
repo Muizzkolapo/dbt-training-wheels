@@ -324,7 +324,9 @@ def grants_pass(state: PassState) -> PassState:
             continue
         d = drafts[match]
         new_grants = d.grants + tuple((priv, principals) for priv in privileges)
-        drafts[match] = dataclasses.replace(d, grants=new_grants)
+        drafts[match] = dataclasses.replace(
+            d, grants=new_grants, folded_indices=d.folded_indices + (index,)
+        )
         decisions.append(
             _decision(
                 stmt,

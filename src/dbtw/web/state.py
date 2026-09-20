@@ -13,6 +13,7 @@ from pathlib import Path
 from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble
 from dbtw.core.context import read_project
 from dbtw.core.ingest import classify_statements, ingest
+from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.passes import Answer, Decision, answer_for, run_passes
 
 
@@ -36,6 +37,21 @@ class SessionView:
     change: ProjectChange
     questions: tuple[Decision, ...]
     prompts: dict[str, dict[str, str]]
+    # The statements `change` was built from, in pipeline order, out of the
+    # same read that built it. `AssembledModel.source_indices` names
+    # positions in this tuple, so a screen putting a model beside the SQL it
+    # came from indexes straight into it.
+    #
+    # From the same read, and that is the whole point of carrying it here. A
+    # screen that asked the session for the statements separately would be
+    # reading the path a second time, and two reads of one path can disagree:
+    # `Source.start` points a session at a *directory*, `ingest` resolves one
+    # as `sorted(rglob("*.sql"))`, and a file renamed between the two reads
+    # shifts every index while leaving the count identical. The result is
+    # each model shown beside another model's SQL, with nothing out of range
+    # to notice -- the most convincing wrong thing this walk could show. One
+    # read cannot drift from itself.
+    statements: tuple[ClassifiedStatement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -118,7 +134,7 @@ class Session:
         prompts come off the pristine run the answers were resolved against,
         which has already been computed by the time they are needed.
         """
-        pristine = self._pristine()
+        pristine, read = self._pristine_run()
         resolved = self._resolve(pristine)
         # A run with no answers and no descriptions *is* the pristine run --
         # same inputs, same deterministic pipeline. Reusing it here is not a
@@ -127,9 +143,12 @@ class Session:
         # `_pristine` carries none: reusing it for a session that holds one
         # would render a screen with the reader's own words missing from it.
         described = bool(resolved or self.descriptions)
-        change = self._run(resolved, self.descriptions) if described else pristine
+        change, statements = (
+            self._convert(resolved, self.descriptions) if described else (pristine, read)
+        )
         return SessionView(
             change=change,
+            statements=statements,
             questions=tuple(d for d in change.decisions if d.question),
             prompts={
                 decision.key: {option.kind: option.columns_prompt for option in decision.options}
@@ -345,6 +364,35 @@ class Session:
             del self.descriptions[name]
         return stale
 
+    def originals(self) -> tuple[ClassifiedStatement, ...]:
+        """The statements at this session's path, in pipeline order.
+
+        NOT the ones a screen pairs models against -- that is
+        `view().statements`, which comes out of the same read as the change
+        it belongs to. This is a fresh read, so it can disagree with a change
+        computed a moment ago, and pairing against it is how a reader ends up
+        looking at one model beside another model's SQL.
+
+        It exists for the one caller that cannot ask for a view: a session
+        stranded on a held answer refuses every conversion, and a consumer
+        that still needs to know what is in the file has nowhere else to go.
+
+        One ingest and one classify, which is less than a conversion: the
+        passes and the assembler are the expensive half and nothing here
+        needs them.
+        """
+        return classify_statements(ingest(self.sql, self.dialect))
+
+    def _pristine_run(self) -> tuple[ProjectChange, tuple[ClassifiedStatement, ...]]:
+        """The pristine conversion and the statements it was read from.
+
+        `view` needs both, and needs them from one read for the reason
+        `SessionView.statements` gives. Splitting this from `_pristine` keeps
+        the run count exactly where it was: one conversion while nothing is
+        held, two once something is.
+        """
+        return self._convert(None)
+
     def _pristine(self) -> ProjectChange:
         """This conversion with no answers at all.
 
@@ -354,7 +402,27 @@ class Session:
         two answers ago -- and the only thing a caller needs from it is
         reachable through `answer` and `columns_prompts`.
         """
-        return self._run(None)
+        return self._pristine_run()[0]
+
+    def _convert(
+        self,
+        answers: Mapping[str, Answer] | None,
+        descriptions: Mapping[str, str] | None = None,
+    ) -> tuple[ProjectChange, tuple[ClassifiedStatement, ...]]:
+        """One conversion, and the statements it was built from.
+
+        The pair exists so that a caller wanting both gets both out of one
+        read. `_run` is the same call for the callers that want only the
+        change, and `SessionView.statements` is why the pair is needed at
+        all.
+        """
+        result = ingest(self.sql, self.dialect)
+        classified = classify_statements(result)
+        state = run_passes(classified, result.dialect)
+        change = assemble(
+            state, read_project(self.project), answers=answers, descriptions=descriptions
+        )
+        return change, classified
 
     def _run(
         self,
@@ -372,11 +440,7 @@ class Session:
         them would make both raise `UnknownModelError` in exactly the state
         they exist to get a reader out of.
         """
-        result = ingest(self.sql, self.dialect)
-        state = run_passes(classify_statements(result), result.dialect)
-        return assemble(
-            state, read_project(self.project), answers=answers, descriptions=descriptions
-        )
+        return self._convert(answers, descriptions)[0]
 
     def _resolve(self, pristine: ProjectChange) -> dict[str, Answer]:
         return {

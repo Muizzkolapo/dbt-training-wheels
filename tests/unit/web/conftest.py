@@ -56,8 +56,18 @@ def sql_file(sql_script: Callable[[str], Path]) -> Path:
 
 
 @pytest.fixture
-def project_dir(tmp_path: Path) -> Path:
-    destination = tmp_path / "jaffle_shop"
+def project_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A copy of the fixture project, at a path not named after the test.
+
+    From `tmp_path_factory` rather than `tmp_path`, for the reason `out_dir`
+    gives at length and now for a second surface: the app bar names the
+    project on every screen, so a `tmp_path` copy puts the running test's own
+    name on every page. `test_not_null_is_declared_on_no_screen` really did
+    fail on a directory called `test_not_null_is_declared_on_n0` -- the
+    string it forbids, spelled by pytest out of the test's own name. A page
+    assertion that can be moved by renaming a test is not measuring the page.
+    """
+    destination = tmp_path_factory.mktemp("dbt-project") / "jaffle_shop"
     shutil.copytree(PROJECTS / "jaffle_shop", destination)
     return destination
 

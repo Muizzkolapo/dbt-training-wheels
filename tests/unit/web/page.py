@@ -12,6 +12,13 @@ the two, and the separation has to be one a template cannot fake:
   the marker buys nothing;
 * text inside an element carrying `data-count` is a number the page derives,
   and is held against the `data-item` elements it counts;
+* text inside an element carrying `data-ordinal` is a number saying *where*
+  something sits in a named list -- the design numbers its steps and its
+  pillars -- and is held against that element's own position among the
+  `data-item` elements of that name. A position is not a count, and the two
+  fail differently: a wrong count misstates how much there is, a wrong
+  ordinal misstates which one you are looking at. Both are numbers that have
+  to answer to something, which is the whole of section 11.4(c);
 * every other text run is the template's own, and is what "authors no
   explanatory text" is asserted against. A digit in one of those runs is a
   number that declared nothing, which is the defect section 11.4(c) is about:
@@ -123,8 +130,9 @@ class Run:
     """One block's worth of text, and what the page claimed about it.
 
     `engine` is text claimed from `dbtw.core`; `count` is the name a
-    `data-count` element declared. A run that is neither is the template's
-    own, and is what the prose and number checks are asserted against.
+    `data-count` element declared, and `ordinal` the name a `data-ordinal`
+    element declared. A run that is none of those is the template's own, and
+    is what the prose and number checks are asserted against.
 
     `aside` is set for a run inside an element carrying `data-aside` -- the
     glossary block, which is the one region of a screen whose content is
@@ -152,6 +160,7 @@ class Run:
     aside: bool = False
     identifier: bool = False
     count: str = ""
+    ordinal: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +194,9 @@ class Page:
     @property
     def authored(self) -> tuple[str, ...]:
         return tuple(
-            run.text for run in self.runs if not run.engine and not run.count and run.text.strip()
+            run.text
+            for run in self.runs
+            if not run.engine and not run.count and not run.ordinal and run.text.strip()
         )
 
     @property
@@ -196,6 +207,11 @@ class Page:
     def counts(self) -> tuple[tuple[str, str], ...]:
         """(the name a number declared, the number it showed)."""
         return tuple((run.count, run.text.strip()) for run in self.runs if run.count)
+
+    @property
+    def ordinals(self) -> tuple[tuple[str, str], ...]:
+        """(the list a number placed itself in, the position it showed)."""
+        return tuple((run.ordinal, run.text.strip()) for run in self.runs if run.ordinal)
 
     @property
     def inputs(self) -> tuple[dict[str, str], ...]:
@@ -215,9 +231,10 @@ class Page:
     def undeclared_numbers(self) -> tuple[str, ...]:
         """Every authored run carrying a digit.
 
-        A number on screen is either the engine's or one the page derived and
-        declared with `data-count`, and a declared one is checked against the
-        list beside it. A digit anywhere else is a number that answers to
+        A number on screen is either the engine's or one the page derived
+        and declared -- with `data-count`, checked against the list beside
+        it, or with `data-ordinal`, checked against its own position in that
+        list. A digit anywhere else is a number that answers to
         nothing -- which is the whole of section 11.4(c), and is invisible to
         the prose threshold because "4 new files" is two words.
         """
@@ -253,6 +270,7 @@ class _Frame:
     aside: bool
     identifier: bool
     count: str = ""
+    ordinal: str = ""
     buffer: list[str] = field(default_factory=list)
 
 
@@ -323,6 +341,7 @@ class _Reader(HTMLParser):
                 aside=self._aside() or "data-aside" in attributes,
                 identifier=self._identifier() or "data-identifier" in attributes,
                 count=attributes.get("data-count", ""),
+                ordinal=attributes.get("data-ordinal", ""),
             )
         )
 
@@ -350,11 +369,11 @@ class _Reader(HTMLParser):
             # element records when it closes.
             self._add(text)
             return
-        if frame.engine or frame.count or frame.tag in _BLOCK:
-            # A counted element records its own run and does NOT hand its text
-            # up: the digit it holds has declared itself, and leaving it in the
-            # parent's run would make every declared count look like an
-            # undeclared one.
+        if frame.engine or frame.count or frame.ordinal or frame.tag in _BLOCK:
+            # A counted or numbered element records its own run and does NOT
+            # hand its text up: the digit it holds has declared itself, and
+            # leaving it in the parent's run would make every declared number
+            # look like an undeclared one.
             self.runs.append(
                 Run(
                     tag=frame.tag,
@@ -363,6 +382,7 @@ class _Reader(HTMLParser):
                     aside=frame.aside,
                     identifier=frame.identifier,
                     count=frame.count,
+                    ordinal=frame.ordinal,
                 )
             )
             return
