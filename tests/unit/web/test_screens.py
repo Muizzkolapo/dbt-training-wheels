@@ -37,6 +37,7 @@ from dbtw.core.emit import (
 )
 from dbtw.core.teach import terms_in
 from dbtw.web import Session, Source
+from dbtw.web.app import _branch_name
 
 # What counts as a sentence in an authored run. Every label the templates
 # write is three words or fewer ("In plain words", "Write these files"), so
@@ -118,7 +119,23 @@ _DOWNGRADED = "downgraded"
 _STALE = "stale"
 _WRITTEN = "written"
 _WRITE_FAILED = "write failed"
-_STATES = (_PRISTINE, _ANSWERED, _DOWNGRADED, _STALE, _WRITTEN, _WRITE_FAILED)
+# The two states a reader reaches by pressing the second button that touches
+# their disk. Delivery puts a branch in their own repository, so the screen
+# that reports it and the screen that refuses it are both pages a reader
+# lands on -- and a guard that never visited them would be the same
+# wrong-coverage-set defect this file has already been fixed for twice.
+_DELIVERED = "delivered"
+_DELIVERY_REFUSED = "delivery refused"
+_STATES = (
+    _PRISTINE,
+    _ANSWERED,
+    _DOWNGRADED,
+    _STALE,
+    _WRITTEN,
+    _WRITE_FAILED,
+    _DELIVERED,
+    _DELIVERY_REFUSED,
+)
 
 
 def _append_key(session: Session) -> str:
@@ -152,6 +169,21 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         app, client, session = walk(walk_sql, out=project_dir)
         assert client.post("/write").status_code == 500
         return app, client, session, project_dir
+
+    if state in (_DELIVERED, _DELIVERY_REFUSED):
+        # Delivery is offered only after a write, so both states are a
+        # written walk plus one press. The difference is the project: a git
+        # repository with a clean tree accepts the branch, and a directory
+        # that is not a repository at all is refused -- the commonest of the
+        # three refusals, and the one a reader meets without having done
+        # anything wrong.
+        if state == _DELIVERED:
+            _as_git_repo(project_dir)
+        app, client, session = walk(walk_sql)
+        assert client.post("/write").status_code == 200
+        delivered = client.post("/deliver")
+        assert delivered.status_code == (200 if state == _DELIVERED else 409)
+        return app, client, session, out_dir
 
     app, client, session = walk(walk_sql)
     if state == _ANSWERED:
@@ -205,9 +237,17 @@ def _produced(session: Session, out: Path, state: str) -> frozenset[str]:
     strings = engine_strings(session, out)
     if state == _STALE:
         return strings
+    # Every state but the stranded one renders the answer refusal, because
+    # `_guarded_pages` presses the misstep that produces it.
     strings |= {normalised(_refusal_message(session))}
     if state == _WRITE_FAILED:
         strings |= {normalised(_write_refusal(session, out))}
+    if state in (_DELIVERED, _DELIVERY_REFUSED):
+        # What a delivery reports is git's own: a branch name this module
+        # derived and a commit sha only git can know. Asked of the thing that
+        # produced them rather than written out here, for the reason
+        # `_refusal_message` gives.
+        strings |= _delivery_strings(session, out, state)
     return strings
 
 
@@ -218,6 +258,66 @@ def _write_refusal(session: Session, out: Path) -> str:
     except ValueError as refusal:
         return str(refusal)
     raise AssertionError(f"emit accepted {out} as a destination")
+
+
+def _as_git_repo(root: Path) -> None:
+    """Make `root` a committed git repository, so a delivery can branch it.
+
+    Identity is set on the repository rather than read from the machine: a
+    test that depended on whoever runs it having git configured would fail on
+    a fresh checkout for a reason that has nothing to do with this code.
+    """
+    import subprocess
+
+    def git(*arguments: str) -> None:
+        subprocess.run(["git", *arguments], cwd=root, capture_output=True, check=True)
+
+    git("init", "-q")
+    git("config", "user.email", "reader@example.invalid")
+    git("config", "user.name", "The Reader")
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
+        git("add", "--", str(path.relative_to(root)))
+    git("commit", "-q", "-m", "the project as it was")
+
+
+def _delivery_strings(session: Session, out: Path, state: str) -> frozenset[str]:
+    """What the delivered or refused screen renders that only git can produce.
+
+    The two states are asked differently, and they have to be. A refusal is
+    deterministic, so it is obtained by *making the call* against a throwaway
+    copy of the project -- the same discipline `_refusal_message` uses, and
+    safe because a refused delivery changes nothing. A commit sha is not
+    deterministic: every commit has its own, so re-delivering somewhere else
+    produces a different one and could never match the page. That one is read
+    back out of the repository the delivery actually went into, which is
+    asking the thing that produced it in the most direct way available.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    from dbtw.core.deliver import deliver
+
+    if state == _DELIVERED:
+
+        def git(*arguments: str) -> str:
+            done = subprocess.run(
+                ["git", *arguments], cwd=session.project, capture_output=True, text=True, check=True
+            )
+            return done.stdout.strip()
+
+        return frozenset(
+            {normalised(git("rev-parse", "HEAD")), normalised(git("branch", "--show-current"))}
+        )
+
+    scratch = Path(tempfile.mkdtemp()) / "project"
+    shutil.copytree(session.project, scratch)
+    branch = _branch_name(session.view().change)
+    try:
+        deliver(out, read_project(scratch), branch=branch, message="m")
+    except ValueError as refusal:
+        return frozenset({normalised(str(refusal)), normalised(branch)})
+    raise AssertionError("the delivery this state is built around was accepted")
 
 
 def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]:
