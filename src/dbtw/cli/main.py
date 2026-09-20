@@ -30,7 +30,7 @@ from dbtw.core.emit import (
 )
 from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest
 from dbtw.core.passes import run_passes
-from dbtw.web import MissingWebExtraError, Session, require_flask
+from dbtw.web import MissingWebExtraError, Session, Source, require_flask
 
 _REPORT_NAME = "CONVERSION_REPORT.md"
 
@@ -122,7 +122,13 @@ def _build_parser() -> argparse.ArgumentParser:
     web = subparsers.add_parser(
         "web", help="Answer this conversion's questions one at a time, in a browser"
     )
-    web.add_argument("sql_path", metavar="SQL_PATH", help="A .sql file or directory of .sql")
+    web.add_argument(
+        "sql_path",
+        metavar="SQL_PATH",
+        nargs="?",
+        default=None,
+        help="A .sql file or directory of .sql. Omit it to paste or upload in the browser",
+    )
     web.add_argument(
         "--project", metavar="PROJECT_PATH", required=True, help="The target dbt project root"
     )
@@ -206,20 +212,24 @@ def _convert(
 
 
 def _web(
-    sql_path: str, project: str, out: str, dialect: str | None, port: int, open_browser: bool
+    sql_path: str | None, project: str, out: str, dialect: str | None, port: int, open_browser: bool
 ) -> int:
     # Asked first, and before anything is read: no argument the user could
     # have written makes this command work without the extra, so a refusal
     # about their --project would send them to fix the wrong thing.
     require_flask()
 
-    # All three expanded, for the reason `_expanded` gives. --out is held
-    # rather than used here for most of this function: the walk writes when
-    # the reader presses the write action and not before, and
+    # --out is held rather than used here for most of this function: the walk
+    # writes when the reader presses the write action and not before, and
     # `test_web_writes_nothing` is what says so. It is read once below, to
     # ask the same question `dbtw convert` asks before it reads a statement.
+    #
+    # SQL_PATH is optional, and its absence is a state rather than an error:
+    # a reader who has not got a file to point at brings their query in
+    # through the entry screen instead. What this function will not do is
+    # invent a path for them -- `Source` holds none until something arrives.
     project_root = _expanded(project, "--project")
-    sql = _expanded(sql_path, "SQL_PATH")
+    sql = _expanded(sql_path, "SQL_PATH") if sql_path is not None else None
     out_dir = _expanded(out, "--out")
 
     # Spec section 7: a missing dbt_project.yml is a command-line error, not a
@@ -238,10 +248,17 @@ def _web(
     # other way is not left unguarded.
     refuse_output_inside_project(out_dir, ctx)
 
-    session = Session(project=project_root, sql=sql, dialect=dialect)
-    questions = session.questions()
-    noun = "question" if len(questions) == 1 else "questions"
-    print(f"{sql} → {ctx.project_name}: {len(questions)} {noun} to answer.")
+    source = Source(project=project_root, out=out_dir, dialect=dialect)
+    if sql is not None:
+        source.session = Session(project=project_root, sql=sql, dialect=dialect)
+        questions = source.session.questions()
+        noun = "question" if len(questions) == 1 else "questions"
+        print(f"{sql} → {ctx.project_name}: {len(questions)} {noun} to answer.")
+    else:
+        # No count, because there is nothing yet to count. Saying "0
+        # questions" here would report a conversion this command has not been
+        # given anything to make.
+        print(f"{ctx.project_name}: bring your SQL in the browser.")
 
     # Imported here, after require_flask(), so that `dbtw convert` — and
     # `dbtw.web` itself — go on importing without the extra. `dbtw.web.app`
@@ -249,7 +266,7 @@ def _web(
     # this is the one line that reaches it.
     from dbtw.web.app import create_app, serve
 
-    serve(create_app(session, out_dir), _HOST, port, open_browser)
+    serve(create_app(source), _HOST, port, open_browser)
     return 0
 
 

@@ -36,7 +36,7 @@ from dbtw.core.emit import (
     worked_example,
 )
 from dbtw.core.teach import terms_in
-from dbtw.web import Session
+from dbtw.web import Session, Source
 
 # What counts as a sentence in an authored run. Every label the templates
 # write is three words or fewer ("In plain words", "Write these files"), so
@@ -44,6 +44,17 @@ from dbtw.web import Session
 # sentence that explains something. It is deliberately low: this test exists
 # to fail the moment a template starts explaining.
 _SENTENCE = 5
+
+
+# The entry screen. Not a screen of the walk: it is how a reader gets one,
+# and it renders before there is a conversion to render. Every guard that
+# asks something of "a screen of the walk" reaches it through
+# `_guarded_pages` rather than through `_screen_urls`, so it is held to all
+# of them -- including the prose rule, which it passes: it explains no
+# Decision, so it has nothing to explain at sentence length, and every run it
+# writes is a label. It is exempt from exactly one assertion, that a page
+# shows a derived count, because it has nothing to count.
+_ENTRY = "/source"
 
 
 def _screen_urls(app, session: Session) -> tuple[str, ...]:
@@ -55,12 +66,17 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
     question rule, which contributes one per question this conversion asks.
     A rule taking any other argument stops the test rather than being skipped
     -- a screen this cannot address is a screen nothing here checks.
+
+    `/source` is excluded, and it is the only exclusion: it is the screen a
+    reader is on *before* this walk exists, so it is not one of the walk's
+    own, does not carry the walk's navigation, and has no conversation to
+    render. It is still guarded -- see `_ENTRY`.
     """
     asked = len(session.view().questions)
     urls: list[str] = []
     for rule in sorted(app.url_map.iter_rules(), key=lambda rule: rule.rule):
         methods = rule.methods or set()
-        if rule.endpoint == "static" or "GET" not in methods:
+        if rule.endpoint == "static" or "GET" not in methods or rule.rule == _ENTRY:
             continue
         if not rule.arguments:
             urls.append(rule.rule)
@@ -233,6 +249,14 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     result = client.post("/write")
     assert result.status_code == (500 if state == _WRITE_FAILED else 200)
     pages["/write"] = read(result.get_data(as_text=True))
+    # The entry screen is not one of the walk's screens, and is guarded like
+    # one anyway: a number on it still has to be the length of what it lists,
+    # a heading still has to open something, and it still may not gate the
+    # write action behind a tick. The one rule it is exempt from is the prose
+    # rule, and that exemption is named where it is taken.
+    entry = client.get(_ENTRY)
+    assert entry.status_code == 200
+    pages[_ENTRY] = read(entry.get_data(as_text=True))
     return pages
 
 
@@ -410,7 +434,14 @@ def test_every_count_is_the_length_of_what_is_listed_beside_it(
     app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     seen = 0
     for url, page in _guarded_pages(app, client, session, state).items():
-        assert page.counts, f"{state} {url} shows no derived count"
+        # Every page of the walk carries at least the nav's own screen count.
+        # The entry screen carries no nav, because the walk it would navigate
+        # does not exist yet -- so it is the one page with nothing to count,
+        # and "counts nothing" is the honest rendering rather than a zero.
+        # Both assertions below still apply to it: what it counts must match,
+        # and a digit outside a count is still a number answering to nothing.
+        if url != _ENTRY:
+            assert page.counts, f"{state} {url} shows no derived count"
         for name, shown in page.counts:
             listed = sum(1 for item in page.items if item == name)
             assert shown == str(listed), f"{state} {url} says {shown} {name} beside {listed}"
@@ -760,7 +791,10 @@ def test_the_start_screens_glossary_does_not_depend_on_the_sql_files_directory_n
     salted.write_text(ONE_APPEND, encoding="utf-8")
 
     def start_page(sql: Path) -> Page:
-        app = create_app(Session(project=project_dir, sql=sql), out_dir)
+        source = Source(
+            project=project_dir, out=out_dir, session=Session(project=project_dir, sql=sql)
+        )
+        app = create_app(source)
         app.testing = True
         return read(app.test_client().get("/").get_data(as_text=True))
 
@@ -861,6 +895,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
     rendered = set(app.jinja_env.list_templates())
     assert rendered == {
         "base.html",
+        "entry.html",
         "start.html",
         "question.html",
         "caveats.html",

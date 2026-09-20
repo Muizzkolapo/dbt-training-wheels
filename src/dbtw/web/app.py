@@ -70,7 +70,7 @@ from dbtw.core.emit import (
 )
 from dbtw.core.passes import Decision, Option
 from dbtw.core.teach import Term, terms_in
-from dbtw.web.state import Session, SessionView
+from dbtw.web.state import EmptySourceError, Session, SessionView, Source
 
 # The key prefix `assemble` gives the Decisions it records for a model rather
 # than for a statement -- `assemble.rename.<name>`, the shape
@@ -163,6 +163,17 @@ class FilePreview:
 # are absent from the CLI's `_USAGE_ERRORS`, and absent means they surface as
 # a traceback.
 _WRITE_FAILURES = (OutputInsideProjectError, UnsafeOutputPathError, OSError)
+
+
+class NoConversationError(RuntimeError):
+    """A screen of the walk reached for a session before one existed.
+
+    Not a usage error and deliberately not in the CLI's `_USAGE_ERRORS`: no
+    input produces it. Every screen reaches its session through `_view`,
+    which redirects to the entry screen while `Source.session` is None, so
+    this is a route that skipped that guard -- a defect in this module, and
+    it surfaces as one.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,19 +419,26 @@ def _terms(spoken: str) -> tuple[Term, ...]:
     return terms_in(spoken)
 
 
-def create_app(session: Session, out: Path) -> Flask:
-    """The walk over one conversation. One session, held by the app.
+def create_app(source: Source) -> Flask:
+    """The walk over one conversation, and the screen that starts one.
 
     Keyed by nothing, as spec 4.1 requires: this is a local single-user tool
     and a second tab is a second view of the same conversation.
 
-    `out` is where the write action writes, and it is the caller's rather
-    than the reader's: `dbtw web --out` names it, the done screen shows it
-    before the button, and nothing on a screen can change it. A destination
-    typed into the browser would be one more thing for a first-time user to
-    get right at the one moment in the walk that touches their disk -- and
-    the session holds it nowhere, because a conversation about a conversion
-    is not where the result goes.
+    `source` holds which conversation that is, and it is the one mutable
+    thing here. A `dbtw web` given a SQL_PATH arrives with a session already
+    open; one given none arrives with `source.session` None, and every screen
+    of the walk sends a reader to `/source` until SQL has arrived. The walk
+    itself does not change shape either way -- it renders a conversation, and
+    where the conversation came from is not its business.
+
+    `source.out` is where the write action writes, and it is the caller's
+    rather than the reader's: `dbtw web --out` names it, the done screen
+    shows it before the button, and nothing on a screen can change it. A
+    destination typed into the browser would be one more thing for a
+    first-time user to get right at the one moment in the walk that touches
+    their disk -- and the session holds it nowhere, because a conversation
+    about a conversion is not where the result goes.
     """
     app = Flask(__name__)
     # The three strings a rendered example is shown under. `emit.example`
@@ -435,6 +453,25 @@ def create_app(session: Session, out: Path) -> Flask:
         after_label=AFTER_RUN_LABEL,
     )
 
+    def _conversation() -> Session:
+        """The session this app is serving.
+
+        Every caller reaches this behind `_view`, which sends a reader to the
+        entry screen while there is none, so the None here is a bug in this
+        module rather than a state a request can be in. A raise and not an
+        assert for the reason this package raises everywhere else: `python
+        -O` strips an assert, and what silence would leave is an
+        AttributeError on None three frames further in.
+        """
+        session = source.session
+        if session is None:
+            raise NoConversationError(
+                "no SQL has been given to this walk yet; every screen reaches a "
+                "session through _view, which redirects to the entry screen while "
+                "there is none, so reaching here means one of them does not"
+            )
+        return session
+
     def _stale() -> tuple[str, int] | None:
         """The screen for the one state in which nothing else can render.
 
@@ -445,22 +482,91 @@ def create_app(session: Session, out: Path) -> Flask:
         an error with no subject and no way on. It is rendered only in that
         state, so an edge case never becomes the page's main event.
         """
-        stale = session.stale_answers()
+        stale = _conversation().stale_answers()
         if not stale:
             return None
         return render_template("stale.html", stale=stale, screens=(), terms=(), here=""), 409
 
-    def _view() -> SessionView | tuple[str, int]:
+    def _view() -> SessionView | tuple[str, int] | Response:
+        """This conversation's view, or the page to render instead of one.
+
+        Three outcomes, and every screen of the walk returns whichever it
+        gets: the view, the stranded screen, or -- before any SQL has arrived
+        -- a redirect to the entry screen. The last one is why no route needs
+        its own check for an unstarted walk: the guard every screen already
+        has for the stranded case absorbs it.
+        """
+        if source.session is None:
+            return redirect(url_for("entry"))
         try:
-            return session.view()
+            return _conversation().view()
         except UnknownAnswerError:
             stranded = _stale()
             if stranded is None:
                 raise
             return stranded
 
+    @app.get("/source")
+    def entry() -> str:
+        """Where a reader brings their SQL in.
+
+        The one screen of this app that is not about a conversion, because
+        there is not one yet. It is held to every rule the walk's screens are
+        held to, the prose rule included, and it passes: explaining no
+        Decision, it has nothing to say at sentence length, and what it writes
+        are labels. The one assertion it is exempt from is that a page shows a
+        derived count -- it has nothing to count, and a nav reading "0 screens"
+        would report the absence of a conversation as a defect.
+        """
+        return render_template(
+            "entry.html",
+            screens=(),
+            terms=(),
+            here="/source",
+            project=str(source.project),
+            started=source.session is not None,
+            refusal="",
+        )
+
+    @app.post("/source")
+    def convert() -> str | tuple[str, int] | Response:
+        """Take what the reader brought and open a conversation over it.
+
+        Pasted text and chosen files are one input here: both end up as
+        files in one directory, and `ingest` reads a directory as every .sql
+        in it, so a folder of scripts and a single pasted query differ in
+        nothing this route has to know about.
+
+        A refusal re-renders this screen with the reason on it rather than
+        redirecting, for the same reason the answer loop's refusal does: the
+        reader is mid-action and the thing they need is on the page they were
+        already on.
+        """
+        pasted = request.form.get("pasted", "")
+        uploaded = {
+            Path(storage.filename).name: storage.read().decode("utf-8", errors="replace")
+            for storage in request.files.getlist("files")
+            if storage.filename
+        }
+        files = dict(uploaded)
+        if pasted.strip():
+            files["pasted.sql"] = pasted
+        try:
+            source.start(files)
+        except (EmptySourceError, OSError, UnicodeDecodeError) as refusal:
+            return render_template(
+                "entry.html",
+                screens=(),
+                terms=(),
+                here="/source",
+                project=str(source.project),
+                started=source.session is not None,
+                refusal=str(refusal),
+            ), 400
+        return redirect(url_for("start"))
+
     @app.get("/")
-    def start() -> str | tuple[str, int]:
+    def start() -> str | tuple[str, int] | Response:
         view = _view()
         if not isinstance(view, SessionView):
             return view
@@ -490,13 +596,13 @@ def create_app(session: Session, out: Path) -> Flask:
             here="/",
             terms=_terms(spoken),
             project=view.change.project_name,
-            sql=str(session.sql),
+            sql=str(_conversation().sql),
             renames=renames,
             cutover=cutover,
         )
 
     @app.get("/questions/<int:index>")
-    def question(index: int) -> str | tuple[str, int]:
+    def question(index: int) -> str | tuple[str, int] | Response:
         view = _view()
         if not isinstance(view, SessionView):
             return view
@@ -505,7 +611,7 @@ def create_app(session: Session, out: Path) -> Flask:
         decision = view.questions[index]
         choices = _choices(decision, view.prompts.get(decision.key, {}))
         example = _example_for(decision, view.change)
-        produced = _produced_by(session, view.change, decision.key)
+        produced = _produced_by(_conversation(), view.change, decision.key)
         spoken = _spoken(
             decision.plain_question,
             decision.question,
@@ -535,11 +641,11 @@ def create_app(session: Session, out: Path) -> Flask:
         )
 
     @app.get("/caveats")
-    def caveats() -> str | tuple[str, int]:
+    def caveats() -> str | tuple[str, int] | Response:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        decided = _caveats(view.change, _answered_into_existence(session, view.change))
+        decided = _caveats(view.change, _answered_into_existence(_conversation(), view.change))
         pending = tuple(statement for _, statement in view.change.pending)
         spoken = _spoken(
             (d.action for d in decided),
@@ -562,11 +668,11 @@ def create_app(session: Session, out: Path) -> Flask:
         )
 
     @app.get("/files")
-    def files() -> str | tuple[str, int]:
+    def files() -> str | tuple[str, int] | Response:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        previews = _previews(session, view.change)
+        previews = _previews(_conversation(), view.change)
         spoken = _spoken(
             (preview.path for preview in previews),
             (preview.contents for preview in previews),
@@ -581,12 +687,12 @@ def create_app(session: Session, out: Path) -> Flask:
         )
 
     @app.get("/done")
-    def done() -> str | tuple[str, int]:
+    def done() -> str | tuple[str, int] | Response:
         view = _view()
         if not isinstance(view, SessionView):
             return view
         spoken = _spoken(
-            str(out),
+            str(source.out),
             _COMMANDS,
             (screen.label for screen in _screens(view) if screen.engine),
         )
@@ -596,7 +702,7 @@ def create_app(session: Session, out: Path) -> Flask:
             here="/done",
             terms=_terms(spoken),
             commands=_COMMANDS,
-            out=str(out),
+            out=str(source.out),
         )
 
     # The one completed write of this conversation, or None. Held by the app
@@ -606,7 +712,7 @@ def create_app(session: Session, out: Path) -> Flask:
     written: Written | None = None
 
     @app.post("/write")
-    def write() -> str | tuple[str, int]:
+    def write() -> str | tuple[str, int] | Response:
         """Write this conversion to the destination the command line named.
 
         Terminal, and not a gate: nothing has to be ticked to reach it, and
@@ -633,15 +739,15 @@ def create_app(session: Session, out: Path) -> Flask:
         if written is not None and written.change == view.change:
             return _written_page(view, written)
         try:
-            result = emit(view.change, read_project(session.project), out)
+            result = emit(view.change, read_project(_conversation().project), source.out)
         except _WRITE_FAILURES as failure:
             # 500 rather than 400: the form carried nothing wrong. The paths
             # this conversation was started with cannot take the write, and
             # that is the server's side of the exchange to report.
             return _write_failed(view, str(failure)), 500
         written = Written(
-            out=out,
-            files=tuple(path.relative_to(out).as_posix() for path in result.paths),
+            out=source.out,
+            files=tuple(path.relative_to(source.out).as_posix() for path in result.paths),
             change=view.change,
         )
         return _written_page(view, written)
@@ -678,10 +784,10 @@ def create_app(session: Session, out: Path) -> Flask:
         what this conversion is, so they can fix where it was going and press
         again.
         """
-        previews = _previews(session, view.change)
+        previews = _previews(_conversation(), view.change)
         spoken = _spoken(
             message,
-            str(out),
+            str(source.out),
             (preview.path for preview in previews),
             (preview.contents for preview in previews),
             (screen.label for screen in _screens(view) if screen.engine),
@@ -692,7 +798,7 @@ def create_app(session: Session, out: Path) -> Flask:
             here="",
             terms=_terms(spoken),
             message=message,
-            out=str(out),
+            out=str(source.out),
             files=previews,
         )
 
@@ -722,11 +828,11 @@ def create_app(session: Session, out: Path) -> Flask:
         kind = request.form.get("kind", "")
         columns = _submitted_columns(request.form.getlist("columns"), request.form.get("typed", ""))
         try:
-            session.answer(key, kind, columns)
+            _conversation().answer(key, kind, columns)
         except (UnknownAnswerError, ValueError) as refusal:
             return _refused(str(refusal), key), 400
 
-        index = _index_of(session, key)
+        index = _index_of(_conversation(), key)
         if index is None:
             # Unreachable: an answer this conversion accepted names one of its
             # own questions. Raising rather than defaulting to the first
@@ -746,7 +852,7 @@ def create_app(session: Session, out: Path) -> Flask:
         show a conversion that quietly does not contain an answer the user
         gave.
         """
-        session.drop_stale_answers()
+        _conversation().drop_stale_answers()
         return redirect(url_for("start"))
 
     def _refused(message: str, key: str) -> str:
@@ -766,7 +872,7 @@ def create_app(session: Session, out: Path) -> Flask:
             terms=_terms(_spoken(message)),
             here="",
             message=message,
-            back=_question_url(session, key),
+            back=_question_url(_conversation(), key),
         )
 
     @app.errorhandler(404)
@@ -793,7 +899,7 @@ def create_app(session: Session, out: Path) -> Flask:
         answer is held -- and `/` is the screen that says so.
         """
         try:
-            questions = session.view().questions
+            questions = _conversation().view().questions
         except UnknownAnswerError:
             return url_for("start")
         for index, decision in enumerate(questions):
