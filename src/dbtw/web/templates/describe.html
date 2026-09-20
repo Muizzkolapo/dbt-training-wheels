@@ -44,7 +44,12 @@
 <ul class="describe">
   {%- for row in models %}
   <li data-item="model">
-    <h2><span data-engine>{{ row.model.name }}</span></h2>
+    <h2><span data-engine>{{ row.model.name }}</span>
+      {%- if row.description %}
+      <span class="mark" data-item="described">Written</span>
+      {%- else %}
+      <span class="mark blank">Still blank</span>
+      {%- endif %}</h2>
     {%- if row.model.depends_on %}
     <p class="depends">Built from
       {%- for name in row.model.depends_on %}
@@ -63,11 +68,6 @@
       </label>
       <button type="submit">Save</button>
     </form>
-    {%- if row.description %}
-    <p class="described" data-item="described"><span class="mark">Written</span></p>
-    {%- else %}
-    <p class="blank"><span class="mark">Still blank</span></p>
-    {%- endif %}
   </li>
   {%- endfor %}
 </ul>

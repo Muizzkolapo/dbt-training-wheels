@@ -37,7 +37,7 @@ from dbtw.core.emit import (
 )
 from dbtw.core.teach import terms_in
 from dbtw.web import Session, Source
-from dbtw.web.app import _branch_name
+from dbtw.web.app import _branch_name, _described_state, _screens
 
 # What counts as a sentence in an authored run. Every label the templates
 # write is three words or fewer ("In plain words", "Write these files"), so
@@ -442,10 +442,10 @@ def _pages(app, client, session: Session) -> dict[str, Page]:
     return pages
 
 
-def test_the_walk_is_the_seven_screens_its_own_routes_define(walk: Walk, walk_sql: Path) -> None:
+def test_the_walk_is_the_eight_screens_its_own_routes_define(walk: Walk, walk_sql: Path) -> None:
     """The conversion the ten walkthroughs were run against asks two
-    questions, so the walk is seven screens: start, two questions, describe,
-    caveats, files, done.
+    questions, so the walk is eight screens: start, two questions, describe,
+    caveats, what changed, files, done.
     """
     app, client, session = walk(walk_sql)
 
@@ -454,13 +454,14 @@ def test_the_walk_is_the_seven_screens_its_own_routes_define(walk: Walk, walk_sq
     assert urls == (
         "/",
         "/caveats",
+        "/changed",
         "/describe",
         "/done",
         "/files",
         "/questions/0",
         "/questions/1",
     )
-    assert len(urls) == 7
+    assert len(urls) == 8
     for url in urls:
         assert client.get(url).status_code == 200, url
 
@@ -1086,6 +1087,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "start.html",
         "question.html",
         "describe.html",
+        "changed.html",
         "caveats.html",
         "files.html",
         "done.html",
@@ -1110,7 +1112,7 @@ def test_every_screen_links_to_every_other(walk: Walk, walk_sql: Path) -> None:
     """
     app, client, session = walk(walk_sql)
     urls = set(_screen_urls(app, session))
-    assert len(urls) == 7
+    assert len(urls) == 8
 
     for url, page in _pages(app, client, session).items():
         assert set(page.links) == urls, f"{url} links to {sorted(set(page.links))}"
@@ -1278,3 +1280,148 @@ def test_the_glossary_is_set_aside_from_the_screen_it_defines_words_for(
     inside = {normalised(run.text) for run in page.runs if run.aside}
     for term in defined:
         assert normalised(term.plain) in inside, f"{term.name} is defined outside the aside"
+
+
+@pytest.mark.parametrize("state", _STATES)
+def test_every_position_shown_is_the_position_it_sits_in(
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
+) -> None:
+    """Section 11.4(c) for the other kind of number.
+
+    The design numbers its steps and its pillars, and a number that names a
+    position has to answer to something the same way a count does: step 03
+    that is fourth in the rail is the same lie as "4 new files" over a list
+    of five, told about a different number. So every `data-ordinal` is held
+    against its own place among the `data-item` elements it names.
+    """
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+
+    for url, page in _guarded_pages(app, client, session, state).items():
+        seen: dict[str, int] = {}
+        for name, shown in page.ordinals:
+            seen[name] = seen.get(name, 0) + 1
+            assert int(shown) == seen[name], (
+                f"{state} {url} shows {name} {shown} in position {seen[name]}"
+            )
+        for name, count in seen.items():
+            listed = sum(1 for item in page.items if item == name)
+            assert count == listed, f"{state} {url} numbers {count} {name} and lists {listed}"
+
+
+@pytest.mark.parametrize("state", _STATES)
+def test_the_glossary_is_folded_shut(
+    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
+) -> None:
+    """Each word visible, each meaning one click away.
+
+    `terms_in` gives a screen exactly the words it uses, which is the design
+    -- but the files screen uses nine of them and the done screen four, so
+    rendered open the block put "Write these files", the one control in the
+    walk that touches the reader's disk, below nine hundred pixels of
+    glossary. A mutation adding `open` back restores that wall, and before
+    this test nothing in the suite noticed.
+    """
+    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+
+    for url, body in _guarded_bodies(app, client, session, state).items():
+        assert "<details open" not in body, f"{state} {url} renders the glossary unfolded"
+        page = read(body)
+        terms = sum(1 for item in page.items if item == "term")
+        assert body.count("<details") == terms, (
+            f"{state} {url} defines {terms} words in {body.count('<details')} folds"
+        )
+
+
+def _guarded_bodies(app, client, session: Session, state: str) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    """The same pages `_guarded_pages` reads, as raw HTML.
+
+    For the one claim the parser cannot model: `page.py` records an
+    element's text and its markers, never its other attributes, so whether a
+    `<details>` carries `open` is invisible to it. Asserted on the body
+    rather than by widening the reader, because "is this block folded" is a
+    question about one template and not a property every screen has.
+    """
+    if state in (_STALE, _STALE_DESCRIPTION):
+        stranded = client.get("/")
+        assert stranded.status_code == 409
+        return {"/ (stranded)": stranded.get_data(as_text=True)}
+    bodies: dict[str, str] = {}
+    for url in _screen_urls(app, session):
+        response = client.get(url)
+        assert response.status_code == 200, f"{url} -> {response.status_code}"
+        bodies[url] = response.get_data(as_text=True)
+    entry = client.get(_ENTRY)
+    assert entry.status_code == 200
+    bodies[_ENTRY] = entry.get_data(as_text=True)
+    return bodies
+
+
+def test_a_question_nobody_has_answered_asks_and_an_answered_one_does_not(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The dot beside a step is derived from the conversion, not from where
+    the reader has got to -- the design's own note on that rail is "position
+    in the flow never marks a step done".
+    """
+    app, client, session = walk(walk_sql)
+    key = _append_key(session)
+    view = session.view()
+    index = next(i for i, d in enumerate(view.questions) if d.key == key)
+
+    before = _screens(view, answered=session.answers)[index + 1]
+    assert before.state == "ask"
+
+    assert client.post("/answer", data={"key": key, "kind": "append"}).status_code == 302
+    after = _screens(session.view(), answered=session.answers)[index + 1]
+
+    assert after.state == "ok"
+
+
+def test_a_question_keeps_asking_even_though_the_engine_proposed_an_answer(
+    walk: Walk, sql_script
+) -> None:
+    """Every question in this walk arrives with a `chosen` on it: the engine
+    reads what the SQL does and proposes that. Keying the dot on `chosen`
+    would mark the whole walk "defaults stand, safe to skip" -- and it would
+    be false, because a question exists here precisely because the engine
+    decided it should not decide alone.
+    """
+    app, client, session = walk(sql_script(ONE_MERGE))
+    view = session.view()
+    (question,) = view.questions
+    assert question.chosen, "this question arrives with a proposal on it"
+
+    (screen,) = [s for s in _screens(view, answered=session.answers) if s.url == "/questions/0"]
+
+    assert screen.state == "ask"
+
+
+def test_a_screen_with_nothing_to_decide_says_its_defaults_stand(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The hollow dot is for the screens that ask nothing -- the start, the
+    caveats, the files, the last one. If every unanswered question were
+    hollow too there would be nothing left for it to mean.
+    """
+    app, client, session = walk(walk_sql)
+
+    screens = {s.url: s.state for s in _screens(session.view(), answered=session.answers)}
+
+    assert screens["/"] == "stands"
+    assert screens["/caveats"] == "stands"
+    assert screens["/files"] == "stands"
+    assert screens["/done"] == "stands"
+
+
+def test_the_describe_step_asks_until_every_model_has_a_description(
+    walk: Walk, walk_sql: Path
+) -> None:
+    app, client, session = walk(walk_sql)
+    names = [model.name for model in session.view().change.models]
+
+    assert _described_state(session.view().change) == "ask"
+    for name in names:
+        saved = client.post("/describe", data={"model": name, "text": "One row per thing."})
+        assert saved.status_code == 302
+
+    assert _described_state(session.view().change) == "ok"

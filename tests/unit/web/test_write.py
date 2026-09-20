@@ -477,17 +477,25 @@ def test_nothing_is_written_until_the_action_is_pressed(walk: Walk, sql_script, 
 # --- the project copy is never the fixture
 
 
-def test_these_tests_convert_against_a_copy(project_dir: Path, tmp_path: Path) -> None:
+def test_these_tests_convert_against_a_copy(
+    project_dir: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
     """Every test here writes, and several of them aim the write at
     `project_dir` on purpose. A fixture reached in place would be damaged by
     the guard's first regression, and the damage would be committed.
 
     Three assertions, and the third is the one that matters: the copy is a
-    different directory, it is under tmp_path, and it currently holds exactly
-    what the fixture holds -- so a test that damaged it would be damaging
-    something that started out identical to the repository's own data.
+    different directory, it is inside pytest's own temporary area, and it
+    currently holds exactly what the fixture holds -- so a test that damaged
+    it would be damaging something that started out identical to the
+    repository's own data.
+
+    Against the factory's base rather than `tmp_path`, because `project_dir`
+    no longer comes from `tmp_path`: that fixture is named after the running
+    test, and the app bar puts the project path on every screen, so a test's
+    own name was reaching the page. See the note on `project_dir`.
     """
     fixture = Path(__file__).parents[2] / "fixtures" / "projects" / "jaffle_shop"
     assert project_dir.resolve() != fixture.resolve()
-    assert tmp_path in project_dir.parents
+    assert tmp_path_factory.getbasetemp().resolve() in project_dir.resolve().parents
     assert _tree(project_dir) == _tree(fixture)

@@ -49,7 +49,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import webbrowser
-from collections.abc import Iterable, Sequence
+from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,8 +79,11 @@ from dbtw.core.emit import (
     OutputInsideProjectError,
     UnsafeOutputPathError,
     emit,
+    render_model,
     worked_example,
 )
+from dbtw.core.ingest.types import ClassifiedStatement
+from dbtw.core.intro import HEADLINE, LEDE, PILLARS, PRIVACY
 from dbtw.core.passes import Decision, Option
 from dbtw.core.teach import Term, terms_in
 from dbtw.web.state import EmptySourceError, Session, SessionView, Source
@@ -116,11 +119,21 @@ class Screen:
     `engine` says whether `label` is a string the engine produced -- a
     question screen is named by the table its question is about -- so the
     template knows whether to mark it.
+
+    `state` is the dot the design puts beside every step, and it is derived
+    from the conversion rather than from where the reader has got to: "ask"
+    for a question nobody has answered, "ok" for one that has been answered
+    or a screen whose work is done, "stands" for a screen with nothing to
+    decide. The design's own note on that rail is "position in the flow never
+    marks a step done", and deriving every dot is how this keeps it -- a
+    reader who walks past a question without answering it is still shown a
+    question wanting an answer.
     """
 
     url: str
     label: str
     engine: bool
+    state: str = "stands"
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +182,33 @@ class Describable:
 
     model: AssembledModel
     description: str
+
+
+@dataclass(frozen=True, slots=True)
+class Conversion:
+    """One model beside the SQL it was built from.
+
+    `before` is every statement that shaped this model, verbatim as the
+    reader wrote it, in the order the file had them. More than one is
+    ordinary and is the case worth showing: a TRUNCATE and the INSERT that
+    refills it are two statements a reader typed and one model dbt runs.
+
+    Every statement, which means `folded_indices` as well as
+    `source_indices`. A GRANT is attached to a draft that already exists, so
+    it belongs to neither the model's own sources nor the caveats screen's
+    orphans -- and it puts a `grants={...}` line in the file on the right.
+    Left out, this screen showed a reader a line of config and nothing on
+    the page saying which of their statements asked for it, on the one
+    screen whose question is "is this still my query?".
+
+    `after` is the model file's text, rendered the same way the files screen
+    renders it -- by `render_model`, not by a second copy of it -- so the two
+    screens cannot disagree about what is about to be written.
+    """
+
+    model: AssembledModel
+    before: tuple[str, ...]
+    after: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -461,8 +501,51 @@ def _describables(change: ProjectChange) -> tuple[Describable, ...]:
     )
 
 
-def _screens(view: SessionView) -> tuple[Screen, ...]:
-    """The walk, in order. One screen per question, and five fixed ones.
+class MissingOriginalError(RuntimeError):
+    """A model names a statement this conversion did not read.
+
+    Not reachable through one request: the change and the statements are read
+    from the same path microseconds apart, and `assemble` carries the indices
+    `run_passes` assigned. Raised rather than skipped because the alternative
+    is a screen that puts one model beside another model's SQL and says it is
+    the before -- the most convincing wrong thing this walk could show.
+    """
+
+
+def _conversions(
+    change: ProjectChange, originals: Sequence[ClassifiedStatement]
+) -> tuple[Conversion, ...]:
+    """Every model beside the statements it was built from.
+
+    Joined on the indices the model carries -- `source_indices` for what it
+    was built from and `folded_indices` for what was folded into it -- which
+    name positions in `originals`. The pairing is the engine's; this looks it
+    up and nothing more. A statement that survived into no
+    model is not here, because there is no after to put beside it: those are
+    the caveats screen's, which is where a reader is told what happened to
+    them.
+    """
+    conversions: list[Conversion] = []
+    for model in change.models:
+        texts: list[str] = []
+        for index in sorted((*model.source_indices, *model.folded_indices)):
+            if not 0 <= index < len(originals):
+                raise MissingOriginalError(
+                    f"{model.name} was built from statement {index}, and this "
+                    f"conversion read {len(originals)}. The models and the statements "
+                    "come from one path read twice; an index out of range means they "
+                    "disagree, and a before shown from the wrong statement is worse "
+                    "than none"
+                )
+            texts.append(originals[index].raw.text)
+        conversions.append(Conversion(model=model, before=tuple(texts), after=render_model(model)))
+    return tuple(conversions)
+
+
+def _screens(
+    view: SessionView, answered: Container[str] = (), described: str = "stands"
+) -> tuple[Screen, ...]:
+    """The walk, in order. One screen per question, and six fixed ones.
 
     Describe sits after the questions and before the files, because it is the
     last thing the reader supplies and the first thing that is theirs alone:
@@ -475,17 +558,55 @@ def _screens(view: SessionView) -> tuple[Screen, ...]:
             url=f"/questions/{index}",
             label=decision.subject.table if decision.subject else decision.key,
             engine=True,
+            state=_question_state(decision, answered),
         )
         for index, decision in enumerate(view.questions)
     ]
     return (
         Screen(url="/", label="Start", engine=False),
         *questions,
-        Screen(url="/describe", label="Describe", engine=False),
+        Screen(url="/describe", label="Describe", engine=False, state=described),
         Screen(url="/caveats", label="Decided for you", engine=False),
+        Screen(url="/changed", label="What changed", engine=False),
         Screen(url="/files", label="Files", engine=False),
         Screen(url="/done", label="Done", engine=False),
     )
+
+
+def _question_state(decision: Decision, answered: Container[str]) -> str:
+    """The dot beside one question: asking until the reader has answered it.
+
+    Two outcomes, and it is deliberately not three. Every question here
+    arrives with a `chosen` already on it -- the engine reads what the SQL
+    does and proposes that -- so keying the dot on `chosen` would mark the
+    whole walk "defaults stand, safe to skip" and there would be nothing
+    left for the red one to mean. And it would be false: a question exists
+    in this walk precisely because the engine decided it should not decide
+    alone. What the SQL does is not yet what the reader meant, and only they
+    can close that gap.
+
+    Which leaves the hollow dot for the screens that genuinely have nothing
+    to decide -- the start, the caveats, the files, the last one -- which is
+    what it says.
+    """
+    return "ok" if decision.key in answered else "ask"
+
+
+def _described_state(change: ProjectChange) -> str:
+    """The dot for the describe screen.
+
+    "ask" while a model this conversion builds has no description, because
+    that is the one thing on the walk the engine cannot supply and the design
+    calls the field it insists on. "ok" once none is blank. Never "stands":
+    a blank description is not a default that holds, it is a sentence nobody
+    has written -- and the write action stays reachable regardless, which is
+    where this walk keeps faith with the three personas who called a gate
+    theatre.
+    """
+    if not change.models:
+        return "stands"
+    described = {entry.model for entry in change.descriptions}
+    return "ok" if all(model.name in described for model in change.models) else "ask"
 
 
 def _spoken(*texts: Iterable[str] | str) -> str:
@@ -546,6 +667,13 @@ def create_app(source: Source) -> Flask:
         example_notice=PLACEHOLDER_NOTICE,
         supposed_label=SUPPOSED_ROW_LABEL,
         after_label=AFTER_RUN_LABEL,
+        # The app bar names the project every screen is converting against.
+        # A global rather than a route argument because it cannot change for
+        # the life of this app -- `Source.project` is what the command line
+        # was given -- and twenty-two routes passing one unchanging string
+        # would be twenty-two chances to forget it on the screen where it
+        # matters. An identifier the bar displays, never prose it speaks.
+        project_path=str(source.project),
     )
 
     def _conversation() -> Session:
@@ -613,6 +741,49 @@ def create_app(source: Source) -> Flask:
                 raise
             return stranded
 
+    def _entry_page(refusal: str) -> str:
+        """The screen a reader meets before there is a conversion.
+
+        It speaks, and every sentence on it is `dbtw.core.intro`'s. That is
+        not an exemption from the prose rule but the rule applied: a screen
+        may not write a sentence, so the four things this tool does live in
+        the engine beside every other claim it makes, and this renders them.
+        """
+        spoken = _spoken(
+            HEADLINE,
+            LEDE,
+            (pillar.name for pillar in PILLARS),
+            (pillar.plain for pillar in PILLARS),
+            PRIVACY,
+            refusal,
+        )
+        return render_template(
+            "entry.html",
+            screens=(),
+            terms=_terms(spoken),
+            here="/source",
+            started=source.session is not None,
+            headline=HEADLINE,
+            lede=LEDE,
+            pillars=PILLARS,
+            privacy=PRIVACY,
+            refusal=refusal,
+        )
+
+    def _walk(view: SessionView) -> tuple[Screen, ...]:
+        """This walk's screens with their dots filled in.
+
+        Every screen asks for the rail, and the rail's dots are derived from
+        the conversation rather than from the route -- so there is one place
+        that knows how a dot is decided, and twenty-two call sites that do
+        not have to.
+        """
+        return _screens(
+            view,
+            answered=_conversation().answers,
+            described=_described_state(view.change),
+        )
+
     @app.get("/source")
     def entry() -> str:
         """Where a reader brings their SQL in.
@@ -625,15 +796,7 @@ def create_app(source: Source) -> Flask:
         derived count -- it has nothing to count, and a nav reading "0 screens"
         would report the absence of a conversation as a defect.
         """
-        return render_template(
-            "entry.html",
-            screens=(),
-            terms=(),
-            here="/source",
-            project=str(source.project),
-            started=source.session is not None,
-            refusal="",
-        )
+        return _entry_page(refusal="")
 
     @app.post("/source")
     def convert() -> str | tuple[str, int] | Response:
@@ -661,15 +824,7 @@ def create_app(source: Source) -> Flask:
         try:
             source.start(files)
         except (EmptySourceError, OSError, UnicodeDecodeError) as refusal:
-            return render_template(
-                "entry.html",
-                screens=(),
-                terms=(),
-                here="/source",
-                project=str(source.project),
-                started=source.session is not None,
-                refusal=str(refusal),
-            ), 400
+            return _entry_page(refusal=str(refusal)), 400
         return redirect(url_for("start"))
 
     @app.get("/")
@@ -695,11 +850,11 @@ def create_app(source: Source) -> Flask:
             (d.action for d in renames),
             cutover.reason if cutover else "",
             cutover.plain_reason if cutover else "",
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "start.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="/",
             terms=_terms(spoken),
             project=view.change.project_name,
@@ -734,11 +889,11 @@ def create_app(source: Source) -> Flask:
             (choice.prompt for choice in choices),
             (column.name for choice in choices for column in choice.columns),
             _example_text(example),
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "question.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here=f"/questions/{index}",
             terms=_terms(spoken),
             decision=decision,
@@ -784,11 +939,11 @@ def create_app(source: Source) -> Flask:
             (row.model.name for row in models),
             (name for row in models for name in row.model.depends_on),
             refusal,
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "describe.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="/describe",
             terms=_terms(spoken),
             models=models,
@@ -853,16 +1008,57 @@ def create_app(source: Source) -> Flask:
             (statement.kind for statement in pending),
             (statement.reason for statement in pending),
             (statement.raw.text for statement in pending),
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "caveats.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="/caveats",
             terms=_terms(spoken),
             caveats=_grouped(decided),
             decided=len(decided),
             pending=pending,
+        )
+
+    @app.get("/changed")
+    def changed() -> str | tuple[str, int] | Response:
+        """Every model beside the SQL it was built from.
+
+        The screen a reader asked for in the words this project keeps quoting
+        back at itself: "'Trust me' is exactly the thing I'm not supposed to
+        accept before something lands in a repo." The files screen answers
+        what will be written; this one answers what it was, which is the only
+        question a reader can check against their own memory of their own
+        script.
+
+        No extra read: the statements come off the view, out of the same
+        conversion that produced the models, so the index a model names and
+        the statement at that index cannot have come from two different
+        states of the file. See `SessionView.statements`.
+        """
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        conversions = _conversions(view.change, view.statements)
+        # Not the `before` texts. They are an identifier region on this
+        # screen -- the reader's own words, displayed and not spoken -- and
+        # `terms_in` is run over the page without those, so a glossary built
+        # from them would define words the check cannot find. It happens to
+        # agree today because everything in a statement reaches the model
+        # built from it, comments and grant principals included; leaving it
+        # in would make this screen's glossary correct by that coincidence.
+        spoken = _spoken(
+            (row.after for row in conversions),
+            (row.model.name for row in conversions),
+            (screen.label for screen in _walk(view) if screen.engine),
+        )
+        return render_template(
+            "changed.html",
+            screens=_walk(view),
+            here="/changed",
+            terms=_terms(spoken),
+            conversions=conversions,
+            statements=sum(len(row.before) for row in conversions),
         )
 
     @app.get("/files")
@@ -874,11 +1070,11 @@ def create_app(source: Source) -> Flask:
         spoken = _spoken(
             (preview.path for preview in previews),
             (preview.contents for preview in previews),
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "files.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="/files",
             terms=_terms(spoken),
             files=previews,
@@ -892,11 +1088,11 @@ def create_app(source: Source) -> Flask:
         spoken = _spoken(
             str(source.out),
             _COMMANDS,
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "done.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="/done",
             terms=_terms(spoken),
             commands=_COMMANDS,
@@ -967,11 +1163,11 @@ def create_app(source: Source) -> Flask:
         spoken = _spoken(
             str(record.out),
             record.files,
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "written.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="",
             terms=_terms(spoken),
             out=str(record.out),
@@ -1021,14 +1217,14 @@ def create_app(source: Source) -> Flask:
         except _DELIVER_FAILURES as refusal:
             return render_template(
                 "written.html",
-                screens=_screens(view),
+                screens=_walk(view),
                 here="",
                 terms=_terms(
                     _spoken(
                         str(written.out),
                         written.files,
                         str(refusal),
-                        (screen.label for screen in _screens(view) if screen.engine),
+                        (screen.label for screen in _walk(view) if screen.engine),
                     )
                 ),
                 out=str(written.out),
@@ -1054,11 +1250,11 @@ def create_app(source: Source) -> Flask:
             str(source.out),
             (preview.path for preview in previews),
             (preview.contents for preview in previews),
-            (screen.label for screen in _screens(view) if screen.engine),
+            (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
             "write_failed.html",
-            screens=_screens(view),
+            screens=_walk(view),
             here="",
             terms=_terms(spoken),
             message=message,
@@ -1140,7 +1336,7 @@ def create_app(source: Source) -> Flask:
         answering.
         """
         view = _view()
-        screens = _screens(view) if isinstance(view, SessionView) else ()
+        screens = _walk(view) if isinstance(view, SessionView) else ()
         return render_template(
             "refused.html",
             screens=screens,
@@ -1162,7 +1358,7 @@ def create_app(source: Source) -> Flask:
         with nothing on the page to get them back into it.
         """
         view = _view()
-        screens = _screens(view) if isinstance(view, SessionView) else ()
+        screens = _walk(view) if isinstance(view, SessionView) else ()
         return render_template("missing.html", screens=screens, terms=(), here=""), 404
 
     def _question_url(session: Session, key: str) -> str:
