@@ -16,6 +16,8 @@ import pytest
 from tests.unit.assemble.helpers import convert
 
 from dbtw.core.assemble import ProjectChange
+from dbtw.core.assemble.layers import intermediate_option, mart_option
+from dbtw.core.context import LayerInfo
 from dbtw.core.passes import (
     Answer,
     Decision,
@@ -42,12 +44,22 @@ from dbtw.core.passes import (
 # `set(get_args(OptionKind))` check below did not notice, since the other
 # branch still built the "var" kind. Dropping a branch has to fail on its
 # own, not only when it takes a whole kind with it.
+# One layer, standing for whichever of a project's own directories a layer
+# option describes. Each layer factory has two branches: a model carrying no
+# materialization of its own takes the layer's default, and one that carries
+# its own keeps it wherever it is put -- and the effect has to say which,
+# because an option promising "materialized as ephemeral" over a model that
+# comes out incremental is a button that lies about what it does.
+_LAYER = LayerInfo(name="marts", path="models/marts", prefix=None, materialization="table")
+
 OPTIONS_BY_FACTORY = {
     append_option: (append_option(),),
     merge_option: (merge_option(), merge_option(("order_id",))),
     verify_option: (verify_option(), verify_option(("order_id",))),
     inline_option: (inline_option(),),
     var_option: (var_option(), var_option("cutoff")),
+    intermediate_option: (intermediate_option(_LAYER), intermediate_option(_LAYER, "incremental")),
+    mart_option: (mart_option(_LAYER), mart_option(_LAYER, "incremental")),
 }
 EVERY_OPTION = tuple(option for options in OPTIONS_BY_FACTORY.values() for option in options)
 
@@ -57,14 +69,25 @@ def test_every_factory_branch_is_covered():
     parametrised invariants below are only worth what its coverage is worth.
 
     The expected count comes off the factory's signature rather than a list
-    kept beside it: a factory taking an optional argument returns a different
-    option with and without it, so it has two branches, and one taking no
-    argument has one. Two hand-written lists agreeing with each other would
-    prove nothing -- they would be wrong together, which is exactly how
+    kept beside it: a factory taking an argument it can be called *without*
+    returns a different option with and without it, so it has two branches.
+    A factory whose argument is required has one -- it cannot be called the
+    other way. Two hand-written lists agreeing with each other would prove
+    nothing -- they would be wrong together, which is exactly how
     `var_option()`'s second branch went uncovered the first time.
+
+    Read off defaults rather than off the presence of parameters, which is
+    what it said until the layer factories arrived: those take a `LayerInfo`
+    they cannot do without, and counting them as two branches would have
+    demanded a call that does not exist.
     """
     for factory, options in OPTIONS_BY_FACTORY.items():
-        expected = 2 if inspect.signature(factory).parameters else 1
+        optional = [
+            p
+            for p in inspect.signature(factory).parameters.values()
+            if p.default is not inspect.Parameter.empty
+        ]
+        expected = 2 if optional else 1
         assert len(options) == expected, factory.__name__
         # And the branches must actually differ, or covering "both" is one
         # option listed twice. Compared whole rather than on `label`, because
@@ -156,6 +179,15 @@ def _incremental_key(change: ProjectChange) -> str:
     return dec.key
 
 
+# Two statements, the second reading what the first writes: the first model
+# reads a raw table (staging, no question) and the second reads a model of
+# ours and is read by nothing (the fork).
+_LAYER_SQL = (
+    "INSERT INTO revenue_events SELECT order_id, amount FROM raw_orders;\n"
+    "INSERT INTO revenue_daily SELECT order_id, amount FROM revenue_events;\n"
+)
+
+
 def _option_sets_the_pipeline_builds() -> dict[str, list[tuple[str, tuple[Option, ...]]]]:
     """Every optioned Decision the real pipeline builds, per run.
 
@@ -170,6 +202,14 @@ def _option_sets_the_pipeline_builds() -> dict[str, list[tuple[str, tuple[Option
         "merge question, one-column key": convert(_MERGE_SQL),
         "merge question, two-column key": convert(_TWO_KEY_MERGE_SQL),
         "variable question": convert(_VARIABLE_SQL, dialect="tsql"),
+        # The layer question, which only a project with both sides of the
+        # fork can ask: a model that reads our models and is read by none of
+        # them could be the mart or the step before one, and a project with
+        # no intermediate layer has nowhere to put the second answer. Against
+        # `three_layers` rather than the default fixture for exactly that
+        # reason -- jaffle_shop has staging and marts and no intermediate, so
+        # this question never arises there.
+        "layer question": convert(_LAYER_SQL, project="three_layers"),
     }
     checked = Answer(verify_option().label, ("order_id",))
     appended = Answer(append_option().label)

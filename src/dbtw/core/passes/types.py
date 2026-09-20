@@ -16,7 +16,26 @@ Tier = Literal[1, 2, 3]
 # consumer switching on it is exhaustive and a typo is a type error rather
 # than an option silently never matching. Widen it when a sixth answer is
 # offered, so adding one is a decision rather than a spelling.
-OptionKind = Literal["append", "merge", "merge_checked", "inline", "var"]
+OptionKind = Literal[
+    "append",
+    "merge",
+    "merge_checked",
+    "inline",
+    "var",
+    # The two sides of the one placement this engine guesses at: a model that
+    # reads our models and is read by none of them is either the end of the
+    # pipeline or the step before a mart that does not exist yet, and only
+    # the reader knows which. Staging is not here because it is never
+    # offered: a model that reads no model of ours is staging by what it
+    # reads, which is a fact rather than a reading of one.
+    #
+    # The *roles*, not the project's layer names: a project calls its mart
+    # layer `marts` or `core` or `facts`, and `layer_roles` maps its own
+    # directories onto these. So the kinds stay a closed set while the labels
+    # say the reader's own layer name, which is the split `kind` exists for.
+    "intermediate",
+    "mart",
+]
 
 
 @dataclass(frozen=True, slots=True)

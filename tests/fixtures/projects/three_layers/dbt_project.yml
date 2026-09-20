@@ -1,0 +1,15 @@
+name: warehouse_core
+version: "1.0.0"
+config-version: 2
+profile: warehouse_core
+
+model-paths: ["models"]
+
+models:
+  warehouse_core:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table

@@ -11,7 +11,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from dbtw.core.assemble.layers import layer_roles, role_for
+from dbtw.core.assemble.layers import layer_options, layer_question, layer_roles, role_for
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.resolve import resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
@@ -117,6 +117,75 @@ def _resolve_layer(
     reason = f"no {role} layer in the target project's model tree; no other layer available"
     action = f"could not place {name} in a {role} layer; no layer available at all"
     return None, [_decision("layer_fallback", name, action, reason)]
+
+
+def _layer_choice(
+    name: str,
+    derived: str,
+    options: tuple[Option, ...],
+    answers: Mapping[str, Answer],
+) -> tuple[str, Decision | None]:
+    """Which layer this model goes in, and the question that asked.
+
+    The engine's reading of the dependency graph is the proposal -- a model
+    nothing else reads looks like a mart, one that others read looks like
+    intermediate -- and it is a reading, not a fact. A table nobody else
+    reads yet is still intermediate if the mart that will read it is next
+    week's work, and the only person who knows that is the reader. So the
+    derived role is `chosen` and the question is asked anyway.
+
+    `None` when the project has fewer than two layers to choose between:
+    there is no choice to offer, and a screen asking one would be teaching a
+    reader that the questions here do not matter.
+
+    An answer naming a role this project has no layer for cannot arrive:
+    `layer_options` only builds options for roles with a real layer, and
+    `answer_for` refuses a kind the question does not offer.
+    """
+    if len(options) < 2:
+        return derived, None
+    chosen = next((o for o in options if o.kind == derived), None)
+    decision = Decision(
+        key=f"assemble.layer.{name}",
+        tier=2,
+        action=f"placed {name} in the {derived} layer",
+        reason=(
+            "a model nothing else in this conversion reads is a mart, one that "
+            "others read is intermediate, and one that reads no model of ours is "
+            "staging -- read off this conversion's own dependency graph"
+        ),
+        plain_reason=(
+            "Worked out from what reads what: nothing here reads this one, or "
+            "something does, or it reads nothing of ours. That is a guess about "
+            "how you will use it, and you know that better than this does."
+        ),
+        source_file="",
+        line_start=0,
+        line_end=0,
+        question=layer_question(name, derived, options),
+        plain_question=f"Where should {name} live?",
+        options=options,
+        chosen=chosen.label if chosen is not None else "",
+        subject=Subject(table=name, columns=(), candidates=()),
+    )
+    answer = answers.get(decision.key)
+    if answer is None:
+        return derived, decision
+    taken = next((o for o in options if o.label == answer.label), None)
+    if taken is None:
+        # Refused, but not here. `assemble` validates every answer against
+        # `answerable_decisions` once that set is complete, and a label none
+        # of this question's options carries is refused there by name -- so
+        # this run raises either way and nothing is placed on the strength of
+        # an answer nobody offered.
+        #
+        # A raise of its own stood here first and a mutation deleting it
+        # killed no test. It could not: the outer check catches the same
+        # answer a few hundred lines later, so the two are one refusal
+        # written twice, and the second copy is free to word it differently
+        # from the one every other answer gets.
+        return derived, decision
+    return taken.kind, dataclasses.replace(decision, chosen=taken.label)
 
 
 def _final_name(
@@ -1522,7 +1591,9 @@ def assemble(
     source_entries, source_decisions = _source_entries(drafts, refs, draft_names, ctx)
     new_decisions.extend(source_decisions)
 
+    answers_map = answers or {}
     roles = layer_roles(ctx)
+    layer_questions: list[Decision] = []
     detections_by_key = {d.key: d for d in ctx.detections}
     existing_by_name = {m.name: m for m in ctx.existing_models}
 
@@ -1544,7 +1615,16 @@ def assemble(
 
     for draft_index, draft in enumerate(drafts):
         local_decisions: list[Decision] = []
-        role = role_for(draft.name, deps, dependents_frozen)
+        derived = role_for(draft.name, deps, dependents_frozen)
+        role, layer_question_decision = _layer_choice(
+            draft.name,
+            derived,
+            layer_options(roles, derived, draft.materialization),
+            answers_map,
+        )
+        if layer_question_decision is not None:
+            local_decisions.append(layer_question_decision)
+            layer_questions.append(layer_question_decision)
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
         local_decisions.extend(layer_decisions)
 
@@ -1718,6 +1798,12 @@ def assemble(
         ordered, inherited_decisions, answers_map
     )
     answerable_decisions.extend(incremental_questions)
+    # Only the layer questions of drafts that survived. A question collected
+    # for a draft dropped as a duplicate is a question about a model this
+    # change does not write, and registering it would let an answer validate
+    # against a placement nothing would apply.
+    dropped_layer_keys = {f"assemble.layer.{drafts[index].name}" for index in dropped_indices}
+    answerable_decisions.extend(q for q in layer_questions if q.key not in dropped_layer_keys)
     # The dbt tests this run's answers asked for. Only an answer can ask for
     # one, so a run with no answers carries none -- `--unique-key` takes a key
     # on trust exactly as it always has.
