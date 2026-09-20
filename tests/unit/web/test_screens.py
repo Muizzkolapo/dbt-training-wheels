@@ -442,10 +442,10 @@ def _pages(app, client, session: Session) -> dict[str, Page]:
     return pages
 
 
-def test_the_walk_is_the_eight_screens_its_own_routes_define(walk: Walk, walk_sql: Path) -> None:
+def test_the_walk_is_the_nine_screens_its_own_routes_define(walk: Walk, walk_sql: Path) -> None:
     """The conversion the ten walkthroughs were run against asks two
-    questions, so the walk is eight screens: start, two questions, describe,
-    caveats, what changed, files, done.
+    questions, so the walk is nine screens: your project, start, two
+    questions, describe, caveats, what changed, files, done.
     """
     app, client, session = walk(walk_sql)
 
@@ -458,10 +458,11 @@ def test_the_walk_is_the_eight_screens_its_own_routes_define(walk: Walk, walk_sq
         "/describe",
         "/done",
         "/files",
+        "/project",
         "/questions/0",
         "/questions/1",
     )
-    assert len(urls) == 8
+    assert len(urls) == 9
     for url in urls:
         assert client.get(url).status_code == 200, url
 
@@ -1088,6 +1089,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "question.html",
         "describe.html",
         "changed.html",
+        "project.html",
         "caveats.html",
         "files.html",
         "done.html",
@@ -1112,7 +1114,7 @@ def test_every_screen_links_to_every_other(walk: Walk, walk_sql: Path) -> None:
     """
     app, client, session = walk(walk_sql)
     urls = set(_screen_urls(app, session))
-    assert len(urls) == 8
+    assert len(urls) == 9
 
     for url, page in _pages(app, client, session).items():
         assert set(page.links) == urls, f"{url} links to {sorted(set(page.links))}"
@@ -1368,11 +1370,15 @@ def test_a_question_nobody_has_answered_asks_and_an_answered_one_does_not(
     view = session.view()
     index = next(i for i, d in enumerate(view.questions) if d.key == key)
 
-    before = _screens(view, answered=session.answers)[index + 1]
+    # Found by url, not by position. A screen added anywhere ahead of the
+    # questions moves them along the rail, and an index arithmetic'd from the
+    # question number silently starts asserting about a different screen.
+    url = f"/questions/{index}"
+    (before,) = [s for s in _screens(view, answered=session.answers) if s.url == url]
     assert before.state == "ask"
 
     assert client.post("/answer", data={"key": key, "kind": "append"}).status_code == 302
-    after = _screens(session.view(), answered=session.answers)[index + 1]
+    (after,) = [s for s in _screens(session.view(), answered=session.answers) if s.url == url]
 
     assert after.state == "ok"
 

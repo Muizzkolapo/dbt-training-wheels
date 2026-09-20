@@ -62,7 +62,7 @@ from dbtw.core.assemble import (
     UnknownAnswerError,
     UnknownModelError,
 )
-from dbtw.core.context import read_project
+from dbtw.core.context import NotADbtProjectError, read_project
 from dbtw.core.deliver import (
     BranchExistsError,
     Delivery,
@@ -545,7 +545,11 @@ def _conversions(
 def _screens(
     view: SessionView, answered: Container[str] = (), described: str = "stands"
 ) -> tuple[Screen, ...]:
-    """The walk, in order. One screen per question, and six fixed ones.
+    """The walk, in order. One screen per question, and seven fixed ones.
+
+    "Your project" comes first because everything after it is a proposal
+    about that project, and a reader who has not seen what this tool believes
+    about their conventions has no way to judge any of it.
 
     Describe sits after the questions and before the files, because it is the
     last thing the reader supplies and the first thing that is theirs alone:
@@ -563,6 +567,7 @@ def _screens(
         for index, decision in enumerate(view.questions)
     ]
     return (
+        Screen(url="/project", label="Your project", engine=False),
         Screen(url="/", label="Start", engine=False),
         *questions,
         Screen(url="/describe", label="Describe", engine=False, state=described),
@@ -667,14 +672,20 @@ def create_app(source: Source) -> Flask:
         example_notice=PLACEHOLDER_NOTICE,
         supposed_label=SUPPOSED_ROW_LABEL,
         after_label=AFTER_RUN_LABEL,
-        # The app bar names the project every screen is converting against.
-        # A global rather than a route argument because it cannot change for
-        # the life of this app -- `Source.project` is what the command line
-        # was given -- and twenty-two routes passing one unchanging string
-        # would be twenty-two chances to forget it on the screen where it
-        # matters. An identifier the bar displays, never prose it speaks.
-        project_path=str(source.project),
     )
+
+    @app.context_processor
+    def _bar() -> dict[str, str]:
+        """The app bar names the project every screen converts against.
+
+        A context processor rather than a global, because it changes: a
+        reader gives their project on the entry screen, and the bar has to
+        show the one they gave rather than the one the process started with.
+        Empty until they have, so the bar shows nothing rather than a
+        placeholder for a project nobody has chosen. An identifier the bar
+        displays, never prose it speaks.
+        """
+        return {"project_path": str(source.project) if source.project else ""}
 
     def _conversation() -> Session:
         """The session this app is serving.
@@ -763,6 +774,7 @@ def create_app(source: Source) -> Flask:
             terms=_terms(spoken),
             here="/source",
             started=source.session is not None,
+            project=str(source.project) if source.project else "",
             headline=HEADLINE,
             lede=LEDE,
             pillars=PILLARS,
@@ -812,6 +824,7 @@ def create_app(source: Source) -> Flask:
         reader is mid-action and the thing they need is on the page they were
         already on.
         """
+        project = request.form.get("project", "")
         pasted = request.form.get("pasted", "")
         uploaded = {
             Path(storage.filename).name: storage.read().decode("utf-8", errors="replace")
@@ -822,10 +835,56 @@ def create_app(source: Source) -> Flask:
         if pasted.strip():
             files["pasted.sql"] = pasted
         try:
-            source.start(files)
-        except (EmptySourceError, OSError, UnicodeDecodeError) as refusal:
+            source.start(project, files)
+        except (
+            NotADbtProjectError,
+            EmptySourceError,
+            OSError,
+            UnicodeDecodeError,
+        ) as refusal:
             return _entry_page(refusal=str(refusal)), 400
         return redirect(url_for("start"))
+
+    @app.get("/project")
+    def project() -> str | tuple[str, int] | Response:
+        """What this walk read out of the reader's dbt_project.yml.
+
+        Every proposal the rest of the walk makes rests on this: which layer
+        a model belongs in, what prefix its name takes, what a folder already
+        materializes as. `read_project` records each one as a `Detection`
+        with its own evidence -- what was concluded, and from what -- and
+        until now not one of them reached a screen. The report carried them
+        and the walk did not, so a reader could only find out what this tool
+        believed about their project by opening a file it had already
+        written.
+
+        Undetermined ones are shown too, and are the reason the status is on
+        the page rather than filtered by it: a convention this tool could not
+        read is a thing the reader knows about their own project and this
+        does not, and hiding those rows would turn "I could not tell" into
+        "there is nothing there".
+        """
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        ctx = read_project(_conversation().project)
+        spoken = _spoken(
+            ctx.project_name,
+            (d.key for d in ctx.detections),
+            (d.value or "" for d in ctx.detections),
+            (d.evidence for d in ctx.detections),
+            (screen.label for screen in _walk(view) if screen.engine),
+        )
+        return render_template(
+            "project.html",
+            screens=_walk(view),
+            here="/project",
+            terms=_terms(spoken),
+            project_name=ctx.project_name,
+            detections=ctx.detections,
+            model_paths=ctx.model_paths,
+            layers=ctx.layers,
+        )
 
     @app.get("/")
     def start() -> str | tuple[str, int] | Response:

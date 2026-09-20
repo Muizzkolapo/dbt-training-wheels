@@ -1,0 +1,39 @@
+{#
+  What this walk read out of the reader's dbt_project.yml, and how it knows.
+
+  The first screen, because every proposal after it rests on this. A model is
+  placed in a layer because this project has that layer; its name takes a
+  prefix because the models already there take one; it is materialized a
+  certain way because a folder's config says so. A reader who has not seen
+  what this tool believes about their conventions has no way to judge a
+  single thing the walk proposes.
+
+  Evidence beside every row, because `Detection` carries it: not just what
+  was concluded but what it was concluded from. "models/staging" is a claim;
+  "model-paths in dbt_project.yml" is a claim a reader can check.
+
+  Undetermined rows are shown rather than filtered out. A convention this
+  tool could not read is a thing the reader knows and this does not, and
+  dropping those rows would turn "I could not tell" into "there is nothing
+  there" -- which is the silence this project does not keep.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Your project</h1>
+<p class="tally"><span data-count="detection">{{ detections | length }}</span> conventions read from
+  <span data-engine data-identifier>{{ project_name }}</span></p>
+
+<ul class="detections">
+  {%- for detection in detections %}
+  <li data-item="detection">
+    <p class="key"><span data-engine>{{ detection.key }}</span></p>
+    {%- if detection.value %}
+    <p class="value"><span data-engine>{{ detection.value }}</span></p>
+    {%- else %}
+    <p class="value"><span class="mark blank">Not determined</span></p>
+    {%- endif %}
+    <p class="evidence"><span data-engine>{{ detection.evidence }}</span></p>
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

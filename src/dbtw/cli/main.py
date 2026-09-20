@@ -130,7 +130,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="A .sql file or directory of .sql. Omit it to paste or upload in the browser",
     )
     web.add_argument(
-        "--project", metavar="PROJECT_PATH", required=True, help="The target dbt project root"
+        "--project",
+        metavar="PROJECT_PATH",
+        default=None,
+        help="The target dbt project root (or give it in the browser)",
     )
     web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
     web.add_argument(
@@ -224,41 +227,70 @@ def _web(
     # `test_web_writes_nothing` is what says so. It is read once below, to
     # ask the same question `dbtw convert` asks before it reads a statement.
     #
-    # SQL_PATH is optional, and its absence is a state rather than an error:
-    # a reader who has not got a file to point at brings their query in
-    # through the entry screen instead. What this function will not do is
-    # invent a path for them -- `Source` holds none until something arrives.
-    project_root = _expanded(project, "--project")
+    # SQL_PATH and --project are both optional, and their absence is a state
+    # rather than an error: a reader who has not got a file to point at
+    # brings their query in through the entry screen, and gives the project
+    # it converts against on the same screen. What this function will not do
+    # is invent either for them -- `Source` holds neither until something
+    # arrives.
+    project_root = _expanded(project, "--project") if project is not None else None
     sql = _expanded(sql_path, "SQL_PATH") if sql_path is not None else None
     out_dir = _expanded(out, "--out")
 
-    # Spec section 7: a missing dbt_project.yml is a command-line error, not a
-    # screen. Read here rather than left to the session's own first run so the
-    # refusal is about the project, not about whatever the SQL turns out to
-    # do. The session reads it again on every run, which is what keeps a
-    # screen current with a project being edited beside it.
-    ctx = read_project(project_root)
+    if project_root is None and sql is not None:
+        # A SQL_PATH with no project cannot open a conversation: a `Session`
+        # is a conversation about one script AND one project, and every
+        # proposal it makes is read out of that project's dbt_project.yml.
+        # Refused rather than carried to the entry screen, because carrying
+        # it means this command accepted an argument and then showed a screen
+        # asking for it again -- and refused loudly rather than ignored,
+        # which is what the first shape of this did.
+        raise UnexpandablePathError(
+            f"{sql_path} was given with no --project, and a conversion is a proposal about "
+            "a dbt project: which layer a model belongs in, what its name is prefixed with, "
+            "what a folder already materializes as. Pass --project, or omit SQL_PATH too and "
+            "bring both in the browser"
+        )
 
-    # Asked here, not left to `emit()` when the write button is pressed:
-    # --out defaults to ./dbtw-out, same as `convert`, so a user standing in
-    # their own project is the ordinary case dbtw convert refuses before
-    # reading a single statement. Waiting means a person who has never used
-    # dbt spends six screens on a conversation that was never going anywhere.
-    # `emit()` still asks this question too, so a caller that reaches it any
-    # other way is not left unguarded.
-    refuse_output_inside_project(out_dir, ctx)
-
-    source = Source(project=project_root, out=out_dir, dialect=dialect)
-    if sql is not None:
-        source.session = Session(project=project_root, sql=sql, dialect=dialect)
-        questions = source.session.questions()
-        noun = "question" if len(questions) == 1 else "questions"
-        print(f"{sql} → {ctx.project_name}: {len(questions)} {noun} to answer.")
+    source = Source(out=out_dir, dialect=dialect)
+    if project_root is None:
+        # Nothing to read and nothing to check: the project arrives on the
+        # entry screen, where `Source.start` reads it and renders the same
+        # refusal this would have printed. Saying anything about conventions
+        # here would be saying it about a project nobody has named.
+        print("Bring your SQL and your dbt project in the browser.")
     else:
-        # No count, because there is nothing yet to count. Saying "0
-        # questions" here would report a conversion this command has not been
-        # given anything to make.
-        print(f"{ctx.project_name}: bring your SQL in the browser.")
+        # Spec section 7: a --project that is not a dbt project is a
+        # command-line error, not a screen. Read here rather than left to the
+        # session's own first run so the refusal is about the project, not
+        # about whatever the SQL turns out to do. The session reads it again
+        # on every run, which is what keeps a screen current with a project
+        # being edited beside it.
+        ctx = read_project(project_root)
+
+        # Asked here, not left to `emit()` when the write button is pressed:
+        # --out defaults to ./dbtw-out, same as `convert`, so a user standing
+        # in their own project is the ordinary case dbtw convert refuses
+        # before reading a single statement. Waiting means a person who has
+        # never used dbt spends six screens on a conversation that was never
+        # going anywhere. `emit()` still asks this question too, so a caller
+        # that reaches it any other way is not left unguarded.
+        #
+        # Only when the project came from the command line. A project given
+        # in the browser is checked against --out by `emit` at the moment the
+        # write is pressed, which is the first moment the pair exists.
+        refuse_output_inside_project(out_dir, ctx)
+        source.project = project_root
+        if sql is not None:
+            source.session = Session(project=project_root, sql=sql, dialect=dialect)
+            questions = source.session.questions()
+            noun = "question" if len(questions) == 1 else "questions"
+            print(f"{sql} → {ctx.project_name}: {len(questions)} {noun} to answer.")
+        else:
+            # No count, because there is nothing yet to count. Saying "0
+            # questions" here would report a conversion this command has not
+            # been given anything to make.
+            print(f"{ctx.project_name}: bring your SQL in the browser.")
 
     # Imported here, after require_flask(), so that `dbtw convert` — and
     # `dbtw.web` itself — go on importing without the extra. `dbtw.web.app`
