@@ -10,6 +10,7 @@ from dbtw.core.passes.tier2 import append_pass, merge_pass, truncate_insert_colu
 from dbtw.core.passes.types import (
     Answer,
     Decision,
+    ModelDescription,
     ModelDraft,
     Option,
     OptionKind,
@@ -35,6 +36,7 @@ __all__ = [
     "Option",
     "OptionKind",
     "PassState",
+    "ModelDescription",
     "SchemaTest",
     "Subject",
     "Tier",

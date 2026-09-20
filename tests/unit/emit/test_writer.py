@@ -6,13 +6,18 @@ from tests.unit.assemble.helpers import context_for, convert
 
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import ProjectContext, SourceInfo, read_project
-from dbtw.core.emit import DuplicateSourceEntryError, OrphanSchemaTestError, emit
-from dbtw.core.passes import Answer, SchemaTest, verify_option
+from dbtw.core.emit import (
+    DuplicateSourceEntryError,
+    OrphanModelDescriptionError,
+    OrphanSchemaTestError,
+    emit,
+)
+from dbtw.core.passes import Answer, ModelDescription, SchemaTest, verify_option
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
 
-def _change(sources=(), tests=()) -> ProjectChange:
+def _change(sources=(), tests=(), descriptions=()) -> ProjectChange:
     return ProjectChange(
         models=(
             AssembledModel(
@@ -33,6 +38,7 @@ def _change(sources=(), tests=()) -> ProjectChange:
         dialect=None,
         project_name="jaffle_shop",
         tests=tests,
+        descriptions=descriptions,
     )
 
 
@@ -555,6 +561,21 @@ def test_a_test_naming_a_model_this_change_does_not_carry_is_refused(tmp_path):
     ctx = read_project(FIXTURES / "jaffle_shop")
     with pytest.raises(OrphanSchemaTestError, match="stg_ghost"):
         emit(_change(tests=(SchemaTest("stg_ghost", "order_id"),)), ctx, tmp_path)
+    assert list(tmp_path.rglob("*")) == []  # refused before anything was written
+
+
+def test_a_description_naming_a_model_this_change_does_not_carry_is_refused(tmp_path):
+    """The same refusal an orphan test gets, and it protects more.
+
+    A dropped test costs a miscount in the report. A dropped description costs
+    the reader a sentence they wrote and watched this tool show back to them,
+    gone between that screen and the files they commit -- with nothing on
+    either saying so. `emit` asked each model for its description and no model
+    asks for an orphan's, so silence here was the default until this refused.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    with pytest.raises(OrphanModelDescriptionError, match="stg_ghost"):
+        emit(_change(descriptions=(ModelDescription("stg_ghost", "a ghost"),)), ctx, tmp_path)
     assert list(tmp_path.rglob("*")) == []  # refused before anything was written
 
 

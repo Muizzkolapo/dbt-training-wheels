@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import heapq
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 import sqlglot
@@ -22,6 +22,7 @@ from dbtw.core.naming import is_qualified, qualified_name, same_identifier
 from dbtw.core.passes.types import (
     Answer,
     Decision,
+    ModelDescription,
     ModelDraft,
     Option,
     PassState,
@@ -1363,6 +1364,17 @@ class UnknownAnswerError(ValueError):
     """
 
 
+class UnknownModelError(ValueError):
+    """A description names a model this conversion does not build.
+
+    Input-driven from a caller's point of view and a bug from the walk's: the
+    screen that asks for descriptions lists the models this run carries, so a
+    name it never showed came from somewhere else. Refused rather than
+    dropped -- silently discarding a reader's own words while their screen
+    still shows them is the failure this project deletes fields to avoid.
+    """
+
+
 class MulticolumnCheckedAnswerError(ValueError):
     """A checked answer reached application naming more than one column.
 
@@ -1378,6 +1390,87 @@ class MulticolumnCheckedAnswerError(ValueError):
     """
 
 
+class JinjaInDescriptionError(ValueError):
+    """A description carries Jinja that could stop dbt reading the project.
+
+    Input-driven, and refused rather than written. dbt renders every schema
+    .yml through Jinja before it parses the YAML, so a description is the one
+    place in this tool's output where a reader's own prose is executed. An
+    unclosed tag there is not a bad description -- it is a
+    `TemplateSyntaxError` on `dbt parse`, for the whole project, naming a file
+    they never hand-wrote.
+
+    Two rules, and the first is deliberately wider than the failure:
+
+    * a block tag (`{%` ... `%}`) is refused outright, balanced or not. `{% if
+      x %}` with its `{% endif %}` really would render, so this refuses
+      something that would have worked -- and it is still the right line,
+      because telling the two apart means running Jinja's parser, which would
+      make this package depend on Jinja to convert a file. A sentence saying
+      what a model is for has no use for a loop or a conditional, and the
+      failure this prevents lands nowhere near the reader who caused it;
+    * `{{` ... `}}` and `{#` ... `#}` must balance. `{{ doc('orders') }}` is
+      ordinary dbt and stays allowed; `{{ doc('orders')` is the same
+      project-wide failure with one bracket missing.
+    """
+
+
+def _refuse_unsafe_jinja(model: str, text: str) -> None:
+    """Refuse a description dbt could not render, in the reader's own words."""
+    if "{%" in text or "%}" in text:
+        raise JinjaInDescriptionError(
+            f"the description of {model} uses a Jinja block tag ({{% ... %}}), and dbt "
+            "renders every schema .yml through Jinja before it reads it -- a tag left "
+            "open there stops dbt parsing the whole project, not just this model. Say it "
+            "in plain words instead"
+        )
+    for opening, closing in (("{{", "}}"), ("{#", "#}")):
+        if text.count(opening) != text.count(closing):
+            raise JinjaInDescriptionError(
+                f"the description of {model} opens {text.count(opening)} {opening} and "
+                f"closes {text.count(closing)} {closing}. dbt renders every schema .yml "
+                "through Jinja before it reads it, so an unclosed one stops dbt parsing "
+                "the whole project, not just this model"
+            )
+
+
+def _model_descriptions(
+    written: Mapping[str, str], models: Sequence[AssembledModel]
+) -> tuple[ModelDescription, ...]:
+    """The descriptions this run carries, in the order its models are in.
+
+    Blank text is not a description and is dropped rather than recorded:
+    `description: ''` in someone's project claims the model was described and
+    says nothing, and a reader who left the box empty did not describe it.
+
+    A description naming a model this change does not carry is refused, for
+    the reason an orphan SchemaTest is: the walk would have shown the reader
+    their own words on a screen, computed them into nothing, and said so
+    nowhere.
+
+    So is one dbt could not render -- see `JinjaInDescriptionError`. That
+    refusal is made here, where the reader is still looking at the box they
+    typed it into, rather than in `emit`, where the only thing left to do
+    about it is write the file or not.
+    """
+    by_name = {model.name: model for model in models}
+    unknown = sorted(set(written) - set(by_name))
+    if unknown:
+        raise UnknownModelError(
+            f"{_keys_str(tuple(unknown))} named in descriptions, and this conversion "
+            f"builds {_keys_str(tuple(sorted(by_name))) or 'no models'}. A description is written "
+            "against a model the walk showed; one naming another is a caller bug"
+        )
+    described = tuple(
+        ModelDescription(model=model.name, text=written[model.name].strip())
+        for model in models
+        if written.get(model.name, "").strip()
+    )
+    for entry in described:
+        _refuse_unsafe_jinja(entry.model, entry.text)
+    return described
+
+
 def assemble(
     state: PassState,
     ctx: ProjectContext,
@@ -1388,6 +1481,10 @@ def assemble(
     # out. Those keys are only stable while the source SQL keeps the same path
     # -- see UnknownAnswerError, which is where breaking that surfaces.
     answers: Mapping[str, Answer] | None = None,
+    # What each model is for, keyed by the model's FINAL name -- the name the
+    # walk showed the reader when it asked. Text only they can write: what a
+    # model is for is not in the SQL that builds it.
+    descriptions: Mapping[str, str] | None = None,
 ) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
@@ -2012,4 +2109,5 @@ def assemble(
         project_name=ctx.project_name,
         variables=tuple(kept_variables),
         tests=tuple(schema_tests),
+        descriptions=_model_descriptions(descriptions or {}, rewritten_models),
     )

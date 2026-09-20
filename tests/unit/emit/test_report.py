@@ -4,7 +4,7 @@ from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import _NOT_DONE_YET, render_report
 from dbtw.core.ingest import ClassifiedStatement, RawStatement
-from dbtw.core.passes import Decision, SchemaTest
+from dbtw.core.passes import Decision, ModelDescription, SchemaTest
 from dbtw.core.teach import GLOSSARY, terms_in
 
 GLOSSARY_HEADING = "## Words this report uses"
@@ -90,6 +90,22 @@ def test_summary_shows_zero_tests_when_none_were_recorded():
 def test_summary_shows_the_recorded_tests_count():
     out = _report(tests=(SchemaTest("stg_orders", "order_id"),))
     assert "- **Tests**: 1" in out
+
+
+def test_summary_says_how_many_models_the_reader_described():
+    """Derived and always rendered, the way the tests count is.
+
+    The report is what a reviewer reads before approving the conversion, and
+    a description is the one thing in it no engine wrote. A report that
+    listed the files but never said how many models carry one would be the
+    only place a reviewer could not tell a described conversion from an
+    undescribed one without opening every .yml.
+    """
+    assert "- **Described models**: 0 of 1" in _report()
+
+    out = _report(descriptions=(ModelDescription("stg_orders", "One row per order."),))
+
+    assert "- **Described models**: 1 of 1" in out
 
 
 def test_conventions_section_quotes_detection_evidence():

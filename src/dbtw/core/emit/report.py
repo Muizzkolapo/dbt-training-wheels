@@ -70,6 +70,12 @@ def _render_summary(change: ProjectChange) -> str:
         f"- **Project**: {change.project_name}",
         f"- **Models**: {len(change.models)}",
         f"- **Tests**: {len(change.tests)}",
+        # Counted beside the tests, because both are things a reader asked
+        # for that nothing in their SQL implies. A report that listed the
+        # files but never said how many models carry a description would be
+        # the one place a reviewer could not tell a described conversion from
+        # an undescribed one without opening every .yml.
+        f"- **Described models**: {len(change.descriptions)} of {len(change.models)}",
         f"- **Sources**: {len(change.sources)}",
         f"- **Pending statements**: {len(change.pending)}",
         f"- **Dialect**: {dialect}",

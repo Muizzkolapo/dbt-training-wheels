@@ -80,6 +80,20 @@ class OrphanSchemaTestError(ValueError):
     """
 
 
+class OrphanModelDescriptionError(ValueError):
+    """A ModelDescription names a model this change does not carry.
+
+    The same shape as `OrphanSchemaTestError`, and here for the same reason.
+    Unreachable through the pipeline -- `assemble._model_descriptions` refuses
+    an unknown model before a `ProjectChange` is built -- but the loop below
+    asks each model for its description and no model asks for an orphan's, so
+    what silence buys here is worse than a miscount: it is a sentence the
+    reader wrote, shown to them on a screen, and dropped between that screen
+    and the disk. Not in the CLI's `_USAGE_ERRORS`: no input can produce it,
+    so reaching it is a dbtw bug and should surface as one.
+    """
+
+
 class OutputInsideProjectError(ValueError):
     """out_dir is the target dbt project itself, or a directory inside it.
 
@@ -285,17 +299,37 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResul
             "chosen for; one naming no model is a dbtw bug."
         )
 
+    # Checked before anything is written, for the reason the tests above are
+    # -- and with more at stake. A description naming a model this change does
+    # not carry would be dropped by the loop below without a word, and a
+    # dropped description is the reader's own sentence going missing between
+    # the screen that showed it and the file they commit.
+    described = {entry.model: entry.text for entry in change.descriptions}
+    undescribable = sorted(set(described) - {model.name for model in change.models})
+    if undescribable:
+        raise OrphanModelDescriptionError(
+            f"change.descriptions names {_listed(undescribable)}, which change.models "
+            "does not carry, so the reader's own words would be dropped with no file "
+            "written and nothing said. A description is written against a model the "
+            "walk showed; one naming no model is a dbtw bug."
+        )
+
     for model in change.models:
         model_path = _safe_join(out_dir, model.path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
         model_path.write_text(render_model(model), encoding="utf-8")
         written.append(model_path)
 
-        model_tests = tests_by_model.get(model.name)
-        if model_tests:
+        # A .yml is written for a model that has a test, a description, or
+        # both -- one file per model, not one per thing said about it. A
+        # description alone is the ordinary case: describing a model is asked
+        # of every reader, and answering a question is not.
+        model_tests = tuple(tests_by_model.get(model.name, ()))
+        schema = render_schema_yaml(model.name, model_tests, described.get(model.name, ""))
+        if schema:
             schema_path = _safe_join(out_dir, _schema_yaml_rel(model))
             schema_path.parent.mkdir(parents=True, exist_ok=True)
-            schema_path.write_text(render_schema_yaml(tuple(model_tests)), encoding="utf-8")
+            schema_path.write_text(schema, encoding="utf-8")
             written.append(schema_path)
 
     if change.sources:

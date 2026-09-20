@@ -58,7 +58,7 @@ class Session:
     slice that accepts an uploaded file has to derive one durable location for
     it, not a per-run temporary directory.
 
-    `answers` is the whole of the user's contribution, and it records
+    `answers` is half of the user's contribution, and it records
     `(Option.kind, columns)` -- never a label. One answer has two spellings:
     the pristine question offers "merge on a unique key, checked on every
     run", and the Decision rebuilt once that answer is applied offers "merge
@@ -67,9 +67,15 @@ class Session:
     answer to any model; `kind` is a field, and `passes.answer_for` is the
     reader that turns it back into the label a given Decision offers.
 
-    Frozen does not make it immutable: `answers` is a dict and `answer` fills
-    it in place. What is pinned is the pair of paths, because everything else
-    is read from them on demand.
+    `descriptions` is the other half of the user's contribution, and it is the
+    half no engine could have written: what a model is *for*. It is keyed by
+    final model name rather than by a Decision key, because a description
+    answers no question -- there is no Decision to key it to, and inventing
+    one would put a choice on the caveats screen that nobody made.
+
+    Frozen does not make it immutable: `answers` and `descriptions` are both
+    dicts, and `answer` and `describe` fill them in place. What is pinned is
+    the pair of paths, because everything else is read from them on demand.
 
     The other side of reading them on demand is that an edit to the SQL can
     strand a standing answer -- see `stale_answers`, which is how a consumer
@@ -90,6 +96,7 @@ class Session:
     sql: Path
     dialect: str | None = None
     answers: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    descriptions: dict[str, str] = field(default_factory=dict)
 
     def current(self) -> ProjectChange:
         """This conversion with `answers` applied. What a screen renders.
@@ -100,8 +107,8 @@ class Session:
         screen needs more than this.
         """
         if not self.answers:
-            return self._run(None)
-        return self._run(self._resolve(self._pristine()))
+            return self._run(None, self.descriptions)
+        return self._run(self._resolve(self._pristine()), self.descriptions)
 
     def view(self) -> SessionView:
         """One screen: the change, its questions, and every question's column
@@ -113,11 +120,14 @@ class Session:
         """
         pristine = self._pristine()
         resolved = self._resolve(pristine)
-        # A run with no answers *is* the pristine run -- same inputs, same
-        # deterministic pipeline. Reusing it here is not a cache: it is one
-        # value computed once inside one call, and it is gone when the call
-        # returns.
-        change = self._run(resolved) if resolved else pristine
+        # A run with no answers and no descriptions *is* the pristine run --
+        # same inputs, same deterministic pipeline. Reusing it here is not a
+        # cache: it is one value computed once inside one call, and it is gone
+        # when the call returns. Descriptions are in that condition because
+        # `_pristine` carries none: reusing it for a session that holds one
+        # would render a screen with the reader's own words missing from it.
+        described = bool(resolved or self.descriptions)
+        change = self._run(resolved, self.descriptions) if described else pristine
         return SessionView(
             change=change,
             questions=tuple(d for d in change.decisions if d.question),
@@ -251,11 +261,89 @@ class Session:
         # nothing it refused.
         self.answers[key] = (kind, columns)
         try:
-            self._run(self._resolve(self._pristine()))
+            # With the descriptions, so this validates the conversion the
+            # reader will be looking at rather than a narrower one. No answer
+            # this engine offers changes which models a conversion builds, so
+            # the two runs agree today; the asymmetry is what would not
+            # survive an answer that did, and it would not survive it quietly
+            # -- the answer would be accepted and every render afterwards
+            # would raise `UnknownModelError`, with the description that
+            # became impossible never named.
+            self._run(self._resolve(self._pristine()), self.descriptions)
         except Exception:
             self.answers.clear()
             self.answers.update(previous)
             raise
+
+    def describe(self, model: str, text: str) -> None:
+        """Record what `model` is for, in the reader's own words, or refuse.
+
+        The one thing in this walk the engine cannot derive and does not try
+        to. What a model is *for* is not in the SQL that builds it -- the SQL
+        says what it computes -- so a description is text only a reader can
+        write, and a suggested one would be this tool putting words in their
+        mouth on a screen that asks for theirs.
+
+        Blank text is recorded rather than deleted, and that is deliberate.
+        `assemble` drops a blank description from the change it builds, so an
+        emptied box reaches no .yml either way; what recording it buys is that
+        clearing a description goes through the same refusal as writing one. A
+        `pop` would accept a blank for a model this conversion does not build
+        and say nothing, which is the one outcome this loop exists to prevent.
+
+        Two pipeline runs, the same two `answer` makes and for the same
+        reason: the model names a description is validated against belong to
+        the run that applies the held answers, and the answers are resolved
+        against the pristine one. Applied before it is kept, so a refused
+        description is not held -- the next render would otherwise raise
+        `UnknownModelError` for every screen, with no way back.
+        """
+        previous = dict(self.descriptions)
+        # Mutated in place rather than rebound, restored the same way, for the
+        # reason `answer` gives: a caller watching its own dict must see what
+        # the session recorded and nothing it refused.
+        self.descriptions[model] = text
+        try:
+            self._run(self._resolve(self._pristine()), self.descriptions)
+        except Exception:
+            self.descriptions.clear()
+            self.descriptions.update(previous)
+            raise
+
+    def stale_descriptions(self) -> tuple[str, ...]:
+        """The descriptions held for models this conversion no longer builds,
+        in the order they were written. One pipeline run.
+
+        The description half of `stale_answers`, reached the same way: the SQL
+        is re-read on every run, so an edit under a standing description can
+        retire the model it was written against, and `assemble` then refuses
+        the whole conversion -- `UnknownModelError` behaving exactly as
+        designed, and every screen raising with it.
+
+        Computed from a run carrying no descriptions at all, which is what
+        makes it answerable while the ordinary ones are not. It still resolves
+        the held answers, so a session stranded on both is stranded on its
+        answers first: those cannot be resolved, and this raises the same
+        `UnknownAnswerError` every other accessor does. That ordering is the
+        honest one -- an answer that cannot be resolved is a question this
+        conversion no longer asks, and the models it would have named are not
+        knowable until it is dropped.
+        """
+        carried = {model.name for model in self._run(self._resolve(self._pristine())).models}
+        return tuple(name for name in self.descriptions if name not in carried)
+
+    def drop_stale_descriptions(self) -> tuple[str, ...]:
+        """Forget the descriptions `stale_descriptions` names, and return them.
+
+        The way out, and the only one, for the reason `drop_stale_answers`
+        gives: skipping them on the way into a run would show a reader a
+        conversion that quietly does not carry words they wrote, and dropping
+        someone's own sentences is a thing they are told about.
+        """
+        stale = self.stale_descriptions()
+        for name in stale:
+            del self.descriptions[name]
+        return stale
 
     def _pristine(self) -> ProjectChange:
         """This conversion with no answers at all.
@@ -268,10 +356,27 @@ class Session:
         """
         return self._run(None)
 
-    def _run(self, answers: Mapping[str, Answer] | None) -> ProjectChange:
+    def _run(
+        self,
+        answers: Mapping[str, Answer] | None,
+        descriptions: Mapping[str, str] | None = None,
+    ) -> ProjectChange:
+        """One conversion of these two paths, with `answers` and `descriptions`
+        applied.
+
+        `descriptions` is a parameter rather than read off `self`, and the
+        default of none is the reason. Two callers want a run without them:
+        `_pristine`, whose whole job is the question set an answer is resolved
+        against, and `stale_descriptions`, which needs the model names of a run
+        that a stranded description cannot refuse. A run that always carried
+        them would make both raise `UnknownModelError` in exactly the state
+        they exist to get a reader out of.
+        """
         result = ingest(self.sql, self.dialect)
         state = run_passes(classify_statements(result), result.dialect)
-        return assemble(state, read_project(self.project), answers=answers)
+        return assemble(
+            state, read_project(self.project), answers=answers, descriptions=descriptions
+        )
 
     def _resolve(self, pristine: ProjectChange) -> dict[str, Answer]:
         return {

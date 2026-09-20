@@ -1,4 +1,4 @@
-"""The guided walk: six screens over one conversion, and the loop that
+"""The guided walk: seven screens over one conversion, and the loop that
 answers it.
 
 The templates render engine strings and structure, and nothing else. Every
@@ -56,7 +56,12 @@ from pathlib import Path
 from flask import Flask, abort, redirect, render_template, request, url_for
 from werkzeug.wrappers.response import Response
 
-from dbtw.core.assemble import ProjectChange, UnknownAnswerError
+from dbtw.core.assemble import (
+    AssembledModel,
+    ProjectChange,
+    UnknownAnswerError,
+    UnknownModelError,
+)
 from dbtw.core.context import read_project
 from dbtw.core.deliver import (
     BranchExistsError,
@@ -148,6 +153,22 @@ class Choice:
     chosen: bool
     prompt: str
     columns: tuple[Column, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Describable:
+    """One model the describe screen asks about, and what the reader has
+    said it is for.
+
+    `description` is "" until they write one, and it is theirs: the engine
+    carries it and never fills it. What a model is *for* is not in the SQL
+    that builds it -- the SQL says what it computes -- so a suggested
+    description would be this tool putting words in a reader's mouth on the
+    one screen that asks for theirs.
+    """
+
+    model: AssembledModel
+    description: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,8 +446,30 @@ def _previews(session: Session, change: ProjectChange) -> tuple[FilePreview, ...
         )
 
 
+def _describables(change: ProjectChange) -> tuple[Describable, ...]:
+    """Every model this conversion builds, each with the description held for
+    it, in the order the conversion carries them.
+
+    Every model, not only the ones still blank. A screen that dropped a model
+    the moment it was described would move the rows under the reader as they
+    worked down the page, and would give them no way to read back or correct
+    what they had written.
+    """
+    written = {entry.model: entry.text for entry in change.descriptions}
+    return tuple(
+        Describable(model=model, description=written.get(model.name, "")) for model in change.models
+    )
+
+
 def _screens(view: SessionView) -> tuple[Screen, ...]:
-    """The walk, in order. One screen per question, and four fixed ones."""
+    """The walk, in order. One screen per question, and five fixed ones.
+
+    Describe sits after the questions and before the files, because it is the
+    last thing the reader supplies and the first thing that is theirs alone:
+    every question above it offers options the engine wrote, and this one
+    offers a blank box. Putting it after the files screen would ask them to
+    describe models they had already read the finished text of.
+    """
     questions = [
         Screen(
             url=f"/questions/{index}",
@@ -438,6 +481,7 @@ def _screens(view: SessionView) -> tuple[Screen, ...]:
     return (
         Screen(url="/", label="Start", engine=False),
         *questions,
+        Screen(url="/describe", label="Describe", engine=False),
         Screen(url="/caveats", label="Decided for you", engine=False),
         Screen(url="/files", label="Files", engine=False),
         Screen(url="/done", label="Done", engine=False),
@@ -524,19 +568,31 @@ def create_app(source: Source) -> Flask:
         return session
 
     def _stale() -> tuple[str, int] | None:
-        """The screen for the one state in which nothing else can render.
+        """The screen for the states in which nothing else can render.
 
-        Every accessor raises while an answer is held whose question the
-        current SQL no longer asks -- the script was edited underneath it.
-        `stale_answers` is the one that still answers, so the screen can say
-        which answers it is about and offer the way out, instead of showing
-        an error with no subject and no way on. It is rendered only in that
-        state, so an edge case never becomes the page's main event.
+        Every accessor raises while the reader holds something the current SQL
+        no longer has a place for -- the script was edited underneath it.
+        There are two such things, and each has one accessor that still
+        answers, so the screen can say what it is about and offer the way out
+        instead of showing an error with no subject and no way on.
+
+        Answers first, and the order is not a preference. A held answer that
+        cannot be resolved is a question this conversion no longer asks, and
+        until it is dropped the models it would have named are not knowable --
+        so `stale_descriptions` raises exactly as everything else does, and
+        asking it first would turn the screen that gets a reader out into one
+        more page that cannot render.
         """
-        stale = _conversation().stale_answers()
-        if not stale:
+        session = _conversation()
+        stale = session.stale_answers()
+        if stale:
+            return render_template("stale.html", stale=stale, screens=(), terms=(), here=""), 409
+        described = session.stale_descriptions()
+        if not described:
             return None
-        return render_template("stale.html", stale=stale, screens=(), terms=(), here=""), 409
+        return render_template(
+            "stale_descriptions.html", stale=described, screens=(), terms=(), here=""
+        ), 409
 
     def _view() -> SessionView | tuple[str, int] | Response:
         """This conversation's view, or the page to render instead of one.
@@ -551,7 +607,7 @@ def create_app(source: Source) -> Flask:
             return redirect(url_for("entry"))
         try:
             return _conversation().view()
-        except UnknownAnswerError:
+        except (UnknownAnswerError, UnknownModelError):
             stranded = _stale()
             if stranded is None:
                 raise
@@ -690,6 +746,97 @@ def create_app(source: Source) -> Flask:
             example=example,
             produced=produced,
         )
+
+    def _describe_page(view: SessionView, refusal: str) -> str:
+        """The screen that asks what each model is for.
+
+        The description a reader has written is rendered as an engine run and
+        as an identifier, and both halves of that are load-bearing. It is an
+        engine run because it came back out of `dbtw.core` -- the text on
+        screen is what `change.descriptions` carries, so a template that
+        altered a word of it is caught by exact match, the same way a Decision
+        is. It is an identifier because it is *theirs*: the glossary on every
+        screen is the dbt words that screen uses, and a reader who writes
+        "incremental" in a sentence about their own data has not made this
+        page use the word -- they have used it, and being handed dbt's
+        definition of it back is the tool explaining their own sentence to
+        them. The project path on the entry screen is marked for the same
+        reason.
+
+        So `spoken` carries the model names and their dependencies and not the
+        descriptions. That is not a convenience: `terms_in` is run over the
+        page without its identifier regions, so a glossary built from the
+        descriptions would define words the check cannot find and the screen
+        would fail its own count.
+
+        The exemption is this box, and deliberately not the words wherever
+        they go next. Two screens on, the files screen renders the same
+        sentence inside the .yml it is about to write, in a `<pre>` that is
+        not an identifier region -- so a reader who wrote "dbt build" into a
+        description meets its definition there. That is right: on this screen
+        they are writing, and on that one they are reading a file, and every
+        dbt word in a file this tool is about to put in their project is a
+        word that screen shows them. The rule is about who is speaking, not
+        about which string it is.
+        """
+        models = _describables(view.change)
+        spoken = _spoken(
+            (row.model.name for row in models),
+            (name for row in models for name in row.model.depends_on),
+            refusal,
+            (screen.label for screen in _screens(view) if screen.engine),
+        )
+        return render_template(
+            "describe.html",
+            screens=_screens(view),
+            here="/describe",
+            terms=_terms(spoken),
+            models=models,
+            described=sum(1 for row in models if row.description),
+            refusal=refusal,
+        )
+
+    @app.get("/describe")
+    def describe() -> str | tuple[str, int] | Response:
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        return _describe_page(view, refusal="")
+
+    @app.post("/describe")
+    def describe_model() -> str | tuple[str, int] | Response:
+        """Record what one model is for, and come back to the screen.
+
+        POST/redirect/GET, as the answer loop is, so a refresh re-renders
+        rather than re-writing, and the box a reader has just filled comes
+        back holding what they wrote -- a screen that showed an empty one
+        afterwards gives them no way to tell a saved description from a lost
+        one.
+
+        One model per press rather than the whole page at once. A form per
+        row is the shape the question screen already uses, and what it buys
+        here is that the refusal below is about the row it came from: a
+        single form carrying every model would have to pair its boxes to its
+        names by position, and a refusal would be about a page rather than
+        about a field.
+
+        No gate in front of the session, for the reason `/answer` gives: a
+        form arriving without a model names a model this conversion does not
+        build, which `Session.describe` refuses in the engine's own words. A
+        check here would be a second copy of that rule with a worse message.
+        """
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        try:
+            _conversation().describe(request.form.get("model", ""), request.form.get("text", ""))
+        except (UnknownModelError, ValueError) as refusal:
+            # 400 and this screen, not a redirect: the reader is mid-action
+            # and the thing they need is on the page they were already on.
+            # `Session.describe` applies before it keeps, so `view` is still
+            # this conversation -- nothing was recorded.
+            return _describe_page(view, refusal=str(refusal)), 400
+        return redirect(url_for("describe"))
 
     @app.get("/caveats")
     def caveats() -> str | tuple[str, int] | Response:
@@ -962,14 +1109,25 @@ def create_app(source: Source) -> Flask:
 
     @app.post("/stale")
     def stale() -> Response:
-        """Forget the answers this script no longer asks for, and go on.
+        """Forget what this script no longer has a place for, and go on.
 
         Dropping them is a thing that happened, so the screen that offers it
         says which ones -- skipping them silently on the way into a run would
         show a conversion that quietly does not contain an answer the user
         gave.
         """
-        _conversation().drop_stale_answers()
+        session = _conversation()
+        # Only what the screen that offered this named, which is what `_stale`
+        # chose to render: answers while any are stranded, descriptions once
+        # they are not. Dropping both in one press was the first shape of this
+        # route and it was wrong -- `stale.html` lists answer keys, so a reader
+        # pressing it lost a description that no screen had ever named. Being
+        # sent to a second stranded screen is not the cost of that fix, it is
+        # the fix: the second screen is where they are told the other half.
+        if session.stale_answers():
+            session.drop_stale_answers()
+        else:
+            session.drop_stale_descriptions()
         return redirect(url_for("start"))
 
     def _refused(message: str, key: str) -> str:

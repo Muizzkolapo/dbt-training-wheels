@@ -43,10 +43,11 @@ nav .steps a { text-decoration: none; }
 .plain { background: var(--plain); border-left: 3px solid var(--accent); padding: 0.5rem 0.75rem; }
 .plain .tag { color: var(--accent); font-weight: 600; }
 
-ul.renames, ul.caveats, ul.pending, ul.files, ul.answers, ul.commands, ul.stale {
+ul.renames, ul.caveats, ul.pending, ul.files, ul.answers, ul.commands, ul.stale,
+ul.describe {
   list-style: none; margin: 0; padding: 0;
 }
-ul.caveats > li, ul.pending > li, ul.files > li, ul.answers > li {
+ul.caveats > li, ul.pending > li, ul.files > li, ul.answers > li, ul.describe > li {
   border-top: 1px solid var(--rule); padding: 1rem 0;
 }
 ul.renames > li, ul.commands > li, ul.stale > li { padding: 0.2rem 0; }
@@ -56,6 +57,19 @@ ul.renames > li, ul.commands > li, ul.stale > li { padding: 0.2rem 0; }
 
 ul.answers > li.chosen { border-left: 3px solid var(--accent); padding-left: 0.75rem; }
 .mark { color: var(--accent); font-weight: 600; }
+.blank .mark { color: var(--quiet); }
+.depends { color: var(--quiet); font-size: 0.9rem; }
+
+/* The one box in the walk the engine has nothing to put in. Wide and plain,
+   because what goes in it is a sentence about the reader's own data and a
+   narrow box asks for a phrase. */
+textarea {
+  border: 1px solid var(--rule); border-radius: 4px; display: block;
+  font: inherit; margin: 0.35rem 0 0.5rem; padding: 0.5rem; width: 100%;
+}
+label { color: var(--quiet); font-size: 0.9rem; }
+
+.refusal { border-left: 3px solid var(--accent); background: var(--plain); padding: 0.5rem 0.75rem; }
 
 fieldset { border: 1px solid var(--rule); border-radius: 4px; margin: 0.75rem 0; }
 legend { color: var(--quiet); padding: 0 0.35rem; }

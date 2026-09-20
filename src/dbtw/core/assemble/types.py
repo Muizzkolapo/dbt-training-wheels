@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from dbtw.core.assemble.variables import Variable
 from dbtw.core.ingest.types import ClassifiedStatement
-from dbtw.core.passes.types import Decision, SchemaTest
+from dbtw.core.passes.types import Decision, ModelDescription, SchemaTest
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,3 +59,8 @@ class ProjectChange:
     # name it belongs to. Empty unless an answer chose an option that declares
     # one -- a test nobody asked for is a claim about the data nobody made.
     tests: tuple[SchemaTest, ...] = ()
+    # What each model is for, in the reader's own words, naming the final
+    # model name it belongs to. Empty unless a reader wrote one: what a model
+    # is *for* is not derivable from the SQL that builds it, so this engine
+    # carries a description and never invents one.
+    descriptions: tuple[ModelDescription, ...] = ()

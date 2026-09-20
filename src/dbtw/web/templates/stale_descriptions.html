@@ -1,0 +1,25 @@
+{#
+  The script changed under a description that was already written, so the
+  model it was written against is one this conversion no longer builds and
+  every other accessor refuses. `stale_descriptions` is the one that still
+  answers, so this screen can name the models and offer the way out rather
+  than show an error with no subject.
+
+  A sibling of stale.html rather than one template with a heading passed into
+  it: the two screens are about different things a reader lost, and a
+  parameterised heading would put that sentence in a route instead of on the
+  page that says it.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Descriptions with no model</h1>
+<p class="tally"><span data-count="stale">{{ stale | length }}</span> models</p>
+<ul class="stale">
+  {%- for model in stale %}
+  <li data-item="stale"><span data-engine>{{ model }}</span></li>
+  {%- endfor %}
+</ul>
+<form method="post" action="/stale">
+  <button type="submit">Forget them</button>
+</form>
+{% endblock %}

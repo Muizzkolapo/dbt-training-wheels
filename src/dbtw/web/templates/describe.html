@@ -1,0 +1,74 @@
+{#
+  What each model is for, in the reader's own words.
+
+  The one screen of the walk with nothing to offer. Every other screen puts
+  the engine's options in front of a reader and asks them to pick; this one
+  puts a blank box in front of them, because what a model is *for* is not in
+  the SQL that builds it. The SQL says what it computes. A suggested
+  description would be this tool writing the one sentence only they can
+  write, on the one screen that asks for theirs.
+
+  Nothing here is required of them before the walk goes on. The design this
+  screen is built from calls a description "the only field it insists on",
+  and this is where that is deliberately not built: three of three personas
+  named the walk's one acknowledgment gate theatre, and
+  `test_no_screen_gates_the_write_action` holds the walk to that. So the
+  count says how many are still blank and each blank row says so, and the
+  write action stays reachable with none of them filled. A mark that is read
+  is worth more than a gate that is worked around.
+
+  Which is why the box carries no placeholder reading "required". It did,
+  briefly, and it was a word this template wrote about a rule the product
+  does not enforce -- short enough that the prose threshold cannot see it,
+  which is the same blind spot section 11.4(c) documents for digits. The
+  honest rendering of a field nothing requires is an empty box and a row
+  that says it is still blank.
+
+  The textarea carries `data-engine data-identifier` when it holds something,
+  and neither when it is empty. Both halves are explained on `_describe_page`
+  -- the short of it is that the text came back out of `dbtw.core`, so it is
+  checked by exact match like any engine string, and it is the reader's own,
+  so the glossary on this screen is not built out of their sentences. An
+  empty box claims nothing, because there is no string to claim.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Describe</h1>
+<p class="tally"><span data-count="described">{{ described }}</span> of
+  <span data-count="model">{{ models | length }}</span> described</p>
+
+{%- if refusal %}
+<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+{%- endif %}
+
+<ul class="describe">
+  {%- for row in models %}
+  <li data-item="model">
+    <h2><span data-engine>{{ row.model.name }}</span></h2>
+    {%- if row.model.depends_on %}
+    <p class="depends">Built from
+      {%- for name in row.model.depends_on %}
+      <span data-item="depends" data-engine>{{ name }}</span>
+      {%- endfor %}</p>
+    {%- endif %}
+    <form method="post" action="/describe">
+      <input type="hidden" name="model" value="{{ row.model.name }}">
+      <label>Description
+        {%- if row.description %}
+        <textarea name="text" rows="3"
+                  data-engine data-identifier>{{ row.description }}</textarea>
+        {%- else %}
+        <textarea name="text" rows="3"></textarea>
+        {%- endif %}
+      </label>
+      <button type="submit">Save</button>
+    </form>
+    {%- if row.description %}
+    <p class="described" data-item="described"><span class="mark">Written</span></p>
+    {%- else %}
+    <p class="blank"><span class="mark">Still blank</span></p>
+    {%- endif %}
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

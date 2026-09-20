@@ -83,13 +83,16 @@ def render_sources_yaml(sources: Sequence[SourceEntry]) -> str:
     return yaml.dump(doc, Dumper=_IndentedDumper, sort_keys=False, default_flow_style=False)
 
 
-def render_schema_yaml(tests: Sequence[SchemaTest]) -> str:
+def render_schema_yaml(model: str, tests: Sequence[SchemaTest] = (), description: str = "") -> str:
     """The .yml content declaring the dbt tests an answer asked for.
 
-    One argument, not `(model_name, tests)`: a separate name parameter could
-    disagree with what `tests` actually names, which is a representable lie
-    this function should not be able to tell. The model name is derived from
-    the entries themselves instead. `tests` naming more than one model is a
+    The model is named rather than derived, and that changed deliberately.
+    It used to be read off the `SchemaTest` entries, on the grounds that a
+    separate name parameter could disagree with them -- true, and the reason
+    the disagreement is still refused below. What broke the premise is that a
+    .yml now has content that carries no model name of its own: a description
+    with no test. The name has to come from the caller because there are
+    files this writes where nothing else knows it. `tests` naming more than one model is a
     caller bug -- `writer.emit()` groups `change.tests` by model before ever
     calling this -- so it is refused loudly rather than silently rendered
     under whichever model happened to come first.
@@ -112,23 +115,22 @@ def render_schema_yaml(tests: Sequence[SchemaTest]) -> str:
     model takes one branch. Widen that Literal, or record a second test for
     one model, and this needs the merge first.
     """
-    if not tests:
+    if not tests and not description.strip():
         return ""
-    models = {t.model for t in tests}
-    if len(models) > 1:
+    named = {t.model for t in tests}
+    if named - {model}:
         raise ValueError(
-            "render_schema_yaml renders one model's tests per call, and its "
-            f"model name is derived from the entries themselves; got tests naming "
-            f"{sorted(models)}. Group change.tests by model before calling this."
+            f"render_schema_yaml renders one model's schema per call; it was given "
+            f"{model!r} and tests naming {sorted(named)}. Group change.tests by model "
+            "before calling this."
         )
-    (model_name,) = models
+    entry: dict[str, Any] = {"name": model}
+    if description.strip():
+        entry["description"] = description.strip()
+    if tests:
+        entry["columns"] = [{"name": t.column, "tests": [t.test]} for t in tests]
     doc: dict[str, Any] = {
         "version": 2,
-        "models": [
-            {
-                "name": model_name,
-                "columns": [{"name": t.column, "tests": [t.test]} for t in tests],
-            }
-        ],
+        "models": [entry],
     }
     return yaml.dump(doc, Dumper=_IndentedDumper, sort_keys=False, default_flow_style=False)
