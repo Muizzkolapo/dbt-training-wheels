@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from dbtw.core.assemble import ProjectChange, assemble
@@ -35,6 +35,7 @@ def convert(
     project: str = "jaffle_shop",
     dialect: str | None = None,
     descriptions: Mapping[str, str] | None = None,
+    elsewhere: Sequence[ProjectContext] = (),
 ) -> ProjectChange:
     """Run the real ingest -> classify -> passes -> assemble pipeline over `sql`.
 
@@ -65,6 +66,7 @@ def convert(
         unique_key=unique_key,
         answers=answers,
         descriptions=descriptions,
+        elsewhere=elsewhere,
     )
 
 

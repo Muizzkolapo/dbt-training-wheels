@@ -38,7 +38,7 @@ from typing import Literal
 from dbtw.core.assemble.types import TableRef
 from dbtw.core.naming import is_qualified, qualified_name
 
-ResolutionKind = Literal["ref", "source", "unresolved"]
+ResolutionKind = Literal["ref", "source", "cross_ref", "unresolved"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,9 +47,18 @@ class Resolution:
 
     ref: TableRef
     kind: ResolutionKind
-    target: str  # final model name (kind == "ref"); table name (kind == "source"); "" otherwise
+    # final model name (kind == "ref"); table name (kind == "source"); the
+    # other project's model name (kind == "cross_ref"); "" otherwise
+    target: str
     source_name: str  # the source block name (kind == "source" only); "" otherwise
     reason: str  # names the evidence behind the resolution
+    # The dbt project that builds `target` (kind == "cross_ref" only), for
+    # dbt's two-argument `ref('project', 'model')`. A field of its own rather
+    # than `source_name` reused: the two mean different things to the thing
+    # that renders them, and one field carrying either would be a rewrite
+    # deciding which by looking at `kind` -- exactly the guessing this module
+    # exists to remove.
+    project: str = ""
 
 
 def resolve_references(
@@ -59,7 +68,19 @@ def resolve_references(
     existing_models: frozenset[str],
     declared_sources: Mapping[tuple[str, str], str],
     proposed_sources: Mapping[tuple[str, str], str],
+    elsewhere: Mapping[str, tuple[str, str]] = {},
 ) -> tuple[Resolution, ...]:
+    """`elsewhere` maps a table's bare name to the (project, model) the reader
+    has chosen to read it from instead of declaring it as their own source.
+
+    Only tables they have chosen: a name match with somebody else's model is
+    a proposal, never an action, because two projects can call two different
+    tables the same thing. The assembler records the proposal as a question
+    and puts what it finds here only once that question has been answered.
+    It is checked first, ahead of every other rule, for the same reason: an
+    answer that lost to a source declaration would be an answer discarded in
+    silence.
+    """
     return tuple(
         _resolve_one(
             ref,
@@ -68,6 +89,7 @@ def resolve_references(
             existing_models=existing_models,
             declared_sources=declared_sources,
             proposed_sources=proposed_sources,
+            elsewhere=elsewhere,
         )
         for ref in refs
     )
@@ -81,7 +103,20 @@ def _resolve_one(
     existing_models: frozenset[str],
     declared_sources: Mapping[tuple[str, str], str],
     proposed_sources: Mapping[tuple[str, str], str],
+    elsewhere: Mapping[str, tuple[str, str]] = {},
 ) -> Resolution:
+    chosen = elsewhere.get(ref.name.casefold())
+    if chosen is not None:
+        project, model = chosen
+        return Resolution(
+            ref=ref,
+            kind="cross_ref",
+            target=model,
+            source_name="",
+            reason=f"read from the {project} project's own model, as answered",
+            project=project,
+        )
+
     qualified = is_qualified(ref)
 
     if qualified:

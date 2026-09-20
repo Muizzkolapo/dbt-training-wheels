@@ -10,14 +10,20 @@ front of it actually offers.
 """
 
 import inspect
+from pathlib import Path
 from typing import get_args
 
 import pytest
 from tests.unit.assemble.helpers import convert
 
 from dbtw.core.assemble import ProjectChange
-from dbtw.core.assemble.layers import intermediate_option, mart_option
-from dbtw.core.context import LayerInfo
+from dbtw.core.assemble.layers import (
+    cross_ref_option,
+    intermediate_option,
+    mart_option,
+    source_option,
+)
+from dbtw.core.context import LayerInfo, read_project
 from dbtw.core.passes import (
     Answer,
     Decision,
@@ -60,6 +66,8 @@ OPTIONS_BY_FACTORY = {
     var_option: (var_option(), var_option("cutoff")),
     intermediate_option: (intermediate_option(_LAYER), intermediate_option(_LAYER, "incremental")),
     mart_option: (mart_option(_LAYER), mart_option(_LAYER, "incremental")),
+    source_option: (source_option("dim_customers"),),
+    cross_ref_option: (cross_ref_option("core_platform", "dim_customers"),),
 }
 EVERY_OPTION = tuple(option for options in OPTIONS_BY_FACTORY.values() for option in options)
 
@@ -188,6 +196,12 @@ _LAYER_SQL = (
 )
 
 
+_FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
+
+# Reads a table called dim_customers, which `core_platform` builds a model of.
+_CROSS_SQL = "INSERT INTO revenue_events SELECT c.name FROM analytics.dim_customers AS c;\n"
+
+
 def _option_sets_the_pipeline_builds() -> dict[str, list[tuple[str, tuple[Option, ...]]]]:
     """Every optioned Decision the real pipeline builds, per run.
 
@@ -210,6 +224,13 @@ def _option_sets_the_pipeline_builds() -> dict[str, list[tuple[str, tuple[Option
         # reason -- jaffle_shop has staging and marts and no intermediate, so
         # this question never arises there.
         "layer question": convert(_LAYER_SQL, project="three_layers"),
+        # The cross-project question, which only a reader who has named
+        # another project can be asked: it takes a model somewhere else with
+        # the same name as a table this conversion reads.
+        "cross-project question": convert(
+            _CROSS_SQL,
+            elsewhere=(read_project(_FIXTURES / "core_platform"),),
+        ),
     }
     checked = Answer(verify_option().label, ("order_id",))
     appended = Answer(append_option().label)

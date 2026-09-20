@@ -6,7 +6,7 @@ so far. No I/O of its own beyond the pipeline's, and no conversion logic --
 from __future__ import annotations
 
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -113,6 +113,12 @@ class Session:
     dialect: str | None = None
     answers: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     descriptions: dict[str, str] = field(default_factory=dict)
+    # Other dbt projects to check this conversion's tables against. Paths
+    # rather than read contexts, and re-read on every run for the reason the
+    # target project is: a screen has to be current with a project being
+    # edited beside it, and a context read once at startup is a screen that
+    # quietly describes a project as it used to be.
+    elsewhere: tuple[Path, ...] = ()
 
     def current(self) -> ProjectChange:
         """This conversion with `answers` applied. What a screen renders.
@@ -420,7 +426,11 @@ class Session:
         classified = classify_statements(result)
         state = run_passes(classified, result.dialect)
         change = assemble(
-            state, read_project(self.project), answers=answers, descriptions=descriptions
+            state,
+            read_project(self.project),
+            answers=answers,
+            descriptions=descriptions,
+            elsewhere=tuple(read_project(path) for path in self.elsewhere),
         )
         return change, classified
 
@@ -517,10 +527,19 @@ class Source:
     out: Path
     project: Path | None = None
     dialect: str | None = None
+    # Other dbt projects to check this conversion's tables against, as the
+    # reader named them. Empty is the ordinary case: most readers have one
+    # project, and the design's own empty state for this says so.
+    elsewhere: tuple[Path, ...] = ()
     session: Session | None = None
     _staged: Path | None = field(default=None, repr=False)
 
-    def start(self, project: str | Path, files: Mapping[str, str]) -> None:
+    def start(
+        self,
+        project: str | Path,
+        files: Mapping[str, str],
+        elsewhere: Sequence[str | Path] = (),
+    ) -> None:
         """Adopt a dbt project, stage `files`, and open a conversation.
 
         Both at once, because neither is any use without the other. A
@@ -548,6 +567,12 @@ class Source:
         # whether it can be read. Its refusals name the path and say what is
         # wrong with it, which is what the screen renders.
         read_project(root)
+        # Every other project too, and before anything is staged. A reader
+        # who mistyped the third of three paths should be told which one,
+        # with their SQL still where they left it.
+        others = tuple(Path(other).expanduser() for other in elsewhere if str(other).strip())
+        for other in others:
+            read_project(other)
         if not files or not any(text.strip() for text in files.values()):
             raise EmptySourceError(
                 "nothing to convert: paste a query or choose a .sql file, and press Convert"
@@ -558,7 +583,8 @@ class Source:
         for name, text in files.items():
             (staged / name).write_text(text, encoding="utf-8")
         self.project = root
-        self.session = Session(project=root, sql=staged, dialect=self.dialect)
+        self.elsewhere = others
+        self.session = Session(project=root, sql=staged, dialect=self.dialect, elsewhere=others)
 
     def _staging(self) -> Path:
         if self._staged is None:

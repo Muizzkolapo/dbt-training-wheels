@@ -93,7 +93,12 @@ def rewrite_body(
         resolution = resolutions.get((table.catalog, table.db, table.name))
         if resolution is None or resolution.kind == "unresolved":
             return table
-        if resolution.kind == "ref":
+        if resolution.kind == "cross_ref":
+            # dbt's two-argument ref: the project that builds the model, then
+            # the model. It is how one project reads another's model instead
+            # of declaring that team's raw table as a source of its own.
+            jinja = f"{{{{ ref('{resolution.project}', '{resolution.target}') }}}}"
+        elif resolution.kind == "ref":
             jinja = f"{{{{ ref('{resolution.target}') }}}}"
         else:
             jinja = f"{{{{ source('{resolution.source_name}', '{resolution.target}') }}}}"
