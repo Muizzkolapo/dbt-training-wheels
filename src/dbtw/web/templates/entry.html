@@ -18,6 +18,16 @@
   able to speak at all, and it puts the claim the tool makes about itself
   where every other claim it makes lives.
 
+  The project is asked for first and is required, and the `required` on it
+  is not the gate three of three personas called theatre. That gate asked a
+  reader to certify they had read something; this asks for the one input
+  without which there is nothing to convert *against*. Every proposal this
+  walk makes -- which layer, what prefix, which materialization -- is read
+  out of the `dbt_project.yml` there, and a conversion without one would be
+  this tool inventing conventions and presenting them as findings.
+  `test_no_screen_gates_the_write_action` holds the walk to the difference:
+  the thing that must not be gated is the write, and it is not.
+
   What the design shows here that this does not: tabs for "From warehouse"
   and "From git", both marked SOON. They are a roadmap, and a roadmap
   rendered as a disabled control is this screen promising something no code
@@ -41,6 +51,12 @@
 <form method="post" action="/source" enctype="multipart/form-data">
   <div class="source-card">
     <div class="inner">
+      <fieldset>
+        <legend>Your dbt project</legend>
+        <input type="text" name="project" value="{{ project }}" spellcheck="false"
+               placeholder="/path/to/dbt/project" required>
+      </fieldset>
+
       <fieldset>
         <legend>Paste a query</legend>
         <textarea name="pasted" rows="12" spellcheck="false"></textarea>

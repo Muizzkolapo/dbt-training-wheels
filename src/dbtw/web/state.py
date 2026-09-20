@@ -481,10 +481,18 @@ class EmptySourceError(ValueError):
 class Source:
     """Where this walk's SQL comes from, and the conversation over it.
 
-    `session` is None until SQL arrives. `dbtw web` started without a
-    SQL_PATH has nothing to convert yet, so the walk's screens have nothing
-    to render and the entry screen is what a reader meets instead. Supplying
-    the path on the command line simply means it is not None to begin with.
+    `project` and `session` are both None until a reader brings something.
+    `dbtw web` started with neither has no project to convert against and
+    nothing to convert, so the walk's screens have nothing to render and the
+    entry screen is what a reader meets instead. Supplying either on the
+    command line simply means it is not None to begin with.
+
+    `project` is a dbt project root, and the walk refuses to start without
+    one. Everything this tool proposes is a proposal about *that* project --
+    which layer a model belongs in, what prefix its name takes, what a folder
+    already materializes as -- and all of it is read from the
+    `dbt_project.yml` there. A conversion made without one would be this tool
+    inventing conventions and presenting them as findings.
 
     Mutable, and the one mutable thing in this package: every other type here
     is frozen. It holds what changes -- which conversation the app is serving
@@ -506,25 +514,40 @@ class Source:
     stable as the session that reads it, which is all the keys need.
     """
 
-    project: Path
     out: Path
+    project: Path | None = None
     dialect: str | None = None
     session: Session | None = None
     _staged: Path | None = field(default=None, repr=False)
 
-    def start(self, files: Mapping[str, str]) -> None:
-        """Stage `files` and open a conversation over them.
+    def start(self, project: str | Path, files: Mapping[str, str]) -> None:
+        """Adopt a dbt project, stage `files`, and open a conversation.
+
+        Both at once, because neither is any use without the other. A
+        conversion is a proposal about somebody's project -- which layer a
+        model belongs in, what its name should be prefixed with, which
+        materialization a folder already defaults to -- and all of that is
+        read out of their `dbt_project.yml`. Without it this tool would be
+        guessing at conventions and presenting the guesses as findings, which
+        is the one thing it must not do.
 
         `files` is {filename: text}. More than one is ordinary: `ingest`
         reads a directory as every .sql in it, so a folder of scripts and a
         single pasted query are the same shape here, and the session is
         pointed at the directory either way.
 
-        The directory is emptied first. What a reader sends replaces what
-        they sent before rather than joining it -- a second paste that left
-        the first one in place would convert both and show a walk over a
-        script the reader thinks they replaced.
+        Every refusal fires before anything is staged or adopted, in the
+        shape `deliver` uses. The staging directory is emptied as part of
+        starting -- what a reader sends replaces what they sent before rather
+        than joining it -- so a project refused *after* that clearing would
+        take their previous source with it and leave them with neither.
         """
+        root = Path(project).expanduser()
+        # Read, not merely existence-checked: the conventions this walk
+        # proposes come out of this file, and `read_project` is what knows
+        # whether it can be read. Its refusals name the path and say what is
+        # wrong with it, which is what the screen renders.
+        read_project(root)
         if not files or not any(text.strip() for text in files.values()):
             raise EmptySourceError(
                 "nothing to convert: paste a query or choose a .sql file, and press Convert"
@@ -534,7 +557,8 @@ class Source:
             existing.unlink()
         for name, text in files.items():
             (staged / name).write_text(text, encoding="utf-8")
-        self.session = Session(project=self.project, sql=staged, dialect=self.dialect)
+        self.project = root
+        self.session = Session(project=root, sql=staged, dialect=self.dialect)
 
     def _staging(self) -> Path:
         if self._staged is None:

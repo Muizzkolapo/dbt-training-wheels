@@ -220,6 +220,14 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
     # and fails the threshold instead -- so the check here is weaker by
     # exactly the width of the reader's own file.
 
+    # What `read_project` read out of the reader's dbt_project.yml, which the
+    # first screen of the walk renders: every convention this conversion
+    # rests on, with the evidence it was concluded from.
+    ctx = read_project(session.project)
+    produced.append(ctx.project_name)
+    for detection in ctx.detections:
+        produced.extend((detection.key, detection.value or "", detection.evidence))
+
     # What the tool says about itself on the screen a reader meets first.
     # Engine-owned for the reason `dbtw.core.intro` gives -- a screen may not
     # write a sentence -- so it belongs in the set every marked string on

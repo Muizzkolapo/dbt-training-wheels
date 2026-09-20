@@ -310,3 +310,33 @@ def test_web_writes_nothing(tmp_path: Path, project: Path) -> None:
 
     assert _snapshot(project) == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["checkout", "in.sql"]
+
+
+def test_a_sql_path_with_no_project_is_refused_rather_than_ignored(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """A conversation is about one script AND one project, so a SQL_PATH with
+    no project cannot open one.
+
+    Refused loudly rather than carried to the entry screen: carrying it means
+    this command accepted an argument and then showed a screen asking for it
+    again. The first shape of this ignored the path in silence, which is the
+    one outcome this project does not allow.
+    """
+    script = tmp_path / "in.sql"
+    script.write_text(ONE_APPEND, encoding="utf-8")
+
+    code = main(["web", str(script), "--no-browser"])
+
+    assert code == 2
+    assert "--project" in capsys.readouterr().err
+
+
+def test_a_web_walk_starts_with_no_project_at_all(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """`dbtw web` with nothing: the reader brings both in the browser."""
+    code = main(["web", "--no-browser", "--out", str(tmp_path / "out")])
+
+    assert code == 0
+    assert "browser" in capsys.readouterr().out
