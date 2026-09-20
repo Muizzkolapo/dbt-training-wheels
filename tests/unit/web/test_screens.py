@@ -36,7 +36,8 @@ from dbtw.core.emit import (
     worked_example,
 )
 from dbtw.core.teach import terms_in
-from dbtw.web import Session
+from dbtw.web import Session, Source
+from dbtw.web.app import _branch_name
 
 # What counts as a sentence in an authored run. Every label the templates
 # write is three words or fewer ("In plain words", "Write these files"), so
@@ -44,6 +45,17 @@ from dbtw.web import Session
 # sentence that explains something. It is deliberately low: this test exists
 # to fail the moment a template starts explaining.
 _SENTENCE = 5
+
+
+# The entry screen. Not a screen of the walk: it is how a reader gets one,
+# and it renders before there is a conversion to render. Every guard that
+# asks something of "a screen of the walk" reaches it through
+# `_guarded_pages` rather than through `_screen_urls`, so it is held to all
+# of them -- including the prose rule, which it passes: it explains no
+# Decision, so it has nothing to explain at sentence length, and every run it
+# writes is a label. It is exempt from exactly one assertion, that a page
+# shows a derived count, because it has nothing to count.
+_ENTRY = "/source"
 
 
 def _screen_urls(app, session: Session) -> tuple[str, ...]:
@@ -55,12 +67,17 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
     question rule, which contributes one per question this conversion asks.
     A rule taking any other argument stops the test rather than being skipped
     -- a screen this cannot address is a screen nothing here checks.
+
+    `/source` is excluded, and it is the only exclusion: it is the screen a
+    reader is on *before* this walk exists, so it is not one of the walk's
+    own, does not carry the walk's navigation, and has no conversation to
+    render. It is still guarded -- see `_ENTRY`.
     """
     asked = len(session.view().questions)
     urls: list[str] = []
     for rule in sorted(app.url_map.iter_rules(), key=lambda rule: rule.rule):
         methods = rule.methods or set()
-        if rule.endpoint == "static" or "GET" not in methods:
+        if rule.endpoint == "static" or "GET" not in methods or rule.rule == _ENTRY:
             continue
         if not rule.arguments:
             urls.append(rule.rule)
@@ -102,7 +119,23 @@ _DOWNGRADED = "downgraded"
 _STALE = "stale"
 _WRITTEN = "written"
 _WRITE_FAILED = "write failed"
-_STATES = (_PRISTINE, _ANSWERED, _DOWNGRADED, _STALE, _WRITTEN, _WRITE_FAILED)
+# The two states a reader reaches by pressing the second button that touches
+# their disk. Delivery puts a branch in their own repository, so the screen
+# that reports it and the screen that refuses it are both pages a reader
+# lands on -- and a guard that never visited them would be the same
+# wrong-coverage-set defect this file has already been fixed for twice.
+_DELIVERED = "delivered"
+_DELIVERY_REFUSED = "delivery refused"
+_STATES = (
+    _PRISTINE,
+    _ANSWERED,
+    _DOWNGRADED,
+    _STALE,
+    _WRITTEN,
+    _WRITE_FAILED,
+    _DELIVERED,
+    _DELIVERY_REFUSED,
+)
 
 
 def _append_key(session: Session) -> str:
@@ -136,6 +169,21 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         app, client, session = walk(walk_sql, out=project_dir)
         assert client.post("/write").status_code == 500
         return app, client, session, project_dir
+
+    if state in (_DELIVERED, _DELIVERY_REFUSED):
+        # Delivery is offered only after a write, so both states are a
+        # written walk plus one press. The difference is the project: a git
+        # repository with a clean tree accepts the branch, and a directory
+        # that is not a repository at all is refused -- the commonest of the
+        # three refusals, and the one a reader meets without having done
+        # anything wrong.
+        if state == _DELIVERED:
+            _as_git_repo(project_dir)
+        app, client, session = walk(walk_sql)
+        assert client.post("/write").status_code == 200
+        delivered = client.post("/deliver")
+        assert delivered.status_code == (200 if state == _DELIVERED else 409)
+        return app, client, session, out_dir
 
     app, client, session = walk(walk_sql)
     if state == _ANSWERED:
@@ -189,9 +237,17 @@ def _produced(session: Session, out: Path, state: str) -> frozenset[str]:
     strings = engine_strings(session, out)
     if state == _STALE:
         return strings
+    # Every state but the stranded one renders the answer refusal, because
+    # `_guarded_pages` presses the misstep that produces it.
     strings |= {normalised(_refusal_message(session))}
     if state == _WRITE_FAILED:
         strings |= {normalised(_write_refusal(session, out))}
+    if state in (_DELIVERED, _DELIVERY_REFUSED):
+        # What a delivery reports is git's own: a branch name this module
+        # derived and a commit sha only git can know. Asked of the thing that
+        # produced them rather than written out here, for the reason
+        # `_refusal_message` gives.
+        strings |= _delivery_strings(session, out, state)
     return strings
 
 
@@ -202,6 +258,66 @@ def _write_refusal(session: Session, out: Path) -> str:
     except ValueError as refusal:
         return str(refusal)
     raise AssertionError(f"emit accepted {out} as a destination")
+
+
+def _as_git_repo(root: Path) -> None:
+    """Make `root` a committed git repository, so a delivery can branch it.
+
+    Identity is set on the repository rather than read from the machine: a
+    test that depended on whoever runs it having git configured would fail on
+    a fresh checkout for a reason that has nothing to do with this code.
+    """
+    import subprocess
+
+    def git(*arguments: str) -> None:
+        subprocess.run(["git", *arguments], cwd=root, capture_output=True, check=True)
+
+    git("init", "-q")
+    git("config", "user.email", "reader@example.invalid")
+    git("config", "user.name", "The Reader")
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
+        git("add", "--", str(path.relative_to(root)))
+    git("commit", "-q", "-m", "the project as it was")
+
+
+def _delivery_strings(session: Session, out: Path, state: str) -> frozenset[str]:
+    """What the delivered or refused screen renders that only git can produce.
+
+    The two states are asked differently, and they have to be. A refusal is
+    deterministic, so it is obtained by *making the call* against a throwaway
+    copy of the project -- the same discipline `_refusal_message` uses, and
+    safe because a refused delivery changes nothing. A commit sha is not
+    deterministic: every commit has its own, so re-delivering somewhere else
+    produces a different one and could never match the page. That one is read
+    back out of the repository the delivery actually went into, which is
+    asking the thing that produced it in the most direct way available.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    from dbtw.core.deliver import deliver
+
+    if state == _DELIVERED:
+
+        def git(*arguments: str) -> str:
+            done = subprocess.run(
+                ["git", *arguments], cwd=session.project, capture_output=True, text=True, check=True
+            )
+            return done.stdout.strip()
+
+        return frozenset(
+            {normalised(git("rev-parse", "HEAD")), normalised(git("branch", "--show-current"))}
+        )
+
+    scratch = Path(tempfile.mkdtemp()) / "project"
+    shutil.copytree(session.project, scratch)
+    branch = _branch_name(session.view().change)
+    try:
+        deliver(out, read_project(scratch), branch=branch, message="m")
+    except ValueError as refusal:
+        return frozenset({normalised(str(refusal)), normalised(branch)})
+    raise AssertionError("the delivery this state is built around was accepted")
 
 
 def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]:
@@ -233,6 +349,14 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     result = client.post("/write")
     assert result.status_code == (500 if state == _WRITE_FAILED else 200)
     pages["/write"] = read(result.get_data(as_text=True))
+    # The entry screen is not one of the walk's screens, and is guarded like
+    # one anyway: a number on it still has to be the length of what it lists,
+    # a heading still has to open something, and it still may not gate the
+    # write action behind a tick. The one rule it is exempt from is the prose
+    # rule, and that exemption is named where it is taken.
+    entry = client.get(_ENTRY)
+    assert entry.status_code == 200
+    pages[_ENTRY] = read(entry.get_data(as_text=True))
     return pages
 
 
@@ -410,7 +534,14 @@ def test_every_count_is_the_length_of_what_is_listed_beside_it(
     app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
     seen = 0
     for url, page in _guarded_pages(app, client, session, state).items():
-        assert page.counts, f"{state} {url} shows no derived count"
+        # Every page of the walk carries at least the nav's own screen count.
+        # The entry screen carries no nav, because the walk it would navigate
+        # does not exist yet -- so it is the one page with nothing to count,
+        # and "counts nothing" is the honest rendering rather than a zero.
+        # Both assertions below still apply to it: what it counts must match,
+        # and a digit outside a count is still a number answering to nothing.
+        if url != _ENTRY:
+            assert page.counts, f"{state} {url} shows no derived count"
         for name, shown in page.counts:
             listed = sum(1 for item in page.items if item == name)
             assert shown == str(listed), f"{state} {url} says {shown} {name} beside {listed}"
@@ -760,7 +891,10 @@ def test_the_start_screens_glossary_does_not_depend_on_the_sql_files_directory_n
     salted.write_text(ONE_APPEND, encoding="utf-8")
 
     def start_page(sql: Path) -> Page:
-        app = create_app(Session(project=project_dir, sql=sql), out_dir)
+        source = Source(
+            project=project_dir, out=out_dir, session=Session(project=project_dir, sql=sql)
+        )
+        app = create_app(source)
         app.testing = True
         return read(app.test_client().get("/").get_data(as_text=True))
 
@@ -861,6 +995,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
     rendered = set(app.jinja_env.list_templates())
     assert rendered == {
         "base.html",
+        "entry.html",
         "start.html",
         "question.html",
         "caveats.html",

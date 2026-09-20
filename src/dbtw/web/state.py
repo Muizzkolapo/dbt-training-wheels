@@ -5,6 +5,7 @@ so far. No I/O of its own beyond the pipeline's, and no conversion logic --
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -295,3 +296,78 @@ def _question(change: ProjectChange, key: str) -> Decision:
             "conversion did, so there is no answer to give it"
         )
     return decision
+
+
+class EmptySourceError(ValueError):
+    """Nothing arrived to convert.
+
+    Input-driven, and the one refusal the entry screen can produce: a reader
+    pressed Convert with an empty box and no file chosen. Not a dbtw bug, so
+    the screen renders it rather than letting it surface as a traceback --
+    the same category as the refusals the answer loop already gives back.
+    """
+
+
+@dataclass
+class Source:
+    """Where this walk's SQL comes from, and the conversation over it.
+
+    `session` is None until SQL arrives. `dbtw web` started without a
+    SQL_PATH has nothing to convert yet, so the walk's screens have nothing
+    to render and the entry screen is what a reader meets instead. Supplying
+    the path on the command line simply means it is not None to begin with.
+
+    Mutable, and the one mutable thing in this package: every other type here
+    is frozen. It holds what changes -- which conversation the app is serving
+    -- and nothing else, so the boundary between "the app's state" and "a
+    conversation's state" is one object wide. A second tab is a second view
+    of whatever it currently holds, which is what spec 4.1 asks for.
+
+    `start` is the only way the session changes, and it replaces rather than
+    edits: new SQL is a new conversation, not the old one with a different
+    script underneath it. That is why no answer survives it -- an answer
+    names a question of the run that asked it, and the new run did not ask.
+
+    Pasted and uploaded SQL lands in one directory per app process, made on
+    first use and reused after it. Stability is the point, not tidiness:
+    spec 11.7 records that a tier-2 `Decision.key` embeds the path its
+    statement was read from, so a source staged somewhere new per run hands
+    out keys that are invalid on the next one and every answer held against
+    them is refused. One directory for the life of the process is exactly as
+    stable as the session that reads it, which is all the keys need.
+    """
+
+    project: Path
+    out: Path
+    dialect: str | None = None
+    session: Session | None = None
+    _staged: Path | None = field(default=None, repr=False)
+
+    def start(self, files: Mapping[str, str]) -> None:
+        """Stage `files` and open a conversation over them.
+
+        `files` is {filename: text}. More than one is ordinary: `ingest`
+        reads a directory as every .sql in it, so a folder of scripts and a
+        single pasted query are the same shape here, and the session is
+        pointed at the directory either way.
+
+        The directory is emptied first. What a reader sends replaces what
+        they sent before rather than joining it -- a second paste that left
+        the first one in place would convert both and show a walk over a
+        script the reader thinks they replaced.
+        """
+        if not files or not any(text.strip() for text in files.values()):
+            raise EmptySourceError(
+                "nothing to convert: paste a query or choose a .sql file, and press Convert"
+            )
+        staged = self._staging()
+        for existing in staged.iterdir():
+            existing.unlink()
+        for name, text in files.items():
+            (staged / name).write_text(text, encoding="utf-8")
+        self.session = Session(project=self.project, sql=staged, dialect=self.dialect)
+
+    def _staging(self) -> Path:
+        if self._staged is None:
+            self._staged = Path(tempfile.mkdtemp(prefix="dbtw-source-"))
+        return self._staged

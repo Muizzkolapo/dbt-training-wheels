@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Protocol
 import pytest
 from tests.unit.web.helpers import ONE_APPEND
 
-from dbtw.web import Session
+from dbtw.web import Session, Source
 from dbtw.web import state as state_module
 
 if TYPE_CHECKING:
@@ -141,7 +141,13 @@ def walk(project_dir: Path, out_dir: Path) -> Walk:
         from dbtw.web.app import create_app
 
         session = Session(project=project_dir, sql=sql, dialect=dialect)
-        app = create_app(session, out_dir if out is None else out)
+        source = Source(
+            project=project_dir,
+            out=out_dir if out is None else out,
+            dialect=dialect,
+            session=session,
+        )
+        app = create_app(source)
         app.testing = True
         return app, app.test_client(), session
 
