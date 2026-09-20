@@ -1,5 +1,11 @@
 {#
-  What each model is for, in the reader's own words.
+  What each model is for in the reader's own words, and the tags it carries.
+
+  Both on one row and saved by one press, because both are the same kind of
+  thing: a fact about a model that no reading of SQL can supply. The design
+  gives tags a step of their own; folding them in here costs a screen and
+  buys a reader one place to say everything they know about a model, instead
+  of two screens listing the same models for two fields.
 
   The one screen of the walk with nothing to offer. Every other screen puts
   the engine's options in front of a reader and asks them to pick; this one
@@ -23,6 +29,14 @@
   which is the same blind spot section 11.4(c) documents for digits. The
   honest rendering of a field nothing requires is an empty box and a row
   that says it is still blank.
+
+  Tags are a textarea and not a one-line input, and that is about what can be
+  checked rather than about how it looks. An `<input>` is a void element: it
+  holds no text, so `data-engine` on one marks nothing, and the value a
+  reader sees typed into a text box is prose no guard on this page can see.
+  A textarea holds its value as content, so every rule that covers the
+  description covers the tags too. `tests/unit/web/page.py` records the same
+  limit where it takes it.
 
   The textarea carries `data-engine data-identifier` when it holds something,
   and neither when it is empty. Both halves are explained on `_describe_page`
@@ -64,6 +78,14 @@
                   data-engine data-identifier>{{ row.description }}</textarea>
         {%- else %}
         <textarea name="text" rows="3"></textarea>
+        {%- endif %}
+      </label>
+      <label>Tags
+        {%- if row.tags %}
+        <textarea name="tags" rows="1" spellcheck="false"
+                  data-engine data-identifier>{{ row.tags }}</textarea>
+        {%- else %}
+        <textarea name="tags" rows="1" spellcheck="false"></textarea>
         {%- endif %}
       </label>
       <button type="submit">Save</button>

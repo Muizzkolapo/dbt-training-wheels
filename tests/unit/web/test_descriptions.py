@@ -453,3 +453,79 @@ def test_padding_round_a_description_is_not_part_of_it(sql_file: Path, project_d
 
     (described,) = session.view().change.descriptions
     assert described.text == "One row per revenue event."
+
+
+def test_tags_written_on_the_describe_screen_reach_the_model(walk: Walk, walk_sql: Path) -> None:
+    """One press saves both: a description and the tags are the same kind of
+    thing -- a fact about a model that no reading of SQL can supply."""
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+
+    saved = client.post(
+        "/describe", data={"model": name, "text": "One row per event.", "tags": "finance daily"}
+    )
+
+    assert saved.status_code == 302
+    assert session.tags[name] == ("finance", "daily")
+    (model,) = [m for m in session.view().change.models if m.name == name]
+    assert model.tags == ("finance", "daily")
+    page = read(client.get("/describe").get_data(as_text=True))
+    assert "finance daily" in page.engine
+
+
+def test_clearing_the_tag_box_removes_the_tags(walk: Walk, walk_sql: Path) -> None:
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+    assert (
+        client.post(
+            "/describe", data={"model": name, "text": "One row.", "tags": "finance"}
+        ).status_code
+        == 302
+    )
+
+    assert (
+        client.post(
+            "/describe", data={"model": name, "text": "One row.", "tags": "   "}
+        ).status_code
+        == 302
+    )
+
+    assert name not in session.tags
+    (model,) = [m for m in session.view().change.models if m.name == name]
+    assert model.tags == ()
+
+
+def test_a_walk_stranded_on_a_tag_says_so_and_offers_the_way_out(walk: Walk, sql_script) -> None:
+    """The tag half of the stranded machinery. A tag keyed by a model an edit
+    retired makes `assemble` refuse the whole conversion, so every screen
+    raises -- and the one accessor that still answers is what gets a reader
+    out.
+    """
+    sql = sql_script(ONE_APPEND_ELSEWHERE)
+    app, client, session = walk(sql)
+    (model,) = session.view().change.models
+    assert (
+        client.post(
+            "/describe", data={"model": model.name, "text": "", "tags": "finance"}
+        ).status_code
+        == 302
+    )
+    assert session.tags
+    try:
+        sql.write_text(ONE_MERGE, encoding="utf-8")
+
+        # Two presses, and that is the design rather than the cost: the
+        # describe screen saves a description and tags in one press, so a
+        # blank description was recorded alongside the tag, and each screen
+        # names what it is about to drop before it drops it.
+        for _ in range(2):
+            stranded = client.get("/")
+            assert stranded.status_code == 409
+            assert model.name in read(stranded.get_data(as_text=True)).engine
+            assert client.post("/stale").status_code == 302
+
+        assert session.tags == {}
+        assert session.descriptions == {}
+        assert client.get("/").status_code == 200
+    finally:
+        sql.write_text(ONE_APPEND_ELSEWHERE, encoding="utf-8")

@@ -182,6 +182,12 @@ class Describable:
 
     model: AssembledModel
     description: str
+    # The tags on this model, space-separated, as the box takes them back.
+    # Read off the model rather than off the session, so the box shows what
+    # the conversion carries -- stripped, deduplicated, in order -- and not
+    # the raw string somebody typed. A reader who types a tag twice sees it
+    # once, which is what dbt will get.
+    tags: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,7 +503,12 @@ def _describables(change: ProjectChange) -> tuple[Describable, ...]:
     """
     written = {entry.model: entry.text for entry in change.descriptions}
     return tuple(
-        Describable(model=model, description=written.get(model.name, "")) for model in change.models
+        Describable(
+            model=model,
+            description=written.get(model.name, ""),
+            tags=" ".join(model.tags),
+        )
+        for model in change.models
     )
 
 
@@ -727,11 +738,14 @@ def create_app(source: Source) -> Flask:
         if stale:
             return render_template("stale.html", stale=stale, screens=(), terms=(), here=""), 409
         described = session.stale_descriptions()
-        if not described:
+        if described:
+            return render_template(
+                "stale_descriptions.html", stale=described, screens=(), terms=(), here=""
+            ), 409
+        tagged = session.stale_tags()
+        if not tagged:
             return None
-        return render_template(
-            "stale_descriptions.html", stale=described, screens=(), terms=(), here=""
-        ), 409
+        return render_template("stale_tags.html", stale=tagged, screens=(), terms=(), here=""), 409
 
     def _view() -> SessionView | tuple[str, int] | Response:
         """This conversation's view, or the page to render instead of one.
@@ -1046,8 +1060,15 @@ def create_app(source: Source) -> Flask:
         view = _view()
         if not isinstance(view, SessionView):
             return view
+        session = _conversation()
+        model = request.form.get("model", "")
         try:
-            _conversation().describe(request.form.get("model", ""), request.form.get("text", ""))
+            session.describe(model, request.form.get("text", ""))
+            # Split on whitespace, because that is how people type a list of
+            # short labels and a dbt tag has none in it. The engine strips,
+            # drops blanks and removes repeats, so "finance  daily finance"
+            # is two tags however it was typed.
+            session.tag(model, request.form.get("tags", "").split())
         except (UnknownModelError, ValueError) as refusal:
             # 400 and this screen, not a redirect: the reader is mid-action
             # and the thing they need is on the page they were already on.
@@ -1385,8 +1406,10 @@ def create_app(source: Source) -> Flask:
         # the fix: the second screen is where they are told the other half.
         if session.stale_answers():
             session.drop_stale_answers()
-        else:
+        elif session.stale_descriptions():
             session.drop_stale_descriptions()
+        else:
+            session.drop_stale_tags()
         return redirect(url_for("start"))
 
     def _refused(message: str, key: str) -> str:

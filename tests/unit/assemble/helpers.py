@@ -36,6 +36,7 @@ def convert(
     dialect: str | None = None,
     descriptions: Mapping[str, str] | None = None,
     elsewhere: Sequence[ProjectContext] = (),
+    tags: Mapping[str, Sequence[str]] | None = None,
 ) -> ProjectChange:
     """Run the real ingest -> classify -> passes -> assemble pipeline over `sql`.
 
@@ -67,6 +68,7 @@ def convert(
         answers=answers,
         descriptions=descriptions,
         elsewhere=elsewhere,
+        tags=tags,
     )
 
 

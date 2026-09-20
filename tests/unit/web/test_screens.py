@@ -1095,6 +1095,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "done.html",
         "stale.html",
         "stale_descriptions.html",
+        "stale_tags.html",
         "refused.html",
         "missing.html",
         "written.html",

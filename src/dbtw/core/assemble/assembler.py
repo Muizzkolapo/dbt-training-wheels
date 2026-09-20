@@ -1583,6 +1583,44 @@ def _refuse_unsafe_jinja(model: str, text: str) -> None:
             )
 
 
+def _tagged(
+    asked: Mapping[str, Sequence[str]], models: Sequence[AssembledModel]
+) -> tuple[AssembledModel, ...]:
+    """The models with the reader's tags on them, in the order they came.
+
+    Each tag is stripped, blanks are dropped, and a tag repeated on one model
+    is kept once -- `tags=['finance', 'finance']` is a list dbt reads twice
+    and a reader wrote once. The first spelling wins, because the order a
+    reader typed them in is the order they meant.
+
+    A tag naming a model this change does not carry is refused, for the
+    reason a description naming one is: the walk would have shown the reader
+    their own words on a screen, computed them into nothing, and said so
+    nowhere.
+    """
+    by_name = {model.name: model for model in models}
+    unknown = sorted(set(asked) - set(by_name))
+    if unknown:
+        raise UnknownModelError(
+            f"{_keys_str(tuple(unknown))} named in tags, and this conversion builds "
+            f"{_keys_str(tuple(sorted(by_name))) or 'no models'}. A tag is put on a model "
+            "the walk showed; one naming another is a caller bug"
+        )
+    return tuple(
+        dataclasses.replace(model, tags=_clean(asked.get(model.name, ()))) for model in models
+    )
+
+
+def _clean(tags: Sequence[str]) -> tuple[str, ...]:
+    """`tags` stripped, blanks dropped, repeats removed, order kept."""
+    seen: list[str] = []
+    for tag in tags:
+        stripped = tag.strip()
+        if stripped and stripped not in seen:
+            seen.append(stripped)
+    return tuple(seen)
+
+
 def _model_descriptions(
     written: Mapping[str, str], models: Sequence[AssembledModel]
 ) -> tuple[ModelDescription, ...]:
@@ -1639,6 +1677,11 @@ def assemble(
     # these already builds a model of, is a question rather than a rewrite:
     # see `_cross_ref_questions`.
     elsewhere: Sequence[ProjectContext] = (),
+    # Tags to put on each model, keyed by its FINAL name -- the name the walk
+    # showed the reader when it asked. Nothing in the SQL says which models
+    # somebody means to run together, so this engine carries tags and never
+    # invents them.
+    tags: Mapping[str, Sequence[str]] | None = None,
 ) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
@@ -2291,7 +2334,7 @@ def assemble(
                 )
 
     return ProjectChange(
-        models=tuple(rewritten_models),
+        models=_tagged(tags or {}, rewritten_models),
         sources=source_entries,
         decisions=all_decisions,
         pending=remaining_pending,

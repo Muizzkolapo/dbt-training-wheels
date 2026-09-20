@@ -48,6 +48,12 @@ def _config_args(model: AssembledModel) -> list[str]:
         )
         args.append(f"unique_key={key!r}")
 
+    # After materialization and the incremental pair, before grants: this is
+    # the order dbt's own docs put them in, and a config block is read top to
+    # bottom by someone checking it against what they asked for.
+    if model.tags:
+        args.append(f"tags={list(model.tags)!r}")
+
     if model.grants:
         merged: dict[str, list[str]] = {}
         for privilege, principals in model.grants:
