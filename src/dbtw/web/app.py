@@ -775,6 +775,7 @@ def create_app(source: Source) -> Flask:
             here="/source",
             started=source.session is not None,
             project=str(source.project) if source.project else "",
+            elsewhere="\n".join(str(path) for path in source.elsewhere),
             headline=HEADLINE,
             lede=LEDE,
             pillars=PILLARS,
@@ -834,8 +835,11 @@ def create_app(source: Source) -> Flask:
         files = dict(uploaded)
         if pasted.strip():
             files["pasted.sql"] = pasted
+        # One per line. A reader with three other projects types three paths,
+        # and blank lines between them are how people type lists.
+        others = [line.strip() for line in request.form.get("elsewhere", "").splitlines()]
         try:
-            source.start(project, files)
+            source.start(project, files, [line for line in others if line])
         except (
             NotADbtProjectError,
             EmptySourceError,

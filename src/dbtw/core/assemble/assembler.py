@@ -11,13 +11,20 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from dbtw.core.assemble.layers import layer_options, layer_question, layer_roles, role_for
+from dbtw.core.assemble.layers import (
+    cross_ref_option,
+    layer_options,
+    layer_question,
+    layer_roles,
+    role_for,
+    source_option,
+)
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.resolve import resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
 from dbtw.core.assemble.variables import Variable, extract_variables
-from dbtw.core.context import Detection, LayerInfo, ProjectContext
+from dbtw.core.context import Detection, LayerInfo, ModelInfo, ProjectContext
 from dbtw.core.naming import is_qualified, qualified_name, same_identifier
 from dbtw.core.passes.types import (
     Answer,
@@ -117,6 +124,79 @@ def _resolve_layer(
     reason = f"no {role} layer in the target project's model tree; no other layer available"
     action = f"could not place {name} in a {role} layer; no layer available at all"
     return None, [_decision("layer_fallback", name, action, reason)]
+
+
+def _cross_ref_questions(
+    sources: Sequence[SourceEntry],
+    elsewhere: Sequence[ProjectContext],
+    answers: Mapping[str, Answer],
+) -> tuple[list[Decision], dict[str, tuple[str, str]]]:
+    """For each table another project already models, the question and the answer.
+
+    The match is on the table's bare name against the model names those
+    projects build, case-folded. That is a *proposal* and is why this is a
+    question rather than a rewrite: two projects can call two different
+    tables `customers`, and nothing here can tell them apart. The Decision
+    says which project, which model, and where that model's file is, so the
+    reader is deciding with the evidence rather than on this tool's say-so.
+
+    The default is the source declaration. Reading somebody else's model
+    changes what this project depends on -- their tests and their lineage
+    come with it, and so do their changes -- and that is not a thing to do to
+    a reader who has not asked for it.
+
+    Returns the questions, and the answers taken keyed by folded table name
+    so `resolve_references` can rewrite those references and `_source_entries`
+    can stop declaring them.
+    """
+    if not elsewhere:
+        return [], {}
+    built: dict[str, tuple[ProjectContext, ModelInfo]] = {}
+    for other in elsewhere:
+        for model in other.existing_models:
+            built.setdefault(model.name.casefold(), (other, model))
+
+    questions: list[Decision] = []
+    taken: dict[str, tuple[str, str]] = {}
+    for entry in sorted({e.table for e in sources}):
+        match = built.get(entry.casefold())
+        if match is None:
+            continue
+        other, model = match
+        options = (source_option(entry), cross_ref_option(other.project_name, model.name))
+        decision = Decision(
+            key=f"assemble.cross_ref.{entry}",
+            tier=2,
+            action=f"declared {entry} as this project's own source",
+            reason=(
+                f"the {other.project_name} project builds a model called {model.name} "
+                f"({model.path}); a table of that name here could be the same table, "
+                "and a source declaration is the answer that depends on nobody"
+            ),
+            plain_reason=(
+                f"Another team's project has something called {model.name} too. It "
+                "might be this same table tidied up, or it might just share a name -- "
+                "which is why this is asked rather than done."
+            ),
+            source_file="",
+            line_start=0,
+            line_end=0,
+            question=f"Should {entry} be read from {other.project_name}, or declared here?",
+            plain_question=f"Where should {entry} come from?",
+            options=options,
+            chosen=options[0].label,
+            subject=Subject(table=entry, columns=(), candidates=()),
+        )
+        answer = answers.get(decision.key)
+        if answer is not None and answer.label == options[1].label:
+            taken[entry.casefold()] = (other.project_name, model.name)
+            decision = dataclasses.replace(
+                decision,
+                action=f"read {entry} from the {other.project_name} project's {model.name}",
+                chosen=options[1].label,
+            )
+        questions.append(decision)
+    return questions, taken
 
 
 def _layer_choice(
@@ -1554,6 +1634,11 @@ def assemble(
     # walk showed the reader when it asked. Text only they can write: what a
     # model is for is not in the SQL that builds it.
     descriptions: Mapping[str, str] | None = None,
+    # Other dbt projects the reader named, read the same way the target is.
+    # A table this conversion would declare as its own source, that one of
+    # these already builds a model of, is a question rather than a rewrite:
+    # see `_cross_ref_questions`.
+    elsewhere: Sequence[ProjectContext] = (),
 ) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
@@ -1588,10 +1673,23 @@ def assemble(
             dependents[dep].add(name)
     dependents_frozen = {name: frozenset(deps_of) for name, deps_of in dependents.items()}
 
+    # Read once, up here: placement, the cross-project questions and the
+    # incremental questions all resolve answers, and they run in that order.
+    answers_map = answers or {}
+
     source_entries, source_decisions = _source_entries(drafts, refs, draft_names, ctx)
     new_decisions.extend(source_decisions)
 
-    answers_map = answers or {}
+    cross_questions, cross_taken = _cross_ref_questions(source_entries, elsewhere, answers_map)
+    new_decisions.extend(cross_questions)
+    # A table read from another project's model is not also declared as this
+    # project's source. Declaring it anyway would put a raw table in
+    # sources.yml that no model reads -- and would say, in a file the reader
+    # commits, that this conversion depends on something it does not.
+    source_entries = tuple(
+        entry for entry in source_entries if entry.table.casefold() not in cross_taken
+    )
+
     roles = layer_roles(ctx)
     layer_questions: list[Decision] = []
     detections_by_key = {d.key: d for d in ctx.detections}
@@ -1804,6 +1902,10 @@ def assemble(
     # against a placement nothing would apply.
     dropped_layer_keys = {f"assemble.layer.{drafts[index].name}" for index in dropped_indices}
     answerable_decisions.extend(q for q in layer_questions if q.key not in dropped_layer_keys)
+    # Every cross-project question, because each is about a table this
+    # conversion reads and every one of those is still read whatever else
+    # happens to the drafts.
+    answerable_decisions.extend(cross_questions)
     # The dbt tests this run's answers asked for. Only an answer can ask for
     # one, so a run with no answers carries none -- `--unique-key` takes a key
     # on trust exactly as it always has.
@@ -2040,6 +2142,7 @@ def assemble(
             existing_models=existing_model_names,
             declared_sources=declared_sources_map,
             proposed_sources=proposed_sources_map,
+            elsewhere=cross_taken,
         )
         resolutions_by_key = {(r.ref.catalog, r.ref.db, r.ref.name): r for r in resolutions}
         rewritten_body = rewrite_body(

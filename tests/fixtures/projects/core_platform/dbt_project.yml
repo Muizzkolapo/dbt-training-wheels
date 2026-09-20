@@ -1,0 +1,9 @@
+name: core_platform
+version: "1.0.0"
+config-version: 2
+profile: core_platform
+model-paths: ["models"]
+models:
+  core_platform:
+    marts:
+      +materialized: table

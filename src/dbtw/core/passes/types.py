@@ -35,6 +35,13 @@ OptionKind = Literal[
     # say the reader's own layer name, which is the split `kind` exists for.
     "intermediate",
     "mart",
+    # Where a table this conversion reads should come from: declared as this
+    # project's own source, or read from another project's model with dbt's
+    # two-argument ref(). Offered only when some other project the reader
+    # named actually builds a model of that name -- a proposal, because two
+    # projects can call two different tables the same thing.
+    "source",
+    "cross_ref",
 ]
 
 

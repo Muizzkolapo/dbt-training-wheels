@@ -167,3 +167,41 @@ def layer_question(name: str, chosen: str, options: tuple[Option, ...]) -> str:
     if len(options) < 2:
         return ""
     return f"Which layer does {name} belong in?"
+
+
+def source_option(table: str) -> Option:
+    """Declare the table as this project's own source. The default."""
+    return Option(
+        label=f"declare {table} as my source",
+        effect=(
+            f"{table} is declared in this project's sources.yml and read with "
+            f"source(), so this conversion depends on the raw table"
+        ),
+        kind="source",
+        plain=(
+            "Your project names the raw table itself and reads straight from it. "
+            "Nothing you build depends on anybody else's work."
+        ),
+    )
+
+
+def cross_ref_option(project: str, model: str) -> Option:
+    """Read the table from another project's model instead.
+
+    dbt's two-argument `ref('project', 'model')`. What it buys and what it
+    costs are both in `effect`, because they are one fact: their model's
+    tests and lineage come with it, and so do their changes.
+    """
+    return Option(
+        label=f"read it from {project}",
+        effect=(
+            f"read with ref('{project}', '{model}') instead of a source, so this "
+            f"conversion inherits {project}'s tests and lineage for it -- and its changes"
+        ),
+        kind="cross_ref",
+        plain=(
+            "Another team has already tidied this table up in their own project. "
+            "You read their finished version instead of the raw one, which means "
+            "you get their fixes and also their mistakes."
+        ),
+    )

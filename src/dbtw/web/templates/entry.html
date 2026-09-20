@@ -28,6 +28,12 @@
   `test_no_screen_gates_the_write_action` holds the walk to the difference:
   the thing that must not be gated is the write, and it is not.
 
+  Other projects are optional and the design says why: "every table your SQL
+  reads lives in a project you own" is the ordinary answer. They are asked
+  for here rather than on a screen of their own because they are an input to
+  the conversion, not a decision within it -- what the conversion does with
+  them is a question, and that question is a screen.
+
   What the design shows here that this does not: tabs for "From warehouse"
   and "From git", both marked SOON. They are a roadmap, and a roadmap
   rendered as a disabled control is this screen promising something no code
@@ -55,6 +61,11 @@
         <legend>Your dbt project</legend>
         <input type="text" name="project" value="{{ project }}" spellcheck="false"
                placeholder="/path/to/dbt/project" required>
+      </fieldset>
+
+      <fieldset>
+        <legend>Other dbt projects (optional)</legend>
+        <textarea name="elsewhere" rows="2" spellcheck="false">{{ elsewhere }}</textarea>
       </fieldset>
 
       <fieldset>
