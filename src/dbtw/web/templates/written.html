@@ -1,5 +1,5 @@
 {#
-  What landed, and where.
+  What landed, and where, and the one step left.
 
   The destination is named here for the same reason it is named on the screen
   the button was pressed from: a reader who typed the command minutes ago has
@@ -9,6 +9,12 @@
   The paths are project-relative, as they are on the files screen, and they
   are the ones `emit` reported writing rather than a second derivation of
   where it puts things. The count beside them is the length of that list.
+
+  Delivery is offered here and not before, and the ordering is the point:
+  what it copies into the reader's own project is this directory, whose
+  contents they have just read file by file. Once it has run, the form is
+  gone and the branch is named instead -- the walk cannot undo a branch in
+  someone's repository, so it does not offer to make a second one.
 #}
 {% extends "base.html" %}
 {% block main %}
@@ -20,4 +26,23 @@
   <li data-item="written"><span data-engine>{{ path }}</span></li>
   {%- endfor %}
 </ul>
+
+{%- if delivered %}
+<h2>Delivered</h2>
+<p class="branch">On branch <span data-engine data-identifier>{{ delivered.branch }}</span>
+  as <span data-engine data-identifier>{{ delivered.commit }}</span></p>
+{%- else %}
+{%- if refusal %}
+<h2>Not delivered</h2>
+<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+{%- endif %}
+<h2>Deliver</h2>
+<form method="post" action="/deliver">
+  <fieldset>
+    <legend>Branch</legend>
+    <input type="text" name="branch" value="{{ branch }}" size="40">
+  </fieldset>
+  <p class="onward"><button type="submit">Put on a branch</button></p>
+</form>
+{%- endif %}
 {% endblock %}

@@ -58,6 +58,14 @@ from werkzeug.wrappers.response import Response
 
 from dbtw.core.assemble import ProjectChange, UnknownAnswerError
 from dbtw.core.context import read_project
+from dbtw.core.deliver import (
+    BranchExistsError,
+    Delivery,
+    DirtyWorkingTreeError,
+    GitFailedError,
+    NotAGitRepoError,
+    deliver,
+)
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
     PLACEHOLDER_NOTICE,
@@ -163,6 +171,49 @@ class FilePreview:
 # are absent from the CLI's `_USAGE_ERRORS`, and absent means they surface as
 # a traceback.
 _WRITE_FAILURES = (OutputInsideProjectError, UnsafeOutputPathError, OSError)
+
+# What a delivery can fail with that a reader can do something about: their
+# project is not a git repository or not the root of one, their working tree
+# has changes in it, the branch name is taken. GitFailedError is here too and
+# is the odd one -- it means a git command failed after its own precondition
+# was checked, which is a repository in a state this tool does not understand.
+# A reader can still act on it, because it carries git's own words, and the
+# alternative is a traceback on the last screen of the walk.
+_DELIVER_FAILURES = (
+    NotAGitRepoError,
+    DirtyWorkingTreeError,
+    BranchExistsError,
+    GitFailedError,
+    ValueError,
+)
+
+
+def _branch_name(change: ProjectChange) -> str:
+    """The branch a delivery of `change` would make.
+
+    Named after the models it carries rather than after a clock: a reader
+    reading `git branch` a week later needs to know which conversion a branch
+    holds, and a timestamp tells them when they pressed a button. One model
+    names itself; more than one is counted, because a branch name listing
+    nine models is a branch name nobody reads.
+    """
+    names = [model.name for model in change.models]
+    if len(names) == 1:
+        return f"dbtw/{names[0]}"
+    return f"dbtw/{len(names)}-models"
+
+
+def _commit_message(change: ProjectChange) -> str:
+    """The commit a delivery makes, in the shape a reviewer reads first.
+
+    A subject naming what arrived, and a body listing the models, because the
+    conversion's own reasoning is in CONVERSION_REPORT.md beside them and a
+    commit message repeating it would be a second copy free to disagree.
+    """
+    models = sorted(model.name for model in change.models)
+    noun = "model" if len(models) == 1 else "models"
+    listed = "\n".join(f"- {name}" for name in models)
+    return f"Convert {len(models)} {noun} with dbt training wheels\n\n{listed}\n"
 
 
 class NoConversationError(RuntimeError):
@@ -711,6 +762,11 @@ def create_app(source: Source) -> Flask:
     # is the front end's business.
     written: Written | None = None
 
+    # The one completed delivery of this conversation, or None. A second
+    # press of a button that has already put a branch in someone's repository
+    # must not make another one, and the walk has no way to undo the first.
+    delivered: Delivery | None = None
+
     @app.post("/write")
     def write() -> str | tuple[str, int] | Response:
         """Write this conversion to the destination the command line named.
@@ -773,7 +829,68 @@ def create_app(source: Source) -> Flask:
             terms=_terms(spoken),
             out=str(record.out),
             files=record.files,
+            branch=_branch_name(view.change),
+            delivered=delivered,
+            refusal="",
         )
+
+    @app.post("/deliver")
+    def deliver_route() -> str | tuple[str, int] | Response:
+        """Put the written conversion onto a branch of the reader's project.
+
+        Offered only after a write, and that ordering is the point: what
+        this copies across is the directory the reader has just been shown
+        the contents of, file by file. A delivery from a conversion nobody
+        has looked at would be this tool writing into their project on the
+        strength of its own say-so.
+
+        Every refusal `deliver` makes is about their repository rather than
+        their SQL -- not a git repository, a tree with changes in it, a
+        branch already taken -- and each is rendered on this screen in the
+        engine's own words, with the file list still on it, because a reader
+        who has just written a conversion and cannot deliver it needs to know
+        that the write still stands.
+        """
+        nonlocal delivered
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        if written is None:
+            # Nothing has been written, so there is nothing to deliver. The
+            # button is not on a screen a reader reaches before writing, so
+            # this is a form posted out of order rather than a state the walk
+            # offers.
+            return redirect(url_for("done"))
+        if delivered is not None:
+            return _written_page(view, written)
+        branch = request.form.get("branch", "") or _branch_name(view.change)
+        try:
+            delivered = deliver(
+                written.out,
+                read_project(_conversation().project),
+                branch=branch,
+                message=_commit_message(view.change),
+            )
+        except _DELIVER_FAILURES as refusal:
+            return render_template(
+                "written.html",
+                screens=_screens(view),
+                here="",
+                terms=_terms(
+                    _spoken(
+                        str(written.out),
+                        written.files,
+                        str(refusal),
+                        (screen.label for screen in _screens(view) if screen.engine),
+                    )
+                ),
+                out=str(written.out),
+                files=written.files,
+                branch=branch,
+                delivered=None,
+                refusal=str(refusal),
+            ), 409
+        return _written_page(view, written)
 
     def _write_failed(view: SessionView, message: str) -> str:
         """The refusal in the engine's own words, with the walk around it.
