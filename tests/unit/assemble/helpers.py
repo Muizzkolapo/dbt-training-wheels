@@ -37,6 +37,7 @@ def convert(
     descriptions: Mapping[str, str] | None = None,
     elsewhere: Sequence[ProjectContext] = (),
     tags: Mapping[str, Sequence[str]] | None = None,
+    materializations: Mapping[str, str] | None = None,
 ) -> ProjectChange:
     """Run the real ingest -> classify -> passes -> assemble pipeline over `sql`.
 
@@ -69,6 +70,7 @@ def convert(
         descriptions=descriptions,
         elsewhere=elsewhere,
         tags=tags,
+        materializations=materializations,
     )
 
 

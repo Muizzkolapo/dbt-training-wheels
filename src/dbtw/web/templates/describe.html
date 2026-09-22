@@ -30,6 +30,13 @@
   honest rendering of a field nothing requires is an empty box and a row
   that says it is still blank.
 
+  "As converted" is the first option and is selected whenever the reader has
+  not chosen. A select whose first entry was `view` would show every model as
+  a view before anybody had touched it, and a reader reading down the column
+  would see a decision this conversion never made. The list itself is the
+  engine's `CHOOSABLE`, not one written out here, so a materialization this
+  walk stops offering stops being offered.
+
   Tags are a textarea and not a one-line input, and that is about what can be
   checked rather than about how it looks. An `<input>` is a void element: it
   holds no text, so `data-engine` on one marks nothing, and the value a
@@ -79,6 +86,16 @@
         {%- else %}
         <textarea name="text" rows="3"></textarea>
         {%- endif %}
+      </label>
+      <label>Built as
+        <select name="materialization">
+          <option value=""{% if row.materialization not in row.choosable %} selected{% endif %}>
+            as converted</option>
+          {%- for choice in row.choosable %}
+          <option value="{{ choice }}"{% if row.materialization == choice %} selected{% endif %}>
+            {{ choice }}</option>
+          {%- endfor %}
+        </select>
       </label>
       <label>Tags
         {%- if row.tags %}

@@ -117,6 +117,11 @@ class Session:
     # reader's alone: nothing in a script says which models somebody means to
     # run together six months from now.
     tags: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # What a reader asked a model be materialized as. Empty for a model they
+    # have not changed: the conversion's own answer stands until they say
+    # otherwise, and an entry for every model would claim they had chosen for
+    # all of them.
+    materializations: dict[str, str] = field(default_factory=dict)
     # Other dbt projects to check this conversion's tables against. Paths
     # rather than read contexts, and re-read on every run for the reason the
     # target project is: a screen has to be current with a project being
@@ -133,8 +138,10 @@ class Session:
         screen needs more than this.
         """
         if not self.answers:
-            return self._run(None, self.descriptions, self.tags)
-        return self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
+            return self._run(None, self.descriptions, self.tags, self.materializations)
+        return self._run(
+            self._resolve(self._pristine()), self.descriptions, self.tags, self.materializations
+        )
 
     def view(self) -> SessionView:
         """One screen: the change, its questions, and every question's column
@@ -152,9 +159,11 @@ class Session:
         # when the call returns. Descriptions are in that condition because
         # `_pristine` carries none: reusing it for a session that holds one
         # would render a screen with the reader's own words missing from it.
-        described = bool(resolved or self.descriptions or self.tags)
+        described = bool(resolved or self.descriptions or self.tags or self.materializations)
         change, statements = (
-            self._convert(resolved, self.descriptions, self.tags) if described else (pristine, read)
+            self._convert(resolved, self.descriptions, self.tags, self.materializations)
+            if described
+            else (pristine, read)
         )
         return SessionView(
             change=change,
@@ -298,7 +307,9 @@ class Session:
             # -- the answer would be accepted and every render afterwards
             # would raise `UnknownModelError`, with the description that
             # became impossible never named.
-            self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
+            self._run(
+                self._resolve(self._pristine()), self.descriptions, self.tags, self.materializations
+            )
         except Exception:
             self.answers.clear()
             self.answers.update(previous)
@@ -333,7 +344,9 @@ class Session:
         # the session recorded and nothing it refused.
         self.descriptions[model] = text
         try:
-            self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
+            self._run(
+                self._resolve(self._pristine()), self.descriptions, self.tags, self.materializations
+            )
         except Exception:
             self.descriptions.clear()
             self.descriptions.update(previous)
@@ -367,7 +380,9 @@ class Session:
             # nothing there to lose, so there is nothing to be told about.
             self.tags.pop(model, None)
         try:
-            self._run(self._resolve(self._pristine()), self.descriptions, self.tags)
+            self._run(
+                self._resolve(self._pristine()), self.descriptions, self.tags, self.materializations
+            )
         except Exception:
             self.tags.clear()
             self.tags.update(previous)
@@ -394,6 +409,49 @@ class Session:
         """
         carried = {model.name for model in self._run(self._resolve(self._pristine())).models}
         return tuple(name for name in self.descriptions if name not in carried)
+
+    def materialize(self, model: str, materialization: str) -> None:
+        """Record what `model` should be materialized as, or refuse.
+
+        An empty string is "leave it as the conversion decided" and removes
+        the entry rather than storing one -- for the reason `tag` pops an
+        empty list: an entry per model would claim a reader had chosen for
+        every one of them, and an edit to the SQL would then strand a choice
+        nobody made.
+
+        Applied before it is kept, like every other answer here. `assemble`
+        refuses a materialization this walk does not offer and a model this
+        conversion does not build, and neither is held.
+        """
+        previous = dict(self.materializations)
+        if materialization.strip():
+            self.materializations[model] = materialization.strip()
+        else:
+            self.materializations.pop(model, None)
+        try:
+            self._run(
+                self._resolve(self._pristine()),
+                self.descriptions,
+                self.tags,
+                self.materializations,
+            )
+        except Exception:
+            self.materializations.clear()
+            self.materializations.update(previous)
+            raise
+
+    def stale_materializations(self) -> tuple[str, ...]:
+        """The materializations held for models this conversion no longer
+        builds. The third of the stranded accessors; see `stale_tags`."""
+        carried = {model.name for model in self._run(self._resolve(self._pristine())).models}
+        return tuple(name for name in self.materializations if name not in carried)
+
+    def drop_stale_materializations(self) -> tuple[str, ...]:
+        """Forget the materializations `stale_materializations` names."""
+        stale = self.stale_materializations()
+        for name in stale:
+            del self.materializations[name]
+        return stale
 
     def stale_tags(self) -> tuple[str, ...]:
         """The tags held for models this conversion no longer builds.
@@ -471,6 +529,7 @@ class Session:
         answers: Mapping[str, Answer] | None,
         descriptions: Mapping[str, str] | None = None,
         tags: Mapping[str, Sequence[str]] | None = None,
+        materializations: Mapping[str, str] | None = None,
     ) -> tuple[ProjectChange, tuple[ClassifiedStatement, ...]]:
         """One conversion, and the statements it was built from.
 
@@ -489,6 +548,7 @@ class Session:
             descriptions=descriptions,
             elsewhere=tuple(read_project(path) for path in self.elsewhere),
             tags=tags,
+            materializations=materializations,
         )
         return change, classified
 
@@ -497,6 +557,7 @@ class Session:
         answers: Mapping[str, Answer] | None,
         descriptions: Mapping[str, str] | None = None,
         tags: Mapping[str, Sequence[str]] | None = None,
+        materializations: Mapping[str, str] | None = None,
     ) -> ProjectChange:
         """One conversion of these two paths, with `answers` and `descriptions`
         applied.
@@ -509,7 +570,7 @@ class Session:
         them would make both raise `UnknownModelError` in exactly the state
         they exist to get a reader out of.
         """
-        return self._convert(answers, descriptions, tags)[0]
+        return self._convert(answers, descriptions, tags, materializations)[0]
 
     def _resolve(self, pristine: ProjectChange) -> dict[str, Answer]:
         return {

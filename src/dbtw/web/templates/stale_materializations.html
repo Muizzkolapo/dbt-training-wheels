@@ -1,0 +1,24 @@
+{#
+  The script changed under a materialization that was already chosen, so the
+  model it was chosen for is one this conversion no longer builds and every
+  other accessor refuses. `stale_materializations` is the one that still
+  answers, so this screen can name the models and offer the way out.
+
+  A sibling of stale.html, stale_descriptions.html and stale_tags.html rather
+  than one template with a noun passed into it: the four screens are about
+  four different things a reader lost, and a parameterised heading would put
+  that sentence in a route instead of on the page that says it.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Choices with no model</h1>
+<p class="tally"><span data-count="stale">{{ stale | length }}</span> models</p>
+<ul class="stale">
+  {%- for model in stale %}
+  <li data-item="stale"><span data-engine>{{ model }}</span></li>
+  {%- endfor %}
+</ul>
+<form method="post" action="/stale">
+  <button type="submit">Forget them</button>
+</form>
+{% endblock %}
