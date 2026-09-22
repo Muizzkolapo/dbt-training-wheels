@@ -79,7 +79,8 @@
     {%- endif %}
     <form method="post" action="/describe">
       <input type="hidden" name="model" value="{{ row.model.name }}">
-      <label>Description
+      <label class="field-block">
+        <span class="key">Description</span>
         {%- if row.description %}
         <textarea name="text" rows="3"
                   data-engine data-identifier>{{ row.description }}</textarea>
@@ -87,25 +88,29 @@
         <textarea name="text" rows="3"></textarea>
         {%- endif %}
       </label>
-      <label>Built as
-        <select name="materialization">
-          <option value=""{% if row.materialization not in row.choosable %} selected{% endif %}>
-            as converted</option>
-          {%- for choice in row.choosable %}
-          <option value="{{ choice }}"{% if row.materialization == choice %} selected{% endif %}>
-            {{ choice }}</option>
-          {%- endfor %}
-        </select>
-      </label>
-      <label>Tags
-        {%- if row.tags %}
-        <textarea name="tags" rows="1" spellcheck="false"
-                  data-engine data-identifier>{{ row.tags }}</textarea>
-        {%- else %}
-        <textarea name="tags" rows="1" spellcheck="false"></textarea>
-        {%- endif %}
-      </label>
-      <button type="submit">Save</button>
+      <div class="model-config">
+        <label class="field-block">
+          <span class="key">Built as</span>
+          <select name="materialization">
+            <option value=""{% if row.materialization not in row.choosable %} selected{% endif %}>
+              as converted</option>
+            {%- for choice in row.choosable %}
+            <option value="{{ choice }}"{% if row.materialization == choice %} selected{% endif %}>
+              {{ choice }}</option>
+            {%- endfor %}
+          </select>
+        </label>
+        <label class="field-block">
+          <span class="key">Tags</span>
+          {%- if row.tags %}
+          <textarea name="tags" rows="1" spellcheck="false"
+                    data-engine data-identifier>{{ row.tags }}</textarea>
+          {%- else %}
+          <textarea name="tags" rows="1" spellcheck="false"></textarea>
+          {%- endif %}
+        </label>
+      </div>
+      <p class="onward"><button type="submit">Save</button></p>
     </form>
   </li>
   {%- endfor %}

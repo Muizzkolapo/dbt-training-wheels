@@ -16,17 +16,41 @@
    `data-identifier` note on `Run` in tests/unit/web/page.py. Marked so a
    project the reader happens to have named `staging_run`, or a directory
    they happen to have named `warehouse`, does not put those words on the
-   page as though the conversion's own output used them. #}
+   page as though the conversion's own output used them.
+
+   "Building" leads, because it is what a reader came to see: which models
+   this conversion makes and where each one lands. The screen opened on
+   "Renaming / 0 tables" before that, which on the ordinary conversion --
+   where nothing is renamed -- was a screen whose only content was a zero.
+
+   The rename count is rendered only when there is something to count. A
+   count of nothing is not a finding, and `0 tables` under a heading is the
+   shape of a screen that has not loaded. #}
 <h1><span data-engine data-identifier>{{ project }}</span></h1>
 <p class="source"><span data-engine data-identifier>{{ sql }}</span></p>
 
+<h2>Building</h2>
+<p class="tally"><span data-count="model">{{ models | length }}</span> models</p>
+<ul class="building">
+  {%- for model in models %}
+  <li data-item="model">
+    <span class="name"><span data-engine>{{ model.name }}</span></span>
+    <span class="where"><span data-engine data-identifier>{{ model.path }}</span></span>
+  </li>
+  {%- endfor %}
+</ul>
+
 <h2>Renaming</h2>
+{%- if renames %}
 <p class="tally"><span data-count="rename">{{ renames | length }}</span> tables</p>
 <ul class="renames">
   {%- for rename in renames %}
   <li data-item="rename"><span data-engine>{{ rename.action }}</span></li>
   {%- endfor %}
 </ul>
+{%- else %}
+<p class="settled"><span class="mark blank">Nothing renamed</span></p>
+{%- endif %}
 {%- if cutover %}
 <p><span data-engine>{{ cutover.reason }}</span></p>
 <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ cutover.plain_reason }}</span></p>

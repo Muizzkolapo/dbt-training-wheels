@@ -3,6 +3,14 @@
   the promise, the box, and the four things this tool does with what goes in
   it. (new_design/dbt Training Wheels.dc.html)
 
+  One card, not four boxes. The first build of this screen nested a card
+  inside a card inside four fieldsets inside their inputs -- four concentric
+  rounded rectangles, each with its own border, and a reader met a settings
+  page rather than somewhere to paste a query. The card now holds one thing
+  that matters, the query, with everything else on hairlines above and below
+  it: where it is converting against, and what to press. Structure by rule
+  rather than by box is what lets the SQL be the biggest thing on the page.
+
   The one screen in this directory with no conversion behind it. Every other
   screen explains a conversion's Decisions, and rule 1 in base.html exists so
   those explanations cannot drift from the report beside them. There are no
@@ -14,25 +22,13 @@
   same rule as everywhere else rather than an exception to it: a sentence
   written in this file would either be unmarked, and fail the prose
   threshold, or marked, and fail the exact-match check against what
-  `dbtw.core` produced. Owning them in the engine is what makes the screen
-  able to speak at all, and it puts the claim the tool makes about itself
-  where every other claim it makes lives.
+  `dbtw.core` produced.
 
-  The project is asked for first and is required, and the `required` on it
-  is not the gate three of three personas called theatre. That gate asked a
-  reader to certify they had read something; this asks for the one input
-  without which there is nothing to convert *against*. Every proposal this
-  walk makes -- which layer, what prefix, which materialization -- is read
-  out of the `dbt_project.yml` there, and a conversion without one would be
-  this tool inventing conventions and presenting them as findings.
-  `test_no_screen_gates_the_write_action` holds the walk to the difference:
-  the thing that must not be gated is the write, and it is not.
-
-  Other projects are optional and the design says why: "every table your SQL
-  reads lives in a project you own" is the ordinary answer. They are asked
-  for here rather than on a screen of their own because they are an input to
-  the conversion, not a decision within it -- what the conversion does with
-  them is a question, and that question is a screen.
+  The project is required, and that `required` is not the gate three of three
+  personas called theatre. That gate asked a reader to certify they had read
+  something; this asks for the one input without which there is nothing to
+  convert *against*. `test_no_screen_gates_the_write_action` holds the walk
+  to the difference: the thing that must not be gated is the write.
 
   What the design shows here that this does not: tabs for "From warehouse"
   and "From git", both marked SOON. They are a roadmap, and a roadmap
@@ -41,44 +37,43 @@
 
   The project path is an identifier this screen displays rather than prose it
   speaks -- `data-identifier`, for the reason the note on `Run` in
-  tests/unit/web/page.py gives: a reader whose project lives in a directory
-  called `warehouse` must not meet that word's definition here for a reason
-  that has nothing to do with their SQL.
+  tests/unit/web/page.py gives.
 #}
 {% extends "base.html" %}
 {% block main %}
-<h1 class="hero"><span data-engine>{{ headline }}</span></h1>
-<p class="lede"><span data-engine>{{ lede }}</span></p>
+<div class="opening">
+  <h1 class="hero"><span data-engine>{{ headline }}</span></h1>
+  <p class="lede"><span data-engine>{{ lede }}</span></p>
+</div>
 
 {%- if refusal %}
 <p class="refusal"><span data-engine>{{ refusal }}</span></p>
 {%- endif %}
 
 <form method="post" action="/source" enctype="multipart/form-data">
-  <div class="source-card">
-    <div class="inner">
-      <fieldset>
-        <legend>Your dbt project</legend>
+  <div class="bringing">
+    <div class="against">
+      <label class="field">
+        <span class="key">Converting against</span>
         <input type="text" name="project" value="{{ project }}" spellcheck="false"
                placeholder="/path/to/dbt/project" required>
-      </fieldset>
+      </label>
+      <label class="field">
+        <span class="key">Also reading</span>
+        <input type="text" name="elsewhere" value="{{ elsewhere }}" spellcheck="false"
+               placeholder="one path per line">
+      </label>
+    </div>
 
-      <fieldset>
-        <legend>Other dbt projects (optional)</legend>
-        <textarea name="elsewhere" rows="2" spellcheck="false">{{ elsewhere }}</textarea>
-      </fieldset>
+    <textarea name="pasted" rows="14" spellcheck="false"
+              placeholder="INSERT INTO ..."></textarea>
 
-      <fieldset>
-        <legend>Paste a query</legend>
-        <textarea name="pasted" rows="12" spellcheck="false"></textarea>
-      </fieldset>
-
-      <fieldset class="dropzone">
-        <legend>Or choose .sql files</legend>
+    <div class="bringing-foot">
+      <label class="pick">
+        <span class="key">Or choose .sql files</span>
         <input type="file" name="files" accept=".sql" multiple>
-      </fieldset>
-
-      <p class="onward"><button type="submit">Convert</button></p>
+      </label>
+      <button type="submit">Convert</button>
     </div>
   </div>
 </form>
@@ -87,7 +82,7 @@
   <h3>What it does</h3>
   <span class="line"></span>
 </div>
-<ul class="pillars">
+<ol class="pillars">
   {%- for pillar in pillars %}
   <li data-item="pillar">
     <span class="no" data-ordinal="pillar">{{ pillar.number }}</span>
@@ -95,7 +90,7 @@
     <p><span data-engine>{{ pillar.plain }}</span></p>
   </li>
   {%- endfor %}
-</ul>
+</ol>
 
 <p class="fineprint"><span data-engine>{{ privacy }}</span></p>
 
