@@ -386,11 +386,23 @@ def _elsewhere(session: Session, *, without: str = "") -> frozenset[str]:
     """The Decision keys this conversion records with the held answers, less
     `without`'s -- or with none of them at all when `without` is empty.
 
-    A second `Session` over the same two paths, built through the public
+    A second `Session` over the same inputs, built through the public
     constructor. It is not a second code path: the same pipeline runs, on the
     same inputs, with a different answer set, which is the only way to ask
-    what one answer is responsible for. `answers` is copied rather than
-    shared, so nothing this asks can change what the session holds.
+    what one answer is responsible for.
+
+    Everything but the answers is carried across, and that is not optional.
+    The other projects a reader named decide which questions the run even
+    asks -- a cross-project question exists only while its table is still a
+    source -- so a rebuild that dropped them would ask a different set, and a
+    held answer to a question this run no longer has raises `UnknownAnswerError`
+    straight through the route as a 500. Descriptions, tags and
+    materializations are carried for the quieter version of the same reason:
+    a materialization override records a caveat Decision, and a rebuild
+    without it would attribute that caveat to whichever answer this is asking
+    about. The only thing that differs is the one answer removed. `answers` is
+    copied rather than shared, so nothing this asks can change what the
+    session holds.
     """
     held = {key: value for key, value in session.answers.items() if key != without}
     other = Session(
@@ -398,6 +410,10 @@ def _elsewhere(session: Session, *, without: str = "") -> frozenset[str]:
         sql=session.sql,
         dialect=session.dialect,
         answers=held if without else {},
+        descriptions=dict(session.descriptions),
+        tags=dict(session.tags),
+        materializations=dict(session.materializations),
+        elsewhere=session.elsewhere,
     )
     return frozenset(decision.key for decision in other.view().change.decisions)
 
