@@ -1,8 +1,10 @@
 from dbtw.core.assemble.assembler import (
+    CHOOSABLE,
     JinjaInDescriptionError,
     MulticolumnCheckedAnswerError,
     UnknownAnswerError,
     UnknownModelError,
+    UnsupportedMaterializationError,
     assemble,
 )
 from dbtw.core.assemble.refs import references_in
@@ -10,6 +12,7 @@ from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry,
 from dbtw.core.assemble.variables import Variable
 
 __all__ = [
+    "CHOOSABLE",
     "AssembledModel",
     "JinjaInDescriptionError",
     "MulticolumnCheckedAnswerError",
@@ -18,6 +21,7 @@ __all__ = [
     "TableRef",
     "UnknownAnswerError",
     "UnknownModelError",
+    "UnsupportedMaterializationError",
     "Variable",
     "assemble",
     "references_in",

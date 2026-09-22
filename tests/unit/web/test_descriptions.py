@@ -529,3 +529,65 @@ def test_a_walk_stranded_on_a_tag_says_so_and_offers_the_way_out(walk: Walk, sql
         assert client.get("/").status_code == 200
     finally:
         sql.write_text(ONE_APPEND_ELSEWHERE, encoding="utf-8")
+
+
+def test_the_describe_screen_offers_the_engines_materializations_and_no_others(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The list is `CHOOSABLE`, not one written out in the template beside it,
+    so a materialization this walk stops offering stops being offered.
+    """
+    from dbtw.core.assemble import CHOOSABLE
+
+    app, client, session = walk(walk_sql)
+
+    body = client.get("/describe").get_data(as_text=True)
+
+    for choice in CHOOSABLE:
+        assert f'value="{choice}"' in body
+    assert 'value="incremental"' not in body, (
+        "whether a model is incremental is settled by the question that asks it"
+    )
+
+
+def test_choosing_a_materialization_on_the_screen_reaches_the_model(
+    walk: Walk, walk_sql: Path
+) -> None:
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+
+    saved = client.post("/describe", data={"model": name, "materialization": "view"})
+
+    assert saved.status_code == 302
+    (model,) = [m for m in session.view().change.models if m.name == name]
+    assert model.materialization == "view"
+    assert model.incremental_strategy is None
+    assert 'value="view" selected' in client.get("/describe").get_data(as_text=True)
+
+
+def test_a_materialization_the_walk_does_not_offer_is_refused_on_the_screen(
+    walk: Walk, walk_sql: Path
+) -> None:
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+
+    refused = client.post("/describe", data={"model": name, "materialization": "incremental"})
+
+    assert refused.status_code == 400
+    assert session.materializations == {}
+    assert any("incremental" in run for run in read(refused.get_data(as_text=True)).engine)
+
+
+def test_leaving_the_select_as_converted_holds_no_choice(walk: Walk, walk_sql: Path) -> None:
+    """An entry per model would claim a reader had chosen for every one of
+    them -- and an edit to the SQL would then strand a choice nobody made.
+    """
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+    assert (
+        client.post("/describe", data={"model": name, "materialization": "view"}).status_code == 302
+    )
+
+    assert client.post("/describe", data={"model": name, "materialization": ""}).status_code == 302
+
+    assert session.materializations == {}

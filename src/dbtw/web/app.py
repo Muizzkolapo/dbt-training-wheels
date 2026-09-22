@@ -57,6 +57,7 @@ from flask import Flask, abort, redirect, render_template, request, url_for
 from werkzeug.wrappers.response import Response
 
 from dbtw.core.assemble import (
+    CHOOSABLE,
     AssembledModel,
     ProjectChange,
     UnknownAnswerError,
@@ -182,6 +183,14 @@ class Describable:
 
     model: AssembledModel
     description: str
+    # What this model is materialized as right now -- the conversion's own
+    # answer unless the reader has changed it. The select shows it as the
+    # current one so a reader is choosing against what they have, not against
+    # a blank.
+    materialization: str
+    # Every materialization this walk offers, so the template lists the
+    # engine's set rather than one written out in HTML beside it.
+    choosable: tuple[str, ...]
     # The tags on this model, space-separated, as the box takes them back.
     # Read off the model rather than off the session, so the box shows what
     # the conversion carries -- stripped, deduplicated, in order -- and not
@@ -506,6 +515,8 @@ def _describables(change: ProjectChange) -> tuple[Describable, ...]:
         Describable(
             model=model,
             description=written.get(model.name, ""),
+            materialization=model.materialization or "",
+            choosable=CHOOSABLE,
             tags=" ".join(model.tags),
         )
         for model in change.models
@@ -1069,6 +1080,7 @@ def create_app(source: Source) -> Flask:
             # drops blanks and removes repeats, so "finance  daily finance"
             # is two tags however it was typed.
             session.tag(model, request.form.get("tags", "").split())
+            session.materialize(model, request.form.get("materialization", ""))
         except (UnknownModelError, ValueError) as refusal:
             # 400 and this screen, not a redirect: the reader is mid-action
             # and the thing they need is on the page they were already on.
@@ -1408,8 +1420,10 @@ def create_app(source: Source) -> Flask:
             session.drop_stale_answers()
         elif session.stale_descriptions():
             session.drop_stale_descriptions()
-        else:
+        elif session.stale_tags():
             session.drop_stale_tags()
+        else:
+            session.drop_stale_materializations()
         return redirect(url_for("start"))
 
     def _refused(message: str, key: str) -> str:

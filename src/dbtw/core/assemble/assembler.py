@@ -1583,6 +1583,101 @@ def _refuse_unsafe_jinja(model: str, text: str) -> None:
             )
 
 
+# The materializations a reader may choose, and deliberately not dbt's whole
+# set. `incremental` is absent: what makes a model incremental here is the
+# question this walk already asks about it -- append, merge, or merge checked
+# -- and each of those answers carries a strategy and, for a merge, a key.
+# Offering `incremental` in a per-model editor would set the word without any
+# of that behind it, and write a config this tool could not explain.
+#
+# `ephemeral` is here and is the one worth knowing: dbt builds nothing for it
+# and pastes the model into whatever reads it, so it is how a step that only
+# exists to be read by the next one stops being a table in the warehouse.
+CHOOSABLE = ("view", "table", "ephemeral")
+
+
+class UnsupportedMaterializationError(ValueError):
+    """A materialization this engine does not offer.
+
+    Input-driven and refused rather than written: `materialized='tabel'` is a
+    config dbt rejects at parse time, and `materialized='incremental'` is one
+    it accepts and runs with no strategy behind it -- the worse of the two,
+    because it looks like it worked.
+    """
+
+
+def _materialized(
+    asked: Mapping[str, str], models: Sequence[AssembledModel]
+) -> tuple[tuple[AssembledModel, ...], list[Decision]]:
+    """The models with the reader's materializations on them, and what that cost.
+
+    Not additive, which is why this returns Decisions and `_tagged` does not.
+    A model this conversion made incremental carries a strategy and possibly a
+    unique key, and neither means anything once it is a view or a table -- dbt
+    reads `incremental_strategy` only for an incremental model. Dropping them
+    silently would leave a reader who chose `table` looking at a config block
+    missing two lines they had answered a question to put there, so the drop
+    is recorded and says what it took.
+
+    Choosing what already holds is not special-cased, and a short-circuit for
+    it was removed rather than kept: it can never do anything the rebuild
+    below does not. A model carrying incremental config always materializes
+    as `incremental`, which `CHOOSABLE` does not offer -- so a model whose
+    materialization a reader can have chosen has nothing to clear, the
+    rebuild returns an equal model, and `dropped` is False. A mutation
+    deleting the short-circuit killed no test, which is what said so.
+    """
+    by_name = {model.name: model for model in models}
+    unknown = sorted(set(asked) - set(by_name))
+    if unknown:
+        raise UnknownModelError(
+            f"{_keys_str(tuple(unknown))} named in materializations, and this conversion "
+            f"builds {_keys_str(tuple(sorted(by_name))) or 'no models'}. A materialization "
+            "is chosen for a model the walk showed; one naming another is a caller bug"
+        )
+    wrong = sorted({value for value in asked.values() if value not in CHOOSABLE})
+    if wrong:
+        raise UnsupportedMaterializationError(
+            f"{_keys_str(tuple(wrong))} is not a materialization this walk offers "
+            f"({_keys_str(CHOOSABLE)}). Whether a model is incremental is settled by the "
+            "question this walk asks about it, which carries a strategy and a key with it"
+        )
+
+    decisions: list[Decision] = []
+    placed: list[AssembledModel] = []
+    for model in models:
+        chosen = asked.get(model.name)
+        if chosen is None:
+            placed.append(model)
+            continue
+        dropped = model.incremental_strategy is not None or bool(model.unique_key)
+        placed.append(
+            dataclasses.replace(
+                model, materialization=chosen, incremental_strategy=None, unique_key=()
+            )
+        )
+        if dropped:
+            decisions.append(
+                _decision(
+                    "materialization_dropped",
+                    model.name,
+                    f"{model.name} is materialized as {chosen}, so its incremental "
+                    "config was dropped",
+                    f"dbt reads incremental_strategy and unique_key only for an "
+                    f"incremental model; {model.name} was "
+                    f"{model.incremental_strategy or 'incremental'} and is now {chosen}, "
+                    "so both were removed rather than written where dbt would ignore them",
+                    plain_reason=(
+                        "You asked for this one to be rebuilt as a "
+                        f"{chosen}. The settings about adding rows to what is already "
+                        "there only mean something when it adds rather than rebuilds, "
+                        "so they have gone."
+                    ),
+                )
+            )
+    return tuple(placed), decisions
+
+
 def _tagged(
     asked: Mapping[str, Sequence[str]], models: Sequence[AssembledModel]
 ) -> tuple[AssembledModel, ...]:
@@ -1682,6 +1777,9 @@ def assemble(
     # somebody means to run together, so this engine carries tags and never
     # invents them.
     tags: Mapping[str, Sequence[str]] | None = None,
+    # What a reader asked a model be materialized as, keyed by its FINAL
+    # name. Only the three this engine can explain -- see CHOOSABLE.
+    materializations: Mapping[str, str] | None = None,
 ) -> ProjectChange:
     new_decisions: list[Decision] = []
     drafts: tuple[ModelDraft, ...] = state.drafts
@@ -2247,6 +2345,11 @@ def assemble(
                 )
             )
 
+    final_models, materialization_decisions = _materialized(
+        materializations or {}, rewritten_models
+    )
+    new_decisions.extend(materialization_decisions)
+
     all_decisions = inherited_decisions + tuple(new_decisions)
 
     # Validated last, once answerable_decisions is complete: an answer names
@@ -2334,7 +2437,7 @@ def assemble(
                 )
 
     return ProjectChange(
-        models=_tagged(tags or {}, rewritten_models),
+        models=_tagged(tags or {}, final_models),
         sources=source_entries,
         decisions=all_decisions,
         pending=remaining_pending,
@@ -2342,5 +2445,5 @@ def assemble(
         project_name=ctx.project_name,
         variables=tuple(kept_variables),
         tests=tuple(schema_tests),
-        descriptions=_model_descriptions(descriptions or {}, rewritten_models),
+        descriptions=_model_descriptions(descriptions or {}, final_models),
     )
