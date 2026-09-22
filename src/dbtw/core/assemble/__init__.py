@@ -1,5 +1,6 @@
 from dbtw.core.assemble.assembler import (
     CHOOSABLE,
+    MATERIALIZATION_PLAIN,
     JinjaInDescriptionError,
     MulticolumnCheckedAnswerError,
     UnknownAnswerError,
@@ -13,6 +14,7 @@ from dbtw.core.assemble.variables import Variable
 
 __all__ = [
     "CHOOSABLE",
+    "MATERIALIZATION_PLAIN",
     "AssembledModel",
     "JinjaInDescriptionError",
     "MulticolumnCheckedAnswerError",

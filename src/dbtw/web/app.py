@@ -58,6 +58,7 @@ from werkzeug.wrappers.response import Response
 
 from dbtw.core.assemble import (
     CHOOSABLE,
+    MATERIALIZATION_PLAIN,
     AssembledModel,
     ProjectChange,
     UnknownAnswerError,
@@ -1026,9 +1027,11 @@ def create_app(source: Source) -> Flask:
         about which string it is.
         """
         models = _describables(view.change)
+        meanings = [(name, MATERIALIZATION_PLAIN[name]) for name in CHOOSABLE]
         spoken = _spoken(
             (row.model.name for row in models),
             (name for row in models for name in row.model.depends_on),
+            (plain for _, plain in meanings),
             refusal,
             (screen.label for screen in _walk(view) if screen.engine),
         )
@@ -1038,6 +1041,7 @@ def create_app(source: Source) -> Flask:
             here="/describe",
             terms=_terms(spoken),
             models=models,
+            meanings=meanings,
             described=sum(1 for row in models if row.description),
             refusal=refusal,
         )
@@ -1184,17 +1188,20 @@ def create_app(source: Source) -> Flask:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        spoken = _spoken(
-            str(source.out),
-            _COMMANDS,
-            (screen.label for screen in _walk(view) if screen.engine),
-        )
+        # The commands carry their own definitions on this screen -- each one
+        # beside what it does, in the order a first run goes -- so the rail's
+        # glossary is not rendered here as well. Rendered twice, a reader
+        # meets four definitions folded in the rail and the same four open
+        # on the canvas, and the folded ones are the ones that look like
+        # they might say something different. `terms` stays what the check
+        # counts: the definitions on the canvas carry `data-item="term"` and
+        # sit in an aside, so this screen defines exactly the words it uses.
         return render_template(
             "done.html",
             screens=_walk(view),
             here="/done",
-            terms=_terms(spoken),
-            commands=_COMMANDS,
+            terms=(),
+            commands=[(term.name, term.plain) for term in _terms(_spoken(_COMMANDS))],
             out=str(source.out),
         )
 

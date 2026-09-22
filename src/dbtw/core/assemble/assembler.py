@@ -1595,6 +1595,32 @@ def _refuse_unsafe_jinja(model: str, text: str) -> None:
 # exists to be read by the next one stops being a table in the warehouse.
 CHOOSABLE = ("view", "table", "ephemeral")
 
+# What each one means to someone who has never used dbt, in the same voice
+# as every other `plain` here. Engine-owned for the reason the glossary is:
+# the screen that offers a choice must not be the thing explaining it, or the
+# explanation is free to drift from what the choice does. None of these three
+# can be a glossary term -- `view` and `table` are ordinary words that occur
+# inside others, which `terms_in`'s substring match cannot tell apart -- so
+# they are explained beside the choice rather than looked up.
+MATERIALIZATION_PLAIN: Mapping[str, str] = {
+    "view": (
+        "Nothing is stored. The query runs every time something reads the model, "
+        "so it is always current and costs nothing until then."
+    ),
+    # Not "when dbt runs": `terms_in` matches substrings, and that phrase
+    # would put `dbt run`'s definition on the describe screen for a sentence
+    # that is not about the command.
+    "table": (
+        "The rows are worked out once, each time the project is built, and "
+        "kept. Fast to read, and only as fresh as the last build."
+    ),
+    "ephemeral": (
+        "Nothing is built at all. dbt pastes this model's query into whatever "
+        "reads it, so a step that only exists to feed the next one never becomes "
+        "a table in the warehouse."
+    ),
+}
+
 
 class UnsupportedMaterializationError(ValueError):
     """A materialization this engine does not offer.

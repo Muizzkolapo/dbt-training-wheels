@@ -23,11 +23,21 @@
   <button type="submit">Write these files</button>
 </form>
 
-<h2>Commands</h2>
-<p class="tally"><span data-count="command">{{ commands | length }}</span> commands</p>
-<ul class="commands">
-  {%- for command in commands %}
-  <li data-item="command"><span data-engine>{{ command }}</span></li>
+<h2>Then, in your project</h2>
+<p class="tally"><span data-count="term">{{ commands | length }}</span> commands</p>
+{# Each command beside what it does, in the order a first run goes: see what
+   would be sent, send it, check it, and the one that does both. The
+   definitions are the glossary's own -- `data-aside`, because they are
+   derived from the words beside them and must not count as words this
+   screen uses, and `data-item="term"` because they are this screen's
+   glossary. A novice reading four bare commands had nothing to go on; a
+   novice reading these has the same four words and what each one does. #}
+<ol class="commands">
+  {%- for name, plain in commands %}
+  <li>
+    <code><span data-engine>{{ name }}</span></code>
+    <span class="means" data-aside data-item="term"><span data-engine>{{ plain }}</span></span>
+  </li>
   {%- endfor %}
-</ul>
+</ol>
 {% endblock %}

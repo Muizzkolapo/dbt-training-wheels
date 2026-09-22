@@ -130,15 +130,16 @@ main > .card { margin-bottom: 14px; }
 .tally .n { font-family: var(--mono); color: var(--ink-3); }
 
 /* ── the glossary ────────────────────────────────────────────────── */
-.glossary { border: 1px solid var(--rule); border-radius: 12px; background: var(--card);
-            padding: 12px 16px; margin-bottom: 14px; }
-.glossary h2 { font-size: 11px; font-weight: 500; letter-spacing: 0.09em;
-               text-transform: uppercase; color: var(--quiet); margin: 0 0 6px; }
+.glossary { border: 1px solid var(--rule); border-radius: 9px; background: var(--card);
+            padding: 9px 10px 8px; margin-top: 12px; }
+main > .glossary { margin: 0 0 14px; padding: 12px 16px; }
+.glossary h2 { font-size: 11px; font-weight: 500; letter-spacing: 0.06em;
+               text-transform: uppercase; color: var(--quiet); margin: 0 0 5px; }
 .glossary ul.terms { list-style: none; margin: 0; padding: 0; }
-.glossary summary { cursor: pointer; font-family: var(--mono); font-size: 12.5px;
-                    color: var(--ink); padding: 3px 0; }
+.glossary summary { cursor: pointer; font-family: var(--mono); font-size: 12px;
+                    color: var(--ink); padding: 2px 0; }
 .glossary details[open] summary { color: var(--link); }
-.glossary details p { color: var(--ink-3); font-size: 12.5px; margin: 2px 0 8px; max-width: 78ch; }
+.glossary details p { color: var(--ink-3); font-size: 12px; line-height: 1.5; margin: 2px 0 8px; }
 
 /* ── the two registers ───────────────────────────────────────────── */
 .plain { background: var(--fill); border-radius: 8px; padding: 9px 12px; margin: 8px 0;
@@ -153,7 +154,24 @@ ul.caveats > li, ul.pending > li, ul.files > li, ul.describe > li, ul.changed > 
   border-top: 1px solid var(--rule); padding: 10px 0;
 }
 ul.renames > li, ul.commands > li, ul.stale > li { padding: 2px 0; }
-ul.commands > li { font-family: var(--mono); font-size: 12.5px; }
+/* The actions a caveat groups: no marker, no indent. The browser's default
+   bullet on a nested list was the one thing on the caveats screen the
+   engine did not write. */
+ul.actions { list-style: none; margin: 0 0 4px; padding: 0; }
+ul.actions > li { padding: 0; }
+ul.actions .action { margin: 0 0 2px; }
+/* Each command with what it does beside it. The command in a mono pill so
+   it reads as a thing to type; the meaning in the page's prose face so it
+   reads as a thing to read. */
+ol.commands, ul.meanings { list-style: none; margin: 0; padding: 0; max-width: 78ch; }
+ol.commands > li, ul.meanings > li { border-top: 1px solid var(--rule); display: grid; gap: 4px 18px;
+                   grid-template-columns: minmax(9rem, auto) minmax(0, 1fr); padding: 12px 0; }
+@media (max-width: 40rem) { ol.commands > li, ul.meanings > li { grid-template-columns: minmax(0, 1fr); } }
+ol.commands code, ul.meanings code { background: var(--fill); border-radius: 6px; color: var(--ink);
+                   font: 500 12.5px var(--mono); padding: 3px 9px; white-space: nowrap;
+                   align-self: start; justify-self: start; }
+ol.commands .means, ul.meanings .means { color: var(--ink-3); font-size: 13px; }
+ul.meanings > li { padding: 8px 0; }
 
 ul.answers > li { border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px;
                   margin-bottom: 10px; }

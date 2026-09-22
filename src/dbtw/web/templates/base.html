@@ -32,10 +32,14 @@
   deriving every dot from the conversion rather than from where the reader
   has got to.
 
-  The glossary sits above the screen rather than under it, as it does in the
-  report and for the same reason: four of five personas never reached the
-  block that sat at the end, and a definition the reader meets after the word
-  is a definition they have already guessed at.
+  The glossary sits in the rail, beside the screen, rather than above or
+  under it. Above was the first shape: it put a card of definitions on top of
+  every page, so each screen opened on the glossary and its own title came
+  second. Under it is the shape the report has and the walkthroughs showed
+  does not work: four of five personas never reached a block that sat at the
+  end. Beside it, the words are on screen at the same time as the sentences
+  that use them, and the canvas opens on what the screen is about. On the
+  entry screen there is no rail, so it renders in the canvas there.
 
   Each definition is folded, and the words are not. That is a correction made
   by looking at the rendered pages rather than at the HTML: `terms_in` gives
@@ -102,11 +106,26 @@
             <li><span class="dot stands"></span> Defaults stand</li>
           </ul>
         </section>
+        {%- if terms %}
+        <section class="glossary" data-aside>
+          <h2>Words used here</h2>
+          <ul class="terms">
+            {%- for term in terms %}
+            <li data-item="term">
+              <details>
+                <summary><span data-engine>{{ term.name }}</span></summary>
+                <p><span data-engine>{{ term.plain }}</span></p>
+              </details>
+            </li>
+            {%- endfor %}
+          </ul>
+        </section>
+        {%- endif %}
       </nav>
       {%- endif %}
 
       <main>
-        {%- if terms %}
+        {%- if terms and not screens %}
         <section class="glossary" data-aside>
           <h2>Words used here</h2>
           <ul class="terms">
