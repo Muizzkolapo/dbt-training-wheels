@@ -591,3 +591,25 @@ def test_leaving_the_select_as_converted_holds_no_choice(walk: Walk, walk_sql: P
     assert client.post("/describe", data={"model": name, "materialization": ""}).status_code == 302
 
     assert session.materializations == {}
+
+
+def test_the_describe_screen_says_what_each_choosable_materialization_means(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """A novice choosing `ephemeral` from a bare select has nothing to go on.
+
+    The meanings are the engine's own sentences, rendered beside the choice
+    -- so the screen that offers the choice is not the thing explaining it,
+    and a materialization this walk stops offering stops being explained.
+    """
+    from dbtw.core.assemble import CHOOSABLE, MATERIALIZATION_PLAIN
+
+    app, client, _session = walk(walk_sql)
+
+    page = read(client.get("/describe").get_data(as_text=True))
+
+    shown = {normalised(run) for run in page.engine}
+    assert sum(1 for item in page.items if item == "meaning") == len(CHOOSABLE)
+    for name in CHOOSABLE:
+        assert name in shown
+        assert normalised(MATERIALIZATION_PLAIN[name]) in shown, f"{name} is offered unexplained"

@@ -62,6 +62,22 @@
 <p class="refusal"><span data-engine>{{ refusal }}</span></p>
 {%- endif %}
 
+{# What the "built as" choices mean, once, above every model that offers
+   them. A novice choosing `ephemeral` from a bare select has nothing to go
+   on; these are the engine's own sentences, so the screen that offers the
+   choice is not the thing explaining it. #}
+<h2>Built as</h2>
+<p class="tally"><span data-count="meaning">{{ meanings | length }}</span> choices</p>
+<ul class="meanings">
+  {%- for name, plain in meanings %}
+  <li data-item="meaning">
+    <code><span data-engine>{{ name }}</span></code>
+    <span class="means"><span data-engine>{{ plain }}</span></span>
+  </li>
+  {%- endfor %}
+</ul>
+
+<h2>Models</h2>
 <ul class="describe">
   {%- for row in models %}
   <li data-item="model">

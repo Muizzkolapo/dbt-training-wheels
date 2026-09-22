@@ -39,7 +39,13 @@ from pathlib import Path
 
 from tests.unit.web.page import normalised
 
-from dbtw.core.assemble import ProjectChange, UnknownAnswerError, UnknownModelError
+from dbtw.core.assemble import (
+    CHOOSABLE,
+    MATERIALIZATION_PLAIN,
+    ProjectChange,
+    UnknownAnswerError,
+    UnknownModelError,
+)
 from dbtw.core.context import read_project
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
@@ -227,6 +233,11 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
     produced.append(ctx.project_name)
     for detection in ctx.detections:
         produced.extend((detection.key, detection.value or "", detection.evidence))
+
+    # What each materialization a reader can choose means. Engine-owned and
+    # rendered beside the choice, so it is checked like any other sentence.
+    produced.extend(CHOOSABLE)
+    produced.extend(MATERIALIZATION_PLAIN.values())
 
     # What the tool says about itself on the screen a reader meets first.
     # Engine-owned for the reason `dbtw.core.intro` gives -- a screen may not

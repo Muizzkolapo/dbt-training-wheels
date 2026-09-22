@@ -902,13 +902,22 @@ def test_the_last_screen_names_the_commands_the_glossary_defines(
     app, client, session = walk(walk_sql)
     page = read(client.get("/done").get_data(as_text=True))
 
-    named = [item for item in page.items if item == "command"]
+    # The commands are this screen's glossary: each one beside what it does,
+    # open on the canvas rather than folded in the rail, because a novice
+    # reading four bare commands had nothing to go on.
+    named = [item for item in page.items if item == "term"]
     assert len(named) == 4
     rendered = _engine(page)
+    defined_open = {normalised(run.text) for run in page.runs if run.aside}
     for command in ("dbt compile", "dbt run", "dbt test", "dbt build"):
         assert command in rendered, f"{command} is not named"
         (term,) = terms_in(command)
-        assert normalised(term.plain) in rendered
+        assert normalised(term.plain) in defined_open, (
+            f"{command} is named with no meaning beside it"
+        )
+    assert "<details" not in client.get("/done").get_data(as_text=True), (
+        "the meanings on this screen are its content, not something to unfold"
+    )
     assert "--select" not in page.text
     assert "stg_events+" not in page.text
 
@@ -1329,10 +1338,16 @@ def test_the_glossary_is_folded_shut(
 
     for url, body in _guarded_bodies(app, client, session, state).items():
         assert "<details open" not in body, f"{state} {url} renders the glossary unfolded"
-        page = read(body)
-        terms = sum(1 for item in page.items if item == "term")
-        assert body.count("<details") == terms, (
-            f"{state} {url} defines {terms} words in {body.count('<details')} folds"
+        # The claim is about the rail's glossary. A screen may render a
+        # definition open on the canvas as its own content -- the done screen
+        # puts each command beside what it does -- and that is the opposite
+        # of the wall this guards against. So folds are counted against the
+        # terms inside the rail, and a screen with no rail (the entry screen)
+        # against the whole body.
+        rail = body[body.index("<nav>") : body.index("</nav>")] if "<nav>" in body else body
+        terms = rail.count('data-item="term"')
+        assert rail.count("<details") == terms, (
+            f"{state} {url} defines {terms} words in the rail in {rail.count('<details')} folds"
         )
 
 
