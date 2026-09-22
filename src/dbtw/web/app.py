@@ -936,6 +936,8 @@ def create_app(source: Source) -> Flask:
         # them.
         spoken = _spoken(
             (d.action for d in renames),
+            (model.name for model in view.change.models),
+            (model.layer for model in view.change.models),
             cutover.reason if cutover else "",
             cutover.plain_reason if cutover else "",
             (screen.label for screen in _walk(view) if screen.engine),
@@ -947,6 +949,7 @@ def create_app(source: Source) -> Flask:
             terms=_terms(spoken),
             project=view.change.project_name,
             sql=str(_conversation().sql),
+            models=view.change.models,
             renames=renames,
             cutover=cutover,
         )

@@ -45,7 +45,13 @@ body {
   font: 13.5px/1.6 var(--sans);
 }
 
-h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.25; margin: 0 0 6px; }
+/* A walk screen's h1 is usually a question the engine wrote -- a whole
+   sentence, sometimes thirty words of it. Set as a 26px display headline it
+   ran three lines across the full canvas and read as a banner rather than as
+   something being asked. It is set as a lead instead: large enough to be the
+   first thing, with a measure short enough to read. */
+h1 { font-size: 21px; font-weight: 500; letter-spacing: -0.015em; line-height: 1.35;
+     margin: 0 0 8px; max-width: 46ch; }
 h2 { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; margin: 22px 0 6px; }
 h3 { font-size: 11.5px; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase;
      color: var(--quiet); margin: 0 0 6px; }
@@ -105,7 +111,18 @@ nav .steps li.here .label { font-weight: 500; }
 .legend li { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--ink-3); }
 
 /* ── the canvas ──────────────────────────────────────────────────── */
+/* A measure, everywhere prose appears. The canvas is nine hundred pixels
+   wide and 13.5px type across all of it is about a hundred and ten
+   characters a line -- roughly half as long again as anything meant to be
+   read. Code, tables and the side-by-side columns opt back out below,
+   because those are scanned rather than read and want the width. */
 main { min-width: 0; }
+main p, main dd { max-width: 74ch; }
+/* The measure is on the prose, not on the box around it: capping the list
+   item shrank the answer cards themselves and left the canvas half empty.
+   A card keeps its width and the sentences inside it keep their measure. */
+ul.answers { max-width: 86ch; }
+main pre, main table, main .sides, main .sides p { max-width: none; }
 .card { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; }
 main > .card { margin-bottom: 14px; }
 
@@ -131,18 +148,40 @@ main > .card { margin-bottom: 14px; }
 
 /* ── lists ───────────────────────────────────────────────────────── */
 ul.renames, ul.caveats, ul.pending, ul.files, ul.answers, ul.commands, ul.stale,
-ul.describe, ul.changed, ul.pillars, ul.detections { list-style: none; margin: 0; padding: 0; }
+ul.describe, ul.changed, ul.pillars, ul.detections, ul.building { list-style: none; margin: 0; padding: 0; }
 ul.caveats > li, ul.pending > li, ul.files > li, ul.describe > li, ul.changed > li, ul.detections > li {
   border-top: 1px solid var(--rule); padding: 10px 0;
 }
 ul.renames > li, ul.commands > li, ul.stale > li { padding: 2px 0; }
 ul.commands > li { font-family: var(--mono); font-size: 12.5px; }
 
-ul.answers > li { border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; }
+ul.answers > li { border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px;
+                  margin-bottom: 10px; }
 ul.answers > li.chosen { border-color: var(--ink); }
 .mark { color: var(--ok); font-family: var(--mono); font-size: 11px; }
 .mark.blank { color: var(--fainter); }
 ul.describe h2 .mark { margin-left: 8px; }
+/* One model's row: what it is for across the full measure, then the two
+   short fields side by side under it. Left as three stacked full-width
+   controls with their labels inline, a reader could not tell which label
+   belonged to which box. */
+.field-block { display: block; margin: 10px 0 0; }
+.field-block .key { margin-bottom: 5px; }
+.model-config { display: grid; gap: 10px 18px;
+                grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); }
+@media (max-width: 40rem) { .model-config { grid-template-columns: minmax(0, 1fr); } }
+.model-config textarea { margin: 0; }
+select {
+  appearance: none; background: var(--card); border: 1px solid var(--rule-2);
+  border-radius: 8px; color: var(--ink); cursor: pointer; font: 13px var(--sans);
+  padding: 7px 28px 7px 10px; width: 100%;
+  background-image: linear-gradient(45deg, transparent 50%, var(--quiet) 50%),
+                    linear-gradient(135deg, var(--quiet) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 52%, calc(100% - 10px) 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+select:focus { border-color: var(--ink); outline: none; }
 
 /* ── controls ────────────────────────────────────────────────────── */
 button {
@@ -153,8 +192,13 @@ button:hover { background: #000; }
 button.quiet { background: var(--card); border: 1px solid var(--rule-2); color: var(--ink); }
 button.quiet:hover { background: var(--fill); }
 
-fieldset { border: 1px solid var(--rule); border-radius: 10px; margin: 10px 0; padding: 12px 14px; }
-legend { color: var(--quiet); font-size: 11.5px; padding: 0 5px; }
+fieldset { border: 0; border-top: 1px solid var(--rule); margin: 12px 0 0; padding: 12px 0 0; }
+legend { color: var(--quiet); font-size: 11px; font-weight: 500; letter-spacing: 0.06em;
+         padding: 0; text-transform: uppercase; }
+/* Checkboxes at the size of the type beside them, in the page's own ink
+   rather than the browser's blue. */
+input[type="checkbox"] { accent-color: var(--ink); height: 14px; width: 14px;
+                         margin: 0 7px 0 0; vertical-align: -2px; }
 label { color: var(--ink-3); font-size: 12.5px; }
 input[type="text"], textarea {
   border: 1px solid var(--rule-2); border-radius: 8px; background: var(--card);
@@ -163,7 +207,8 @@ input[type="text"], textarea {
 textarea { display: block; font-family: var(--mono); font-size: 12.5px; margin: 5px 0 8px; resize: vertical; }
 input[type="text"]:focus, textarea:focus { border-color: var(--ink); outline: none; }
 ul.columns { list-style: none; margin: 0 0 8px; padding: 0; }
-ul.columns li { padding: 2px 0; font-family: var(--mono); font-size: 12.5px; }
+ul.columns li { padding: 3px 0; font-family: var(--mono); font-size: 12.5px; }
+ul.columns label { color: var(--ink); cursor: pointer; font-family: var(--mono); font-size: 12.5px; }
 
 /* ── code ────────────────────────────────────────────────────────── */
 /* Wrapped, not scrolled. `white-space: pre` inside a column narrower than
@@ -179,25 +224,76 @@ pre {
 }
 
 /* ── the entry screen ────────────────────────────────────────────── */
-.hero { font-size: 40px; font-weight: 500; letter-spacing: -0.025em; line-height: 1.08;
-        margin: 10px 0 10px; max-width: 14ch; }
-.lede { color: var(--ink-3); font-size: 14px; max-width: 56ch; margin-bottom: 18px; }
-.source-card { background: var(--page); border: 1px solid var(--rule); border-radius: 12px; padding: 12px; }
-.source-card .inner { background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
-                      padding: 20px; }
-.source-card h2 { margin-top: 0; }
-.dropzone { border: 1px dashed var(--rule-2); border-radius: 10px; padding: 18px; text-align: center; }
-.pillars { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+/* One card, structured by hairlines rather than by nested boxes. The first
+   build of this put a card inside a card inside four bordered fieldsets:
+   four concentric rounded rectangles, and the query -- the only thing on the
+   page that matters -- was the same weight as the path above it. Rules
+   instead of boxes is what lets one element be the biggest thing here. */
+.opening { max-width: 46rem; margin: 26px 0 22px; }
+.hero { font-size: 44px; font-weight: 500; letter-spacing: -0.03em; line-height: 1.04;
+        margin: 0 0 12px; max-width: 19ch; }
+.lede { color: var(--ink-3); font-size: 15px; max-width: 58ch; margin: 0; }
+
+.bringing { background: var(--card); border: 1px solid var(--rule); border-radius: 12px;
+            overflow: hidden; }
+.against { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 40rem) { .against { grid-template-columns: minmax(0, 1fr); } }
+.field { display: block; border-bottom: 1px solid var(--rule); padding: 10px 16px 12px; }
+.against .field + .field { border-left: 1px solid var(--rule); }
+@media (max-width: 40rem) { .against .field + .field { border-left: 0; } }
+.key { display: block; color: var(--quiet); font-size: 11px; font-weight: 500;
+       letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 4px; }
+.field input[type="text"] { border: 0; border-radius: 0; padding: 0; width: 100%;
+                            font-family: var(--mono); font-size: 12.5px; background: transparent; }
+.field input[type="text"]:focus { outline: none; }
+.field:focus-within { background: var(--fill); }
+
+/* The query. Borderless inside the card, because the card is its border. */
+.bringing > textarea { border: 0; border-radius: 0; display: block; margin: 0; width: 100%;
+                       padding: 16px; resize: vertical; min-height: 15rem; background: transparent; }
+.bringing > textarea:focus { outline: none; background: var(--fill); }
+.bringing > textarea::placeholder { color: var(--fainter); }
+
+.bringing-foot { align-items: center; border-top: 1px solid var(--rule); display: flex;
+                 flex-wrap: wrap; gap: 14px; justify-content: space-between;
+                 background: var(--page); padding: 12px 16px; }
+/* `.pick` and not `.files`: the files screen's list is `ul.files`, and a
+   bare `.files` rule here turned its items into flex children -- the file
+   previews tiled sideways across the canvas instead of stacking. A class
+   named for what it is on one screen is a class that collides on another. */
+.pick { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
+.pick .key { margin: 0; }
+/* The native file control, dressed to match. Left alone it is the one piece
+   of browser chrome on the page -- a grey bevelled button and "No file
+   chosen" in the system font, beside type that is neither. The button half
+   is styled and the filename half left as it is, because that text is the
+   only confirmation a reader gets of what they picked. */
+.pick input[type="file"] { color: var(--quiet); font: 12px var(--sans); max-width: 100%; }
+.pick input[type="file"]::file-selector-button {
+  background: var(--card); border: 1px solid var(--rule-2); border-radius: 7px;
+  color: var(--ink); cursor: pointer; font: 500 12px var(--sans);
+  margin-right: 9px; padding: 5px 11px;
+}
+.pick input[type="file"]::file-selector-button:hover { background: var(--fill); }
+
+/* The four things it does. A row of rules, not a row of cards: the same
+   border-radius and shadow on four identical boxes is the shape every
+   generated page reaches for, and these are four facts rather than four
+   objects. Numbered because they genuinely are a sequence -- what this tool
+   does first, and what it does last. */
+.rule-head { align-items: center; display: flex; gap: 14px; margin: 34px 0 0; }
+.rule-head h3 { margin: 0; white-space: nowrap; }
+.rule-head .line { background: var(--rule); flex: 1; height: 1px; }
+.pillars { display: grid; gap: 0 26px; grid-template-columns: repeat(4, minmax(0, 1fr));
+           list-style: none; margin: 0; padding: 0; }
 @media (max-width: 62rem) { .pillars { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 34rem) { .pillars { grid-template-columns: minmax(0, 1fr); } }
-.pillars li { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; padding: 14px 16px; }
-.pillars .no { font-family: var(--mono); font-size: 10.5px; color: var(--fainter); }
-.pillars .name { display: block; font-size: 15px; font-weight: 500; margin: 2px 0 5px; }
-.pillars p { color: var(--ink-3); font-size: 12.5px; margin: 0; }
-.rule-head { display: flex; align-items: center; gap: 12px; margin: 22px 0 10px; }
-.rule-head h3 { margin: 0; white-space: nowrap; }
-.rule-head .line { flex: 1; height: 1px; background: var(--rule); }
-.fineprint { color: var(--quiet); font-size: 11.5px; max-width: 60ch; margin-top: 16px; }
+.pillars li { border-top: 1px solid var(--ink); padding: 12px 0 0; margin-top: 14px; }
+.pillars .no { color: var(--fainter); font-family: var(--mono); font-size: 10.5px; }
+.pillars .name { display: block; font-size: 16px; font-weight: 500; letter-spacing: -0.01em;
+                 margin: 1px 0 6px; }
+.pillars p { color: var(--ink-3); font-size: 12.5px; margin: 0; max-width: 34ch; }
+.fineprint { color: var(--quiet); font-size: 11.5px; margin-top: 30px; max-width: 58ch; }
 
 /* ── refusals ────────────────────────────────────────────────────── */
 .refusal { background: var(--warn-bg); border: 1px solid var(--warn-rule); border-radius: 8px;
@@ -225,3 +321,16 @@ tbody th { color: var(--quiet); font-weight: 400; width: 12rem; }
 ul.detections .key { font-family: var(--mono); font-size: 12px; color: var(--quiet); margin: 0; }
 ul.detections .value { font-size: 14px; font-weight: 500; margin: 1px 0 2px; }
 ul.detections .evidence { color: var(--ink-3); font-size: 12.5px; margin: 0; max-width: 78ch; }
+
+/* What this conversion builds: the model, and where its file lands. Two
+   columns so a reader can scan either one down the page. */
+ul.building li { align-items: baseline; border-top: 1px solid var(--rule); display: flex;
+                 flex-wrap: wrap; gap: 4px 18px; padding: 7px 0; }
+ul.building .name { font-weight: 500; min-width: 14rem; }
+ul.building .where { color: var(--quiet); font-family: var(--mono); font-size: 12px; }
+.settled { margin-top: 2px; }
+.source { margin-top: 0; }
+p.onward { margin-top: 26px; }
+p.onward a[data-link="next"] { background: var(--act); border-radius: 8px; color: #fff;
+  display: inline-block; font-weight: 500; padding: 8px 16px; text-decoration: none; }
+p.onward a[data-link="next"]:hover { background: #000; color: #fff; text-decoration: none; }
