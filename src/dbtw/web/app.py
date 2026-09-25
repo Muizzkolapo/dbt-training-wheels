@@ -173,6 +173,21 @@ class Choice:
 
 
 @dataclass(frozen=True, slots=True)
+class Asking:
+    """One question as the workbench shows it: the question and its answers.
+
+    `index` is the question's place in the guided walk, so a reader on the
+    one-screen version can still be sent to the screen that gives this one
+    question a page to itself -- the worked example lives there, and it is
+    the single most effective element the walkthroughs measured.
+    """
+
+    decision: Decision
+    choices: tuple[Choice, ...]
+    index: int
+
+
+@dataclass(frozen=True, slots=True)
 class Describable:
     """One model the describe screen asks about, and what the reader has
     said it is for.
@@ -592,7 +607,10 @@ def _conversions(
 
 
 def _screens(
-    view: SessionView, answered: Container[str] = (), described: str = "stands"
+    view: SessionView,
+    answered: Container[str] = (),
+    described: str = "stands",
+    direct: bool = False,
 ) -> tuple[Screen, ...]:
     """The walk, in order. One screen per question, and seven fixed ones.
 
@@ -615,6 +633,28 @@ def _screens(
         )
         for index, decision in enumerate(view.questions)
     ]
+    if direct:
+        # One screen where the guided walk has a screen per question and a
+        # screen for the models. The design calls it the workbench and
+        # promises "same conversion, everything on one screen" -- so this
+        # replaces which screens exist and nothing else. Its dot is the
+        # loudest of the ones it stands in for: a reader who collapsed the
+        # walk still has to be told something is unanswered.
+        asking = [screen.state for screen in questions] + [described]
+        return (
+            Screen(url="/project", label="Your project", engine=False),
+            Screen(url="/", label="Start", engine=False),
+            Screen(
+                url="/everything",
+                label="Everything",
+                engine=False,
+                state="ask" if "ask" in asking else "ok",
+            ),
+            Screen(url="/caveats", label="Decided for you", engine=False),
+            Screen(url="/changed", label="What changed", engine=False),
+            Screen(url="/files", label="Files", engine=False),
+            Screen(url="/done", label="Done", engine=False),
+        )
     return (
         Screen(url="/project", label="Your project", engine=False),
         Screen(url="/", label="Start", engine=False),
@@ -740,7 +780,10 @@ def create_app(source: Source) -> Flask:
         placeholder for a project nobody has chosen. An identifier the bar
         displays, never prose it speaks.
         """
-        return {"project_path": str(source.project) if source.project else ""}
+        return {
+            "project_path": str(source.project) if source.project else "",
+            "mode": source.mode,
+        }
 
     def _conversation() -> Session:
         """The session this app is serving.
@@ -853,6 +896,7 @@ def create_app(source: Source) -> Flask:
             view,
             answered=_conversation().answers,
             described=_described_state(view.change),
+            direct=source.mode == "direct",
         )
 
     @app.get("/source")
@@ -987,8 +1031,93 @@ def create_app(source: Source) -> Flask:
             cutover=cutover,
         )
 
+    @app.post("/mode")
+    def mode() -> Response:
+        """Switch between the guided walk and the one-screen workbench.
+
+        A POST and not a link, because it changes what this app holds. The
+        reader lands back where they pressed it, so switching mode on the
+        caveats screen leaves them reading caveats rather than at the start
+        of a walk they had already come through.
+
+        Nothing about the conversion moves. Answers, descriptions, tags and
+        materializations are all held on the session, and the mode is held
+        beside them on `Source` -- so the same conversion is on screen either
+        way, which is what the design promises of this button.
+        """
+        wanted = request.form.get("mode", "")
+        if wanted in ("guided", "direct"):
+            source.mode = wanted
+        back = request.form.get("back", "")
+        # Only back to a screen of this walk. A `back` from a form is a value
+        # a caller supplies, and following it anywhere would make this an
+        # open redirect on somebody's own machine.
+        if not back.startswith("/") or back.startswith("//"):
+            back = "/"
+        return redirect(back)
+
+    @app.get("/everything")
+    def everything() -> str | tuple[str, int] | Response:
+        """Every question and every model on one screen.
+
+        The design's workbench: "same conversion, everything on one screen,
+        none of this column." What it replaces is the *asking* -- a screen
+        per question and the describe screen -- and nothing else. The screens
+        that report what the conversion did are the same in both modes,
+        because reading is not the part a comfortable reader wants collapsed.
+
+        In guided mode this is not a screen of the walk, so it sends a reader
+        to the start rather than rendering a page the rail does not list.
+        """
+        if source.mode != "direct":
+            return redirect(url_for("start"))
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        asks = [
+            Asking(
+                decision=decision,
+                choices=_choices(decision, view.prompts.get(decision.key, {})),
+                index=index,
+            )
+            for index, decision in enumerate(view.questions)
+        ]
+        models = _describables(view.change)
+        meanings = [(name, MATERIALIZATION_PLAIN[name]) for name in CHOOSABLE]
+        spoken = _spoken(
+            (ask.decision.plain_question for ask in asks),
+            (ask.decision.question for ask in asks),
+            (ask.decision.action for ask in asks),
+            (ask.decision.reason for ask in asks),
+            (ask.decision.plain_reason for ask in asks),
+            (c.option.label for ask in asks for c in ask.choices),
+            (c.option.effect for ask in asks for c in ask.choices),
+            (c.option.plain for ask in asks for c in ask.choices),
+            (c.prompt for ask in asks for c in ask.choices),
+            (col.name for ask in asks for c in ask.choices for col in c.columns),
+            (row.model.name for row in models),
+            (name for row in models for name in row.model.depends_on),
+            (plain for _, plain in meanings),
+            (screen.label for screen in _walk(view) if screen.engine),
+        )
+        return render_template(
+            "everything.html",
+            screens=_walk(view),
+            here="/everything",
+            terms=_terms(spoken),
+            asks=asks,
+            models=models,
+            meanings=meanings,
+            described=sum(1 for row in models if row.description),
+        )
+
     @app.get("/questions/<int:index>")
     def question(index: int) -> str | tuple[str, int] | Response:
+        # In direct mode there is one place to answer, and this is not it.
+        # The route stays reachable rather than 404ing, because a reader who
+        # switched mode with a question screen open still has its address.
+        if source.mode == "direct":
+            return redirect(url_for("everything"))
         view = _view()
         if not isinstance(view, SessionView):
             return view
@@ -1080,6 +1209,8 @@ def create_app(source: Source) -> Flask:
 
     @app.get("/describe")
     def describe() -> str | tuple[str, int] | Response:
+        if source.mode == "direct":
+            return redirect(url_for("everything"))
         view = _view()
         if not isinstance(view, SessionView):
             return view

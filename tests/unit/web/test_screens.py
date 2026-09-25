@@ -57,6 +57,15 @@ _SENTENCE = 5
 # shows a derived count, because it has nothing to count.
 _ENTRY = "/source"
 
+# The workbench. Not a screen of the *guided* walk: it is the one screen
+# direct mode has where guided has a screen per question and a screen for the
+# models, and in guided mode it sends a reader to the start rather than
+# rendering a page the rail does not list. Excluded here for the reason
+# `/source` is -- these tests walk the guided walk, and a screen belonging to
+# the other mode is not one of its own. `tests/unit/web/test_direct_mode.py`
+# is where it is held to the same rules.
+_WORKBENCH = "/everything"
+
 
 def _screen_urls(app, session: Session) -> tuple[str, ...]:
     """Every screen of the walk, derived from the app's own routing table.
@@ -68,16 +77,19 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
     A rule taking any other argument stops the test rather than being skipped
     -- a screen this cannot address is a screen nothing here checks.
 
-    `/source` is excluded, and it is the only exclusion: it is the screen a
-    reader is on *before* this walk exists, so it is not one of the walk's
-    own, does not carry the walk's navigation, and has no conversation to
-    render. It is still guarded -- see `_ENTRY`.
+    Two exclusions, and both are screens that belong to something other than
+    this walk. `/source` is the screen a reader is on *before* the walk
+    exists, so it has no conversation to render; it is still guarded, see
+    `_ENTRY`. `/everything` is the screen the *other mode* has, and in this
+    one it redirects; see `_WORKBENCH`.
     """
     asked = len(session.view().questions)
     urls: list[str] = []
     for rule in sorted(app.url_map.iter_rules(), key=lambda rule: rule.rule):
         methods = rule.methods or set()
-        if rule.endpoint == "static" or "GET" not in methods or rule.rule == _ENTRY:
+        if rule.endpoint == "static" or "GET" not in methods:
+            continue
+        if rule.rule in (_ENTRY, _WORKBENCH):
             continue
         if not rule.arguments:
             urls.append(rule.rule)
@@ -1206,6 +1218,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "describe.html",
         "changed.html",
         "project.html",
+        "everything.html",
         "caveats.html",
         "files.html",
         "done.html",
