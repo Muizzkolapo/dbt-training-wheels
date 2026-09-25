@@ -12,6 +12,7 @@ from pathlib import Path
 
 from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble
 from dbtw.core.context import read_project
+from dbtw.core.deliver import Push
 from dbtw.core.ingest import classify_statements, ingest
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.passes import Answer, Decision, answer_for, run_passes
@@ -652,6 +653,14 @@ class Source:
     # project, and the design's own empty state for this says so.
     elsewhere: tuple[Path, ...] = ()
     session: Session | None = None
+    # The one completed push of this conversation, or None. Held here rather
+    # than in the app's closure because it is the one thing this walk does
+    # that nothing can be asked for a second time: `git push` prints a branch
+    # summary once, and a second push says everything is up to date instead.
+    # A screen showing it is the only holder of it, so a check on that screen
+    # that read it back off the page would be checking the page against
+    # itself.
+    pushed: Push | None = None
     _staged: Path | None = field(default=None, repr=False)
 
     def start(
