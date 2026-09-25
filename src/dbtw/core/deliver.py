@@ -22,12 +22,21 @@ repository rather than about their SQL:
 * the branch already exists. Reusing it would add a second conversion's
   files to a branch whose name says it holds one.
 
-What this module does not do: push, open a pull request, or talk to a
-forge. Those need a remote, credentials, and a host's API, and each is a
-decision about someone's account rather than about their files. The branch
-is local, the commit is theirs -- `git commit` with no author override, so
-their own name and signing configuration apply -- and pushing it is a thing
-they do when they have read it.
+`deliver` stops at the local branch, and `push` is a second function behind
+a second button for a reason. Delivery writes inside a directory the reader
+already handed this tool; a push leaves their machine and is the first thing
+here anybody else can see. One button doing both would be one press away
+from publishing a conversion nobody had read.
+
+What neither does is open the pull request. That needs a forge's API and a
+token -- a decision about someone's account rather than about their files.
+`push` hands back whatever the remote printed instead, which for the common
+forges is the link that opens one.
+
+The commit is theirs throughout: `git commit` with no author override, so
+their own name and signing configuration apply, and `git push` with their
+own remote and credentials, so what this can send is exactly what they could
+send from a terminal in that directory.
 """
 
 from __future__ import annotations
@@ -70,6 +79,16 @@ class BranchExistsError(ValueError):
 
     A branch named for a conversion holds one. Adding a second one's files
     to it makes a branch whose name describes half of what it carries.
+    """
+
+
+class NoRemoteError(ValueError):
+    """The project has no remote to push to.
+
+    Input-driven, and a usage error about the reader's repository rather than
+    about their SQL: a repository with no remote is a perfectly good
+    repository, and the branch this walk made is still there. What is missing
+    is somewhere to send it, and only they can say where.
     """
 
 
@@ -136,6 +155,86 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     return Delivery(branch=branch, files=files, commit=commit)
 
 
+@dataclass(frozen=True, slots=True)
+class Push:
+    """What a push did: where it went, and what the remote said back.
+
+    `said` is git's own output, verbatim and unparsed. Forges print the
+    pull-request link there -- GitHub's "Create a pull request for 'x' on
+    GitHub by visiting:", GitLab's equivalent -- and that link is the most
+    useful thing on this screen. It is shown rather than read, because the
+    line a forge prints is theirs to change and a parser for it here would
+    be this tool claiming to know what every remote says.
+    """
+
+    remote: str
+    branch: str
+    said: str
+
+
+def push(root: Path, *, branch: str, remote: str = "origin") -> Push:
+    """Push `branch` to `remote`, and hand back what the remote said.
+
+    Separate from `deliver` and pressed separately, because they are
+    different promises. `deliver` writes inside a directory the reader
+    already gave this tool; a push leaves their machine, reaches a server
+    under their credentials, and is the first thing here that anybody else
+    can see. A walk that did both on one button would be one press away from
+    publishing a conversion nobody had read.
+
+    No credentials of its own, and no forge API. It runs `git push` with the
+    reader's own configuration -- their remote, their keys, their name on the
+    commit -- so what this can push is exactly what they could push from a
+    terminal in that directory, and nothing this tool knows makes it more.
+
+    It stops at the push. Opening the pull request needs a forge's API and a
+    token, which is a decision about someone's account rather than about
+    their files; what comes back instead is whatever the remote printed,
+    which for the common forges is the link that opens one.
+    """
+    _refuse_unless_git_root(root)
+    _refuse_without_remote(root, remote)
+    _refuse_unless_branch_exists(root, branch)
+    # `--set-upstream`, so the branch a reader pushed is the branch their next
+    # `git status` talks about. Without it they are left on a branch git
+    # describes as having no upstream, one command after this tool told them
+    # it had been pushed.
+    said = _git_output(root, "push", "--set-upstream", remote, branch)
+    return Push(remote=remote, branch=branch, said=said.strip())
+
+
+def _refuse_without_remote(root: Path, remote: str) -> None:
+    """Refuse a project with nowhere to send the branch."""
+    remotes = _git(root, "remote").split()
+    if remote not in remotes:
+        listed = ", ".join(sorted(remotes))
+        raise NoRemoteError(
+            f"{root} has no remote called {remote!r}"
+            + (f"; it has {listed}" if listed else " and no remotes at all")
+            + ". The branch is still here -- add a remote and push it yourself, or "
+            "add one and press this again"
+        )
+
+
+def _refuse_unless_branch_exists(root: Path, branch: str) -> None:
+    """Refuse to push a branch this repository does not have.
+
+    Unreachable from the walk, which only offers a push for a branch it has
+    just made. Raised rather than left to git so the refusal names the
+    branch, instead of surfacing git's own message about a refspec.
+    """
+    found = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=root,
+        capture_output=True,
+    )
+    if found.returncode != 0:
+        raise NoRemoteError(
+            f"{root} has no branch named {branch!r} to push. A push follows a "
+            "delivery, and this one has nothing to follow"
+        )
+
+
 def _deliverable(out_dir: Path) -> tuple[str, ...]:
     """Every file in `out_dir`, project-relative, report last.
 
@@ -198,6 +297,19 @@ def _refuse_if_branch_exists(root: Path, branch: str) -> None:
             "conversion holds one; delivering a second onto it would make its name "
             "describe half of what it carries"
         )
+
+
+def _git_output(root: Path, *arguments: str) -> str:
+    """Run git and return everything it said, both streams.
+
+    `git push` reports to stderr even when it succeeds -- the branch summary
+    and a forge's pull-request link both arrive there -- so a caller reading
+    stdout alone gets an empty string back from a push that worked.
+    """
+    result = subprocess.run(["git", *arguments], cwd=root, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise GitFailedError(f"git {' '.join(arguments)} failed in {root}: {result.stderr.strip()}")
+    return f"{result.stdout}{result.stderr}"
 
 
 def _git(root: Path, *arguments: str) -> str:

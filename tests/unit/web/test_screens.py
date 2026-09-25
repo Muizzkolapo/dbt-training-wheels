@@ -138,6 +138,13 @@ _DELIVERY_REFUSED = "delivery refused"
 # which is how sixteen wrong-coverage-set defects have been found in this
 # file and in the guards around it.
 _DESCRIBED = "described"
+# The two states a reader reaches by pressing the third button that leaves
+# their machine. A push is the first thing in this walk anybody else can see,
+# so the screen that reports it and the screen that refuses it are both
+# pages a reader lands on -- and a guard that never visited them would be the
+# same wrong-coverage-set defect this file has been fixed for three times.
+_PUSHED = "pushed"
+_PUSH_REFUSED = "push refused"
 _STATES = (
     _PRISTINE,
     _ANSWERED,
@@ -149,6 +156,8 @@ _STATES = (
     _WRITE_FAILED,
     _DELIVERED,
     _DELIVERY_REFUSED,
+    _PUSHED,
+    _PUSH_REFUSED,
 )
 
 # What a reader writes on the describe screen in the state built around it.
@@ -171,13 +180,20 @@ def _append_key(session: Session) -> str:
 
 
 def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Path, out_dir: Path):  # type: ignore[no-untyped-def]
-    """The walk in one of the six states: the app, a client, the session, and
-    the destination that walk writes to.
+    """The walk in one of its states: the app, a client, the session, the
+    destination that walk writes to, and what only building it could know.
 
     The destination is returned rather than assumed by the caller: one state
     is built around a destination that refuses the write, and a caller that
     took `out_dir` for granted would check the failure page against the
     strings of a directory it was never aimed at.
+
+    The last value is the engine strings this state produced that nothing can
+    re-derive afterwards. `git push` prints a branch summary once, and a
+    second push says everything is up to date instead -- so the run that made
+    the screen is the only thing that ever holds what the screen shows, and
+    reading it back off the page would be checking the page against itself.
+    Empty for every state that has no such string.
     """
     if state == _STALE:
         sql = sql_script(ONE_APPEND_ELSEWHERE)
@@ -187,7 +203,7 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
             client.post("/answer", data={"key": question.key, "kind": "append"}).status_code == 302
         )
         sql.write_text(ONE_MERGE, encoding="utf-8")
-        return app, client, session, out_dir
+        return app, client, session, out_dir, frozenset()
 
     if state == _STALE_DESCRIPTION:
         sql = sql_script(ONE_APPEND_ELSEWHERE)
@@ -196,7 +212,7 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         described = client.post("/describe", data={"model": model.name, "text": _DESCRIPTION})
         assert described.status_code == 302
         sql.write_text(ONE_MERGE, encoding="utf-8")
-        return app, client, session, out_dir
+        return app, client, session, out_dir, frozenset()
 
     if state == _WRITE_FAILED:
         # Aimed at the project itself, which `emit` refuses. The walk is
@@ -205,7 +221,30 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         # render around that.
         app, client, session = walk(walk_sql, out=project_dir)
         assert client.post("/write").status_code == 500
-        return app, client, session, project_dir
+        return app, client, session, project_dir, frozenset()
+
+    if state in (_PUSHED, _PUSH_REFUSED):
+        # Both are a delivered walk plus one press. The difference is the
+        # remote: a repository with a bare one on disk takes the branch, and
+        # one with no remote at all is refused -- the commonest way to meet
+        # this, and the one a reader meets without having done anything
+        # wrong.
+        _as_git_repo(project_dir)
+        if state == _PUSHED:
+            _as_remote_of(project_dir, out_dir.parent / "origin.git")
+        app, client, session = walk(walk_sql)
+        source = app.config["dbtw_source"]
+        assert client.post("/write").status_code == 200
+        assert client.post("/deliver").status_code == 200
+        sent = client.post("/push")
+        assert sent.status_code == (200 if state == _PUSHED else 409)
+        # What git printed, read off `Source.pushed` -- the engine's own
+        # value, not the page's echo of it. Taking it from the rendered page
+        # would make the claim "this screen shows what the engine produced"
+        # true by construction, which is the tautology this whole file exists
+        # to keep out.
+        said = frozenset({normalised(source.pushed.said)} if source.pushed is not None else set())
+        return app, client, session, out_dir, said
 
     if state in (_DELIVERED, _DELIVERY_REFUSED):
         # Delivery is offered only after a write, so both states are a
@@ -220,7 +259,7 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         assert client.post("/write").status_code == 200
         delivered = client.post("/deliver")
         assert delivered.status_code == (200 if state == _DELIVERED else 409)
-        return app, client, session, out_dir
+        return app, client, session, out_dir, frozenset()
 
     app, client, session = walk(walk_sql)
     if state == _DESCRIBED:
@@ -237,7 +276,7 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         assert client.post("/answer", data=answer).status_code == 302
     elif state == _WRITTEN:
         assert client.post("/write").status_code == 200
-    return app, client, session, out_dir
+    return app, client, session, out_dir, frozenset()
 
 
 def _pristine_decisions(session: Session):  # type: ignore[no-untyped-def]
@@ -291,7 +330,9 @@ def _refusal_message(session: Session) -> str:
     raise AssertionError("the merge answer with no columns was accepted")
 
 
-def _produced(session: Session, out: Path, state: str) -> frozenset[str]:
+def _produced(
+    session: Session, out: Path, state: str, said: frozenset[str] = frozenset()
+) -> frozenset[str]:
     """Every string the engine produces for this state, both refusals included.
 
     The two refusals are asked of the engine by *making the call*, never
@@ -308,6 +349,10 @@ def _produced(session: Session, out: Path, state: str) -> frozenset[str]:
     strings |= {normalised(_description_refusal(session))}
     if state == _WRITE_FAILED:
         strings |= {normalised(_write_refusal(session, out))}
+    if state in (_PUSHED, _PUSH_REFUSED):
+        strings |= _delivery_strings(session, out, _DELIVERED)
+        strings |= _push_strings(session, state)
+        strings |= said
     if state in (_DELIVERED, _DELIVERY_REFUSED):
         # What a delivery reports is git's own: a branch name this module
         # derived and a commit sha only git can know. Asked of the thing that
@@ -344,6 +389,52 @@ def _as_git_repo(root: Path) -> None:
     for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
         git("add", "--", str(path.relative_to(root)))
     git("commit", "-q", "-m", "the project as it was")
+
+
+def _as_remote_of(root: Path, bare: Path) -> None:
+    """Give `root` a bare repository on disk as its `origin`.
+
+    On disk rather than over a network: a test that needed a server would
+    fail on a train, for a reason that has nothing to do with this code. What
+    a bare repository prints back differs from what a forge prints -- no
+    pull-request link -- and that difference is the point of showing git's
+    output rather than parsing it.
+    """
+    import subprocess
+
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(bare)], cwd=root, check=True, capture_output=True
+    )
+
+
+def _push_strings(session: Session, state: str) -> frozenset[str]:
+    """What the pushed or refused screen renders that only git can produce.
+
+    Asked of the thing that produced it, never written out here, for the
+    reason `_refusal_message` gives. A push is not repeatable against the
+    same remote for a different answer, so the pushed state reads back what
+    the push actually said from the repository it went to; the refusal is
+    deterministic and is obtained by making the call.
+    """
+    import subprocess
+
+    from dbtw.core.deliver import push
+
+    if state == _PUSH_REFUSED:
+        try:
+            push(session.project, branch=_branch_name(session.view().change))
+        except ValueError as refusal:
+            return frozenset({normalised(str(refusal))})
+        raise AssertionError("the push this state is built around was accepted")
+
+    # Pushed already, so pressing it again says everything is up to date --
+    # a different sentence from the first push's. Both are git's, and the
+    # screen holds the first one, so it is read back off the run that made it.
+    done = subprocess.run(
+        ["git", "remote"], cwd=session.project, capture_output=True, text=True, check=True
+    )
+    return frozenset({normalised(done.stdout.strip())})
 
 
 def _delivery_strings(session: Session, out: Path, state: str) -> frozenset[str]:
@@ -487,8 +578,10 @@ def test_no_screen_authors_a_sentence(
     empty. So the one state it was evaluated in was the one state where the
     two runs agree.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
-    produced = _produced(session, out, state)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
+    produced = _produced(session, out, state, said)
 
     for url, page in _guarded_pages(app, client, session, state).items():
         unclaimed = [run for run in page.engine if normalised(run) not in produced]
@@ -537,7 +630,9 @@ def test_the_prose_check_has_something_left_to_look_at(
     aside -- headings, nav, buttons. A page whose authored side came back
     empty would pass the check above having inspected nothing.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
     for url, page in _guarded_pages(app, client, session, state).items():
         assert page.authored, f"{state} {url} leaves nothing authored to inspect"
         assert page.engine, f"{state} {url} renders nothing from the engine"
@@ -587,7 +682,9 @@ def test_every_question_screen_shows_the_engine_s_example_or_no_example_at_all(
 def test_no_screen_renders_a_heading_with_an_empty_body(
     walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
 ) -> None:
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
     for url, page in _guarded_pages(app, client, session, state).items():
         assert page.empty_headings() == (), f"{state} {url} opens a section and says nothing in it"
 
@@ -614,7 +711,9 @@ def test_every_count_is_the_length_of_what_is_listed_beside_it(
     every run the templates wrote has to sit inside a `data-count` element,
     and that is the second assertion.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
     seen = 0
     for url, page in _guarded_pages(app, client, session, state).items():
         # Every page of the walk carries at least the nav's own screen count.
@@ -706,7 +805,9 @@ def test_no_screen_gates_the_write_action(
     answer, not an acknowledgment -- so the claim is about the form that
     writes and about `required`, not about controls in general.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
     pages = _guarded_pages(app, client, session, state)
 
     if state not in (_STALE, _STALE_DESCRIPTION):
@@ -740,7 +841,9 @@ def test_every_decision_reaches_exactly_one_screen(
     first answer, the partition would be checked in the one state where
     nothing has moved.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
     pages = _pages(app, client, session)
     decisions = session.view().change.decisions
     assert len(decisions) > 5, "this conversion should record more than a handful"
@@ -936,7 +1039,9 @@ def test_each_screen_defines_the_dbt_words_it_uses_and_no_others(
     the likeliest misstep in the walk, and had no glossary at all until this
     state was added -- `_refused` passed `terms=()` and nothing here noticed.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
 
     for url, page in _guarded_pages(app, client, session, state).items():
         # Read without the block itself. A glossary listing all fourteen
@@ -1017,7 +1122,9 @@ def test_no_screen_repeats_one_engine_string(
     either a mistake or noise; either way it is not the page saying something
     twice on purpose.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
     consequences = {
         normalised(text)
         for decision in session.view().change.decisions
@@ -1307,7 +1414,9 @@ def test_every_position_shown_is_the_position_it_sits_in(
     of five, told about a different number. So every `data-ordinal` is held
     against its own place among the `data-item` elements it names.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
 
     for url, page in _guarded_pages(app, client, session, state).items():
         seen: dict[str, int] = {}
@@ -1334,7 +1443,9 @@ def test_the_glossary_is_folded_shut(
     glossary. A mutation adding `open` back restores that wall, and before
     this test nothing in the suite noticed.
     """
-    app, client, session, out = _walk_in(walk, sql_script, walk_sql, state, project_dir, out_dir)
+    app, client, session, out, said = _walk_in(
+        walk, sql_script, walk_sql, state, project_dir, out_dir
+    )
 
     for url, body in _guarded_bodies(app, client, session, state).items():
         assert "<details open" not in body, f"{state} {url} renders the glossary unfolded"

@@ -1,4 +1,15 @@
 {#
+  Delivery and the push are two buttons, not one. A delivery writes inside a
+  directory the reader already handed this tool; a push leaves their machine
+  and is the first thing in this walk anybody else can see. One button doing
+  both would be one press away from publishing a conversion nobody had read.
+
+  What comes back from a push is git's own output, shown and not read. A
+  forge prints the link that opens a pull request there, which is the most
+  useful thing on this screen and the one thing this tool cannot write
+  itself: opening the request needs a forge's API and a token, and that is a
+  decision about somebody's account rather than about their files.
+
   What landed, and where, and the one step left.
 
   The destination is named here for the same reason it is named on the screen
@@ -31,6 +42,26 @@
 <h2>Delivered</h2>
 <p class="branch">On branch <span data-engine data-identifier>{{ delivered.branch }}</span>
   as <span data-engine data-identifier>{{ delivered.commit }}</span></p>
+
+{%- if pushed %}
+<h2>Pushed</h2>
+<p class="branch">To <span data-engine data-identifier>{{ pushed.remote }}</span></p>
+{# What the remote said, verbatim and unparsed. A forge prints the
+   pull-request link here, and that link is the most useful thing on this
+   screen -- but the line it prints is the forge's to change, so this shows
+   it rather than reading it. #}
+<pre data-engine>{{ pushed.said }}</pre>
+{%- else %}
+{%- if refusal %}
+<h2>Not pushed</h2>
+<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+{%- endif %}
+<h2>Push it</h2>
+<form method="post" action="/push">
+  <p class="onward"><button type="submit">Push the branch</button></p>
+</form>
+{%- endif %}
+
 {%- else %}
 {%- if refusal %}
 <h2>Not delivered</h2>

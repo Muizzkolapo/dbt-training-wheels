@@ -70,8 +70,10 @@ from dbtw.core.deliver import (
     Delivery,
     DirtyWorkingTreeError,
     GitFailedError,
+    NoRemoteError,
     NotAGitRepoError,
     deliver,
+    push,
 )
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
@@ -256,6 +258,14 @@ _WRITE_FAILURES = (OutputInsideProjectError, UnsafeOutputPathError, OSError)
 # was checked, which is a repository in a state this tool does not understand.
 # A reader can still act on it, because it carries git's own words, and the
 # alternative is a traceback on the last screen of the walk.
+# What a push can fail with that a reader can do something about: their
+# project has no remote of that name, or git itself refused -- a rejected
+# push, a credential they have not set up, a server that is not there. Every
+# one of those is theirs to fix, and git's own words are the best account of
+# it, so `GitFailedError` is here rather than surfacing as a traceback on the
+# last screen of the walk.
+_PUSH_FAILURES = (NoRemoteError, NotAGitRepoError, GitFailedError)
+
 _DELIVER_FAILURES = (
     NotAGitRepoError,
     DirtyWorkingTreeError,
@@ -707,6 +717,12 @@ def create_app(source: Source) -> Flask:
     # rather than a row this engine read, and that what acts on it is this
     # model rather than the reader's script. A template writing its own
     # wording for any of them would be authoring the claim.
+    # The walk's own state, reachable from the app. A test checking that a
+    # screen shows what the engine produced has to be able to ask the engine,
+    # and `Source` is where the answers this walk cannot be asked twice for
+    # are kept -- see `Source.pushed`.
+    app.config["dbtw_source"] = source
+
     app.jinja_env.globals.update(
         example_notice=PLACEHOLDER_NOTICE,
         supposed_label=SUPPOSED_ROW_LABEL,
@@ -1296,6 +1312,7 @@ def create_app(source: Source) -> Flask:
             files=record.files,
             branch=_branch_name(view.change),
             delivered=delivered,
+            pushed=source.pushed,
             refusal="",
         )
 
@@ -1353,6 +1370,61 @@ def create_app(source: Source) -> Flask:
                 files=written.files,
                 branch=branch,
                 delivered=None,
+                pushed=None,
+                refusal=str(refusal),
+            ), 409
+        return _written_page(view, written)
+
+    @app.post("/push")
+    def push_route() -> str | tuple[str, int] | Response:
+        """Send the delivered branch to the reader's own remote.
+
+        Offered only after a delivery, and pressed separately from it. A
+        delivery writes inside a directory they already handed this tool; a
+        push leaves their machine and is the first thing in this walk that
+        anybody else can see. One button doing both would be one press away
+        from publishing a conversion nobody had read.
+
+        No credentials of this tool's own: `git push` runs with the reader's
+        remote and the reader's keys, so what it can send is exactly what
+        they could send from a terminal in that directory.
+
+        Pressed twice, it sends once. The branch is already there and the
+        remote would say so, but a second push is a second thing this tool
+        did to somebody's server, and the screen already holds what the first
+        one said.
+        """
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        if written is None or delivered is None:
+            # Nothing has been delivered, so there is no branch to send. The
+            # button is not on a screen a reader reaches before delivering,
+            # so this is a form posted out of order rather than a state the
+            # walk offers.
+            return redirect(url_for("done"))
+        if source.pushed is not None:
+            return _written_page(view, written)
+        try:
+            source.pushed = push(_conversation().project, branch=delivered.branch)
+        except _PUSH_FAILURES as refusal:
+            return render_template(
+                "written.html",
+                screens=_walk(view),
+                here="",
+                terms=_terms(
+                    _spoken(
+                        str(written.out),
+                        written.files,
+                        str(refusal),
+                        (screen.label for screen in _walk(view) if screen.engine),
+                    )
+                ),
+                out=str(written.out),
+                files=written.files,
+                branch=delivered.branch,
+                delivered=delivered,
+                pushed=None,
                 refusal=str(refusal),
             ), 409
         return _written_page(view, written)
