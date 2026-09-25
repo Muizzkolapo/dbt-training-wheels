@@ -1,0 +1,136 @@
+{#
+  Every question and every model on one screen -- the design's workbench,
+  and the other half of its Mode toggle: "same conversion, everything on one
+  screen, none of this column."
+
+  What this replaces is the *asking*: a screen per question, and the describe
+  screen. It does not replace the screens that report what the conversion
+  did. Reading is not the part a comfortable reader wants collapsed, and
+  "Decided for you", "What changed" and "Files" say the same things in both
+  modes because they are the same conversion.
+
+  Each question keeps a link to its own screen. The worked example lives
+  there and is the single most effective element the walkthroughs measured --
+  five of five named it unprompted -- so a reader who collapses the walk
+  gives up the table, not access to it.
+
+  No example here, and that is the honest omission rather than a shrunken
+  one: a worked example is a table of rows per question, and eight of them
+  stacked on one screen is the wall this screen exists to avoid.
+#}
+{% extends "base.html" %}
+{% block main %}
+<h1>Everything</h1>
+<p class="tally"><span data-count="ask">{{ asks | length }}</span> questions,
+  <span data-count="model">{{ models | length }}</span> models,
+  <span data-count="described">{{ described }}</span> described</p>
+
+{%- if asks %}
+<h2>Questions</h2>
+<ul class="asks">
+  {%- for ask in asks %}
+  <li data-item="ask">
+    <h3><span data-engine>{{ ask.decision.plain_question }}</span></h3>
+    <p class="action"><span data-engine>{{ ask.decision.action }}</span></p>
+    <ul class="answers">
+      {%- for choice in ask.choices %}
+      <li data-item="answer"{% if choice.chosen %} class="chosen"{% endif %}>
+        <form method="post" action="/answer">
+          <input type="hidden" name="key" value="{{ ask.decision.key }}">
+          <input type="hidden" name="kind" value="{{ choice.option.kind }}">
+          <p><span data-engine>{{ choice.option.effect }}</span></p>
+          {%- if choice.prompt %}
+          <fieldset>
+            <legend><span data-engine>{{ choice.prompt }}</span></legend>
+            <ul class="columns">
+              {%- for column in choice.columns %}
+              <li data-item="column">
+                {%- if column.tick %}
+                <label><input type="checkbox" name="columns" value="{{ column.name }}">
+                  <span data-engine>{{ column.name }}</span></label>
+                {%- else %}
+                <span data-engine>{{ column.name }}</span>
+                {%- endif %}
+              </li>
+              {%- endfor %}
+            </ul>
+            <label>Or type <input type="text" name="typed"></label>
+          </fieldset>
+          {%- endif %}
+          <button type="submit"><span data-engine>{{ choice.option.label }}</span></button>
+          {%- if choice.chosen %}<p class="mark">Chosen</p>{% endif %}
+        </form>
+      </li>
+      {%- endfor %}
+    </ul>
+    <p class="onward"><a data-link="one" href="/questions/{{ ask.index }}">See the example</a></p>
+  </li>
+  {%- endfor %}
+</ul>
+{%- endif %}
+
+<h2>Built as</h2>
+<ul class="meanings">
+  {%- for name, plain in meanings %}
+  <li data-item="meaning">
+    <code><span data-engine>{{ name }}</span></code>
+    <span class="means"><span data-engine>{{ plain }}</span></span>
+  </li>
+  {%- endfor %}
+</ul>
+
+<h2>Models</h2>
+<ul class="describe">
+  {%- for row in models %}
+  <li data-item="model">
+    <h3><span data-engine>{{ row.model.name }}</span>
+      {%- if row.description %}
+      <span class="mark" data-item="described">Written</span>
+      {%- else %}
+      <span class="mark blank">Still blank</span>
+      {%- endif %}</h3>
+    {%- if row.model.depends_on %}
+    <p class="depends">Built from
+      {%- for name in row.model.depends_on %}
+      <span data-item="depends" data-engine>{{ name }}</span>
+      {%- endfor %}</p>
+    {%- endif %}
+    <form method="post" action="/describe">
+      <input type="hidden" name="model" value="{{ row.model.name }}">
+      <label class="field-block">
+        <span class="key">Description</span>
+        {%- if row.description %}
+        <textarea name="text" rows="2"
+                  data-engine data-identifier>{{ row.description }}</textarea>
+        {%- else %}
+        <textarea name="text" rows="2"></textarea>
+        {%- endif %}
+      </label>
+      <div class="model-config">
+        <label class="field-block">
+          <span class="key">Built as</span>
+          <select name="materialization">
+            <option value=""{% if row.materialization not in row.choosable %} selected{% endif %}>
+              as converted</option>
+            {%- for choice in row.choosable %}
+            <option value="{{ choice }}"{% if row.materialization == choice %} selected{% endif %}>
+              {{ choice }}</option>
+            {%- endfor %}
+          </select>
+        </label>
+        <label class="field-block">
+          <span class="key">Tags</span>
+          {%- if row.tags %}
+          <textarea name="tags" rows="1" spellcheck="false"
+                    data-engine data-identifier>{{ row.tags }}</textarea>
+          {%- else %}
+          <textarea name="tags" rows="1" spellcheck="false"></textarea>
+          {%- endif %}
+        </label>
+      </div>
+      <p class="onward"><button type="submit">Save</button></p>
+    </form>
+  </li>
+  {%- endfor %}
+</ul>
+{% endblock %}

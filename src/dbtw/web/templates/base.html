@@ -74,6 +74,19 @@
       <span class="name">training wheels</span>
       <span class="arrow">sql &rarr; dbt</span>
       <span class="spacer"></span>
+      {%- if screens %}
+      {# The design's Mode toggle. A form rather than a link, because it
+         changes what this app holds, and it lands the reader back where they
+         pressed it. Only while there is a walk to reshape: on the entry
+         screen there is nothing yet to be guided through. #}
+      <form class="mode" method="post" action="/mode">
+        <input type="hidden" name="back" value="{{ here or '/' }}">
+        <button type="submit" name="mode" value="guided"
+                class="{{ 'on' if mode != 'direct' else 'off' }}">Guided</button>
+        <button type="submit" name="mode" value="direct"
+                class="{{ 'on' if mode == 'direct' else 'off' }}">Direct</button>
+      </form>
+      {%- endif %}
       <span class="project" data-engine data-identifier>{{ project_path }}</span>
     </header>
 

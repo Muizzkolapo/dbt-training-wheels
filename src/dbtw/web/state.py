@@ -661,6 +661,13 @@ class Source:
     # that read it back off the page would be checking the page against
     # itself.
     pushed: Push | None = None
+    # Which shape this reader wants the walk in. "guided" spreads the asking
+    # over a screen per question; "direct" puts every question and every
+    # model's fields on one. It changes what is on screen and nothing else --
+    # the conversion, its Decisions and the files it writes are the same
+    # either way, which is what `mode` being held *here* rather than passed
+    # into `assemble` is meant to make obvious.
+    mode: str = "guided"
     _staged: Path | None = field(default=None, repr=False)
 
     def start(
