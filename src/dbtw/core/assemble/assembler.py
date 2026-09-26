@@ -540,11 +540,82 @@ def _incremental_filter_caveat(
     ]
 
 
+def _written_by_pending(state: PassState, ctx: ProjectContext) -> dict[tuple[str, str], str]:
+    """Every (schema, table) a still-pending statement writes, and its kind.
+
+    The drafts already say what this change builds. This says what the
+    reader's script writes that this change does *not* build -- the targets
+    of the statements left pending -- so a reference to one is recognised as
+    theirs rather than mistaken for a raw table somewhere else.
+
+    Keyed by `(schema, table)` because that is the key a source is keyed by:
+    the question being asked is "would this be declared as a source", and a
+    target that cannot be keyed that way could not be declared as one either.
+
+    Unqualified targets are dropped, and a mutation keeping them kills no
+    test. It cannot: `_source_entries` only ever puts a *qualified* reference
+    in the map this is looked up against, so a `("", name)` key could never
+    be found there. It is dropped anyway so that what this returns is only
+    ever things a source could be declared for -- if the unqualified
+    references it keeps separately ever start being proposed as sources, a
+    map holding bare names would begin suppressing them silently, and that
+    is the one failure this whole function exists to prevent.
+    """
+    written: dict[tuple[str, str], str] = {}
+    for _, statement in state.pending:
+        try:
+            node = sqlglot.parse_one(statement.raw.text, read=state.dialect)
+        except SqlglotError:
+            # A statement this converter could not parse is one it knows
+            # nothing about, including what it writes. Skipped rather than
+            # guessed at: the cost of missing one here is a source
+            # declaration a reader has to correct, and the cost of guessing
+            # is one they cannot see is wrong.
+            continue
+        target = _writes_to(node)
+        if target is None or not target.db:
+            continue
+        written.setdefault((target.db, target.name), statement.kind)
+    return written
+
+
+def _writes_to(node: exp.Expr) -> exp.Table | None:
+    """The table a statement writes, or None if it writes none.
+
+    Wider than `passes.tier1._target_of`, which answers "what does this
+    statement build" for the statements that become models. This answers
+    "what does this statement change", so DELETE and UPDATE are here too: a
+    table whose rows a script deletes is a table that script owns, and
+    calling it a raw source read from elsewhere is the same mistake whether
+    the statement that touched it inserted or removed.
+    """
+    if isinstance(node, exp.Insert | exp.Create):
+        return _table_of(node.this)
+    if isinstance(node, exp.Delete | exp.Update):
+        return _table_of(node.this)
+    if isinstance(node, exp.TruncateTable):
+        return _table_of(node.expressions[0]) if node.expressions else None
+    if isinstance(node, exp.Select):
+        into = node.args.get("into")
+        return _table_of(into.this) if into is not None else None
+    return None
+
+
+def _table_of(node: exp.Expr | None) -> exp.Table | None:
+    """The `exp.Table` a write's target expression names, if it names one."""
+    if isinstance(node, exp.Table):
+        return node
+    if isinstance(node, exp.Schema) and isinstance(node.this, exp.Table):
+        return node.this
+    return None
+
+
 def _source_entries(
     drafts: tuple[ModelDraft, ...],
     refs: Mapping[str, tuple[TableRef, ...]],
     draft_names: set[str],
     ctx: ProjectContext,
+    written: Mapping[tuple[str, str], str] = {},
 ) -> tuple[tuple[SourceEntry, ...], list[Decision]]:
     """External references become SourceEntry rows, or a Decision when they can't.
 
@@ -598,6 +669,41 @@ def _source_entries(
     for key in sorted(external):
         source_name, table = key
         ref = external[key]
+        writer = written.get(key)
+        if writer is not None:
+            # A source says "this is a raw table, external to the project,
+            # that we read from". A table the reader's own script writes into
+            # is not that, whatever became of the statement that writes it --
+            # and a source declaration for one puts a claim about their
+            # warehouse in a file they commit.
+            #
+            # Reachable because deferral is honest: a statement this
+            # converter cannot convert yet stays pending, nothing in the
+            # change builds its target, and a later statement reading that
+            # target then has a reference matching no draft and no existing
+            # model, which is the exact shape of an external one. The answer
+            # is not to convert more; it is to stop calling a written table
+            # external.
+            decisions.append(
+                _decision(
+                    "source_written_here",
+                    f"{source_name}.{table}",
+                    f"{source_name}.{table} is read here and not declared as a source",
+                    f"this script writes {source_name}.{table} ({writer}), so it is not a "
+                    "raw table read from somewhere else -- but the statement that writes "
+                    "it is not one this conversion built, so there is no model to point "
+                    "at either. The reference is left as written",
+                    plain_reason=(
+                        f"Your script both writes {table} and reads it back. The part "
+                        "that writes it is not something this conversion could turn into "
+                        "a model, so there is nothing here to point the reading at -- and "
+                        "calling it a raw table from somewhere else would be wrong, "
+                        "because it is yours."
+                    ),
+                    tier=2,
+                )
+            )
+            continue
         already_declared = declared.get(key)
         if already_declared is not None:
             decisions.append(
@@ -1844,7 +1950,9 @@ def assemble(
     # incremental questions all resolve answers, and they run in that order.
     answers_map = answers or {}
 
-    source_entries, source_decisions = _source_entries(drafts, refs, draft_names, ctx)
+    source_entries, source_decisions = _source_entries(
+        drafts, refs, draft_names, ctx, _written_by_pending(state, ctx)
+    )
     new_decisions.extend(source_decisions)
 
     cross_questions, cross_taken = _cross_ref_questions(source_entries, elsewhere, answers_map)
