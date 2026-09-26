@@ -29,7 +29,7 @@ from dbtw.core.progress import (
     state_path,
     teaching_for,
 )
-from dbtw.core.teach import GLOSSARY, terms_in
+from dbtw.core.teach import COMMANDS, GLOSSARY, terms_in
 
 _NOT_DONE_YET = """\
 ## Not done yet
@@ -44,6 +44,39 @@ multi-statement rewrites remain deferred. Tests, documentation blocks, and
 exposures were not generated. Review the model bodies and the decisions above
 before treating any of this as final.\
 """
+
+
+NEXT_HEADING = "## Then, in your project"
+
+# The same heading the walk's last screen uses, because it is the same step.
+_NEXT = f"""\
+{NEXT_HEADING}
+
+Nothing here ran dbt. These are the commands that do, in the order a first run
+goes — see what would be sent, send it, check it, and the one that does both.
+What each of them does is defined in this report.
+
+{{commands}}
+
+Nothing schedules them. dbt builds when something runs it, and that something
+is you, or whatever you already use to run things on a schedule.\
+"""
+
+
+def _render_next() -> str:
+    """The commands to run, named and not defined.
+
+    Named here because the glossary is read off the report: a command the
+    report never said was a word it never defined, and ten conversions left a
+    reader at 8 of the glossary's 14 words with no way to reach the rest. The
+    two the CLI could not teach were the two the persona's comprehension check
+    asks -- when does this run again, and what would `dbt build` do to it.
+
+    Not defined here, for the same reason the walk's last screen does not
+    define them either: the glossary says what a word means, once, wherever it
+    is rendered, and a second copy is a second thing to keep in step.
+    """
+    return _NEXT.format(commands="\n".join(f"{n}. `{name}`" for n, name in enumerate(COMMANDS, 1)))
 
 
 def render_report(
@@ -62,6 +95,9 @@ def render_report(
             _render_decisions(change),
             _render_pending(change),
             _NOT_DONE_YET,
+            # After the caveats and last: "dbt was not invoked" is the
+            # sentence above it, and this is what invoking it looks like.
+            _render_next(),
         ]
     )
     # Second, not last. The glossary is read off the report rather than

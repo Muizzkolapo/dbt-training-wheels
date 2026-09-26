@@ -18,7 +18,7 @@ import re
 import pytest
 from tests.unit.passes.test_plain_register import JARGON
 
-from dbtw.core.teach import GLOSSARY, Term, terms_in
+from dbtw.core.teach import COMMANDS, GLOSSARY, Term, terms_in
 
 
 def _by_name() -> dict[str, Term]:
@@ -412,3 +412,22 @@ def test_no_term_s_spelling_is_hidden_inside_another_s():
             if term_a.name == term_b.name:
                 continue
             assert a not in b, f"{term_a.name}'s {a!r} hides inside {term_b.name}'s {b!r}"
+
+
+def test_the_commands_are_all_glossary_terms():
+    """Both surfaces name these four and neither defines them: the glossary
+    does, wherever it is rendered, by matching the word on the page. A command
+    spelled even slightly differently here would be named by the walk's last
+    screen and the report's closing section and defined by neither.
+    """
+    names = {term.name for term in GLOSSARY}
+
+    assert set(COMMANDS) <= names, f"named but never defined: {sorted(set(COMMANDS) - names)}"
+
+
+def test_the_commands_are_the_four_dbt_commands():
+    """Pinned rather than read back from the constant: every other assertion
+    about this list takes its expectation from the list itself, which holds
+    for any subset and any order.
+    """
+    assert COMMANDS == ("dbt compile", "dbt run", "dbt test", "dbt build")

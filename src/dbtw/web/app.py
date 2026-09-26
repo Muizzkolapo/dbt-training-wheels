@@ -99,7 +99,7 @@ from dbtw.core.progress import (
     save_progress,
     teaching_for,
 )
-from dbtw.core.teach import Term, terms_in
+from dbtw.core.teach import COMMANDS, Term, terms_in
 from dbtw.web.state import EmptySourceError, Session, SessionView, Source
 
 # The key prefix `assemble` gives the Decisions it records for a model rather
@@ -123,7 +123,7 @@ _RENAME = "assemble.rename."
 # personas -- the trailing `+` especially -- and nothing in the engine knows
 # which models a reader should select, so a `--select` written here would be
 # the web layer inventing behaviour.
-_COMMANDS = ("dbt compile", "dbt run", "dbt test", "dbt build")
+_COMMANDS = COMMANDS
 
 
 @dataclass(frozen=True, slots=True)
