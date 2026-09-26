@@ -133,7 +133,13 @@ def test_pending_statements_are_listed():
     stmt = ClassifiedStatement(raw=raw, kind="variable", reason="test")
     out = _report(pending=((7, stmt),))
     assert "variable" in out
-    assert "DECLARE @d INT = 1" in out
+    # `INTEGER`, not the `INT` the reader typed: the excerpt is the statement
+    # as sqlglot reads it, which is how this report renders every model body
+    # too. The alternative -- showing the original text with comments cut out
+    # by hand -- is a comment-and-quote scanner, and the one this replaced hid
+    # real SQL on a backslash-escaped quote, a multi-line string literal, a
+    # dollar-quoted body and a bracketed identifier. See core/excerpt.py.
+    assert "DECLARE @d INTEGER = 1" in out
 
 
 def test_empty_pending_says_so():

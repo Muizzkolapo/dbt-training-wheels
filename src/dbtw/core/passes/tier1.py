@@ -374,7 +374,7 @@ def drop_session_pass(state: PassState) -> PassState:
                 stmt,
                 index,
                 "session",
-                action=f"dropped session statement: {excerpt(stmt.raw.text, 60)}",
+                action=f"dropped session statement: {excerpt(stmt.raw.text, state.dialect, 60)}",
                 reason="connection and session state live in profiles.yml, not in models",
             )
         )
@@ -422,7 +422,7 @@ def drop_ddl_pass(state: PassState) -> PassState:
                     stmt,
                     index,
                     "ddl",
-                    action=f"dropped solo TRUNCATE: {excerpt(stmt.raw.text, 60)}",
+                    action=f"dropped solo TRUNCATE: {excerpt(stmt.raw.text, state.dialect, 60)}",
                     reason=(
                         "a TRUNCATE with no surviving INSERT pair has no dbt equivalent; dbt's "
                         "table materialization rebuilds from scratch on every run"
@@ -438,7 +438,7 @@ def drop_ddl_pass(state: PassState) -> PassState:
                 stmt,
                 index,
                 "ddl",
-                action=f"dropped DDL statement: {excerpt(stmt.raw.text, 60)}",
+                action=f"dropped DDL statement: {excerpt(stmt.raw.text, state.dialect, 60)}",
                 reason=(
                     "dbt rebuilds objects from scratch; if an index is genuinely needed it "
                     "belongs in a post-hook"

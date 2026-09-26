@@ -522,5 +522,5 @@ def _render_pending(change: ProjectChange) -> str:
         # whole directory of scripts, so the kind alone does not identify one
         # -- and a reader who wants to look at it needs somewhere to look.
         where = f"{PurePath(stmt.raw.source_file).name}:{stmt.raw.line_start}"
-        lines.append(f"- **{stmt.kind}** — `{where}` — {excerpt(stmt.raw.text)}")
+        lines.append(f"- **{stmt.kind}** — `{where}` — {excerpt(stmt.raw.text, change.dialect)}")
     return "\n".join(lines)

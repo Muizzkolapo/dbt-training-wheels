@@ -15,6 +15,7 @@ from tests.unit.emit.test_report import _change
 
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import render_report
+from dbtw.core.excerpt import LINE_LIMIT, excerpt
 from dbtw.core.ingest import ClassifiedStatement, RawStatement
 from dbtw.core.ingest.types import StatementKind
 
@@ -38,6 +39,7 @@ def _pending(
     *,
     kind: StatementKind = "select",
     name: str = "mysql_indexes_unused.sql",
+    dialect: str = "postgres",
 ) -> str:
     statement = ClassifiedStatement(
         raw=RawStatement(
@@ -47,7 +49,8 @@ def _pending(
         reason="parsed as a query",
     )
     report = render_report(
-        _change(pending=((0, statement),)), read_project(FIXTURES / "jaffle_shop")
+        _change(pending=((0, statement),), dialect=dialect),
+        read_project(FIXTURES / "jaffle_shop"),
     )
     return report.split("## Still pending")[1].split("\n## ")[0]
 
@@ -148,3 +151,113 @@ def test_a_hash_comment_header_is_skipped_but_a_temp_table_is_not() -> None:
     """
     assert "the header" not in _pending("# the header\nSELECT a FROM t")
     assert "SELECT a FROM #temp" in _pending("SELECT a FROM #temp")
+
+
+# Every case below was found by a blind review breaking the hand-written
+# comment-and-quote scanner this module used to be. Each is one of the two
+# failures the module exists to prevent: SQL the reader wrote disappearing
+# with no ellipsis to say so, or comment text shown as if it were code.
+
+
+def test_a_backslash_escaped_quote_does_not_end_the_statement_early() -> None:
+    block = _pending(r"SELECT 'it\'s -- not a comment' AS label FROM t", dialect="mysql")
+
+    assert "AS label FROM t" in block, "the rest of the statement must not vanish"
+
+
+def test_a_string_literal_spanning_two_lines_keeps_what_follows_it() -> None:
+    """The scanner's quote state was per line, so the line closing the literal
+    looked like a bare comment and the `FROM` on it was dropped in silence.
+    """
+    excerpted = excerpt("SELECT 'line one\n-- still inside the string' AS x FROM totals")
+
+    assert "AS x FROM totals" in excerpted
+    # One line, always. sqlglot returns a literal spanning two lines spanning
+    # two lines, and a newline here would break the markdown list this goes
+    # into -- the rest of the statement would render as a paragraph of its own.
+    assert "\n" not in excerpted
+
+
+def test_a_dollar_quoted_body_is_not_cut_at_a_dash_inside_it() -> None:
+    block = _pending("SELECT $$ this -- is not a comment $$ AS x FROM t")
+
+    assert "AS x FROM t" in block
+
+
+def test_a_bracketed_identifier_holding_a_dash_survives() -> None:
+    block = _pending("SELECT * FROM [my--table]", dialect="tsql")
+
+    assert "my--table" in block, "a T-SQL identifier is not a comment"
+
+
+def test_a_block_comment_in_the_middle_of_a_line_is_removed_too() -> None:
+    """Only a comment starting a line was recognised, so `/* b */` mid-line
+    leaked into a list that claims to show the statement.
+    """
+    block = _pending("/* a */ SELECT /* b */ x FROM t")
+
+    assert "SELECT x FROM t" in block
+    assert "/*" not in block
+
+
+def test_a_nested_block_comment_does_not_leak_its_text() -> None:
+    """Postgres nests these. The first `*/` closed the comment early and
+    `still outer` was shown as though the reader had written it as SQL.
+    """
+    block = _pending("/* outer /* inner */ still outer */ SELECT 1 AS a")
+
+    assert "still outer" not in block
+    assert "SELECT 1 AS a" in block
+
+
+def test_a_trailing_hash_comment_does_not_swallow_the_next_line() -> None:
+    """MySQL's other comment. The trailing scan only knew `--`, so this read
+    as though the `FROM` joined after it were commented out -- the exact
+    failure that scan existed to prevent, recreated for `#`.
+    """
+    block = _pending("SELECT a, b # trailing comment\nFROM totals", dialect="mysql")
+
+    assert "SELECT a, b FROM totals" in block
+    assert "trailing comment" not in block
+
+
+def test_text_that_is_not_sql_shows_the_line_the_reader_wrote() -> None:
+    """A MySQL script's client escape. Nothing can parse it, so the fallback
+    shows a line as written and claims nothing about what is in it.
+    """
+    block = _pending('-- a header\n\\! echo "Unused Indexes since startup:"', kind="unsupported")
+
+    assert '\\! echo "Unused Indexes since startup:"' in block
+
+
+def test_an_unterminated_block_comment_falls_back_rather_than_leaking_it() -> None:
+    """Not valid SQL, so no parser will take it. What must not happen is the
+    comment's own text being shown as the statement.
+    """
+    block = _pending("/* opened and never closed\nstill inside\nSELECT 2 FROM t")
+
+    assert "opened and never closed" not in block
+    assert "still inside" not in block
+
+
+def test_the_cut_is_at_the_documented_limit() -> None:
+    """`LINE_LIMIT` is the claim; a loose upper bound would let it drift."""
+    long_query = "SELECT " + ", ".join(f"column_number_{n}" for n in range(60)) + " FROM t"
+
+    excerpted = excerpt(long_query, "postgres")
+
+    # The number, not the constant read back: `len(excerpted) == LINE_LIMIT`
+    # alone passes for any value of LINE_LIMIT, which is a test of nothing.
+    assert LINE_LIMIT == 88
+    assert len(excerpted) == LINE_LIMIT
+    assert excerpted.endswith("…")
+
+
+def test_the_reader_s_dialect_decides_what_parses() -> None:
+    """`DECLARE @d INT = 1` is T-SQL and nothing else parses it. With the
+    dialect it is rendered as SQL; without one, no parser takes it and the
+    fallback shows the line as written. Both are honest -- what must not
+    happen is the dialect the reader gave being dropped on the way here.
+    """
+    assert excerpt("DECLARE @d INT = 1", "tsql") == "DECLARE @d INTEGER = 1"
+    assert excerpt("DECLARE @d INT = 1", None) == "DECLARE @d INT = 1"
