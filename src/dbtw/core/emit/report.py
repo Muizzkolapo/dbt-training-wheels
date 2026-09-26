@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import PurePath
 
 import sqlglot
 from sqlglot.errors import SqlglotError
@@ -16,6 +17,7 @@ from dbtw.core.emit.example import (
     Example,
     worked_example,
 )
+from dbtw.core.excerpt import excerpt
 from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision, statement_index
 from dbtw.core.progress import (
@@ -516,6 +518,9 @@ def _render_pending(change: ProjectChange) -> str:
         lines.append("Nothing — every statement was handled.")
         return "\n".join(lines)
     for _, stmt in change.pending:
-        first_line = stmt.raw.text.splitlines()[0] if stmt.raw.text else ""
-        lines.append(f"- **{stmt.kind}** — {first_line}")
+        # The file and line as well as the statement: one report can cover a
+        # whole directory of scripts, so the kind alone does not identify one
+        # -- and a reader who wants to look at it needs somewhere to look.
+        where = f"{PurePath(stmt.raw.source_file).name}:{stmt.raw.line_start}"
+        lines.append(f"- **{stmt.kind}** — `{where}` — {excerpt(stmt.raw.text, change.dialect)}")
     return "\n".join(lines)
