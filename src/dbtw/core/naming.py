@@ -52,9 +52,25 @@ unconditionally, which broke the opposite, genuinely case-sensitive case: a
 QUOTED identifier's case *is* significant in every dialect sqlglot supports,
 so `WITH "Totals" AS (...) SELECT * FROM "totals"` (postgres) are two
 different names, and casefolding silently swallowed the read as if it were
-the CTE (FINDING 9). `is_cte_read` casefolds only when *neither* side was
-written quoted; if either was, the comparison is exact. One definition,
-so the two call sites can never drift apart on this rule either.
+the CTE (FINDING 9). `same_identifier` casefolds only when *neither* side
+was written quoted; if either was, the comparison is exact.
+
+Sharing the comparison was not enough, because what it was *applied to* was
+rebuilt at each call site -- and all three rebuilt it the same wrong way,
+with `tuple(node.find_all(exp.CTE))`. That collects every CTE in the whole
+statement, so a CTE named `orders` inside a subquery subtracted a read of
+`orders` anywhere else in the query, including at the top level where it is
+a real table. The consequence was invisible in each caller and different in
+each: `refs` dropped the table from a body's references, so it was never
+declared as a source and never recorded as a dependency; `rewrite` skipped
+it, so the model shipped with a bare warehouse table name where dbt needed
+a `ref()`; and `passes.tier1.select_pass`, whose whole refusal is that a
+model must not read a table of its own name, found nothing to refuse and
+built one. `is_external_read` therefore takes the *table* and nothing else,
+and works the scope out itself: a CTE's name reaches only the query its
+`WITH` is attached to, and within one `WITH` a CTE's body sees the CTEs
+written before it -- plus itself, when the `WITH` is `RECURSIVE`. One
+definition, so no caller has a set of its own to get wrong.
 
 ## Cross-statement target identity
 
@@ -73,8 +89,8 @@ qualified one depends on the session's default schema/catalog, which the
 SQL text never reveals. Confidently converting on a wrong "different" is
 the failure mode that matters here: it ships an incremental whose semantics
 silently diverge from the script. `same_identifier` generalizes the
-casefold-unless-quoted rule `is_cte_read` established (both now share it,
-so it's defined once); `compare_targets` builds on it to return `"same"`,
+casefold-unless-quoted rule CTE-alias matching established (every caller
+now shares it, so it is defined once); `compare_targets` builds on it to return `"same"`,
 `"different"`, or `"ambiguous"` for two parsed targets — the third outcome
 exists precisely so a caller can refuse to guess instead of silently
 picking a side.
@@ -82,7 +98,6 @@ picking a side.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Literal, Protocol
 
 from sqlglot import exp
@@ -158,9 +173,9 @@ def same_identifier(a: str, a_quoted: bool, b: str, b_quoted: bool) -> bool:
     case-sensitive in every dialect that respects quoting (Postgres,
     Snowflake, ...), so a quoted `"Events"` and a bare `events` are two
     different names even though bare `Events` and `events` are the same
-    one. `is_cte_read` established this rule first, for CTE-alias
-    matching; `compare_targets` reuses it for cross-statement target
-    identity; the assembler reuses it to match a `--unique-key` value
+    one. CTE-alias matching established this rule first (now
+    `is_external_read`); `compare_targets` reuses it for cross-statement
+    target identity; the assembler reuses it to match a `--unique-key` value
     against a model's own output columns, and `merge_pass` to match a
     MERGE's SET/INSERT column lists — see the module docstring.
     """
@@ -169,20 +184,105 @@ def same_identifier(a: str, a_quoted: bool, b: str, b_quoted: bool) -> bool:
     return a.casefold() == b.casefold()
 
 
-def is_cte_read(table: exp.Table, ctes: Iterable[exp.CTE]) -> bool:
-    """True when `table`'s bare name reads one of `ctes` by its own alias.
+def _own_with(node: exp.Expr) -> exp.With | None:
+    """The `WITH` clause this query node carries, if it carries one.
 
-    Comparison follows `same_identifier`'s rule: casefolded unless either
-    the CTE's own alias or this table's identifier was written quoted.
+    Read off `args` by type rather than by key, because the key sqlglot
+    stores it under is not stable across its versions (`"with"` became
+    `"with_"`), and a lookup that silently misses would make every CTE
+    invisible -- turning every CTE read into an external table reference,
+    which is the failure this whole section exists to prevent. A query node
+    carries at most one.
     """
+    for value in node.args.values():
+        if isinstance(value, exp.With):
+            return value
+    return None
+
+
+def _enclosing_cte(node: exp.Expr, with_clause: exp.With) -> exp.CTE | None:
+    """The CTE of `with_clause` that `node` sits inside, if it sits in one."""
+    current = node.parent
+    while current is not None:
+        if isinstance(current, exp.CTE) and current.parent is with_clause:
+            return current
+        current = current.parent
+    return None
+
+
+def _visible_cte_aliases(table: exp.Table) -> list[tuple[str, bool]]:
+    """Every CTE alias in scope where `table` is written, innermost outward.
+
+    Lexical scope, not "every CTE in the statement". A `WITH` attached to a
+    subquery names its CTEs only inside that subquery, so
+
+        SELECT id FROM orders
+        UNION ALL
+        SELECT id FROM (WITH orders AS (...) SELECT id FROM orders) AS sub
+
+    has one CTE named `orders` and two reads of the name, and only the inner
+    one is that CTE -- the outer `FROM orders` reads a real table. Collecting
+    CTEs with an unscoped `find_all(exp.CTE)` (which is what all three callers
+    of the old `is_cte_read` did) made the outer read look like a CTE read
+    too, so it was subtracted from a body's references: it was never rewritten
+    to `ref()`/`source()` and never recorded as a dependency, and in
+    `select_pass` a model reading a table of its own name shipped as a success.
+
+    Within one `WITH`, a CTE's own body sees only the CTEs written *before*
+    it -- and itself, when the `WITH` is `RECURSIVE`. So in
+    `WITH orders AS (SELECT * FROM orders) SELECT * FROM orders` the inner
+    read is the real table (nothing precedes `orders`, and the `WITH` is not
+    recursive) while the outer read is the CTE; in
+    `WITH RECURSIVE t AS (... FROM t) SELECT * FROM t` both reads are the CTE.
+    """
+    visible: list[tuple[str, bool]] = []
+    ancestor = table.parent
+    while ancestor is not None:
+        with_clause = _own_with(ancestor)
+        if with_clause is not None:
+            ctes = list(with_clause.expressions)
+            own = _enclosing_cte(table, with_clause)
+            if own is None:
+                in_scope = ctes
+            else:
+                position = ctes.index(own)
+                in_scope = (
+                    ctes[: position + 1] if with_clause.args.get("recursive") else ctes[:position]
+                )
+            visible.extend(_cte_alias_and_quoted(cte) for cte in in_scope)
+        ancestor = ancestor.parent
+    return visible
+
+
+def is_external_read(table: exp.Table) -> bool:
+    """Whether `table` reads something from outside the query it is written in.
+
+    The one answer to "is this table reference a real table, or one of the
+    query's own CTEs" -- and the only thing three modules should ask, because
+    each of them needs the same answer and a wrong one is invisible: a CTE
+    mistaken for a table is announced as an undeclared source, and a table
+    mistaken for a CTE is silently dropped from the body's references.
+
+    A qualified reference is always external: a CTE alias is never
+    schema-qualified, so `raw.orders` cannot be a CTE even where a CTE called
+    `orders` exists. An unqualified one is external unless a CTE in scope
+    (`_visible_cte_aliases`) shares its name, compared by `same_identifier`
+    -- casefolded unless either side was written quoted, since a quoted
+    `"Totals"` and a bare `totals` are two different names.
+
+    A reference with no name at all (a table function, a subquery in a FROM)
+    is not a read of anything nameable and is neither.
+    """
+    if not table.name:
+        return False
+    if table.db or table.catalog:
+        return True
     identifier = table.this
-    table_quoted = bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
-    table_name = table.name
-    for cte in ctes:
-        alias, alias_quoted = _cte_alias_and_quoted(cte)
-        if same_identifier(table_name, table_quoted, alias, alias_quoted):
-            return True
-    return False
+    quoted = bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
+    return not any(
+        same_identifier(table.name, quoted, alias, alias_quoted)
+        for alias, alias_quoted in _visible_cte_aliases(table)
+    )
 
 
 TargetComparison = Literal["same", "different", "ambiguous"]

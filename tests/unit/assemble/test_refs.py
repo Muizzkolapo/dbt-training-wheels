@@ -93,3 +93,78 @@ def test_quoted_same_case_table_read_still_matches_its_cte():
     """
     body = 'WITH "Totals" AS (SELECT 1 AS x) SELECT * FROM "Totals"'
     assert references_in(body, "postgres") == ()
+
+
+def test_a_cte_in_a_subquery_does_not_shadow_a_read_outside_it():
+    """A CTE's name reaches only the query its WITH is attached to.
+
+    Every caller of the old `is_cte_read` collected CTEs with an unscoped
+    `find_all(exp.CTE)`, so a CTE anywhere in the statement subtracted a read
+    of its name anywhere else. Here the real `orders` table read at the top
+    level vanished from a body's references entirely: never declared as a
+    source, never a dependency, and never rewritten -- the body kept a bare
+    `FROM orders` that dbt would send to the warehouse as written.
+    """
+    body = (
+        "WITH tidy AS (SELECT id FROM raw.src) "
+        "SELECT id FROM orders "
+        "UNION ALL "
+        "SELECT id FROM (WITH orders AS (SELECT 1 AS id) SELECT id FROM orders) AS sub "
+        "UNION ALL "
+        "SELECT id FROM tidy"
+    )
+
+    # `orders` because the top-level read is a real table; `src` because the
+    # outer CTE reads one. `tidy` and the inner `orders` are CTE reads.
+    #
+    # The unrelated CTE `tidy` is here on purpose. `references_in` returns a
+    # deduplicated set, so a body whose only CTE name is also read for real
+    # collapses to the same one-element answer whether CTE reads are subtracted
+    # or not — which let an earlier version of this test pass against an
+    # implementation with no CTE-awareness at all. `tidy` is read and is never
+    # a table, so it appears if and only if the subtraction stopped happening.
+    assert references_in(body, None) == (
+        TableRef(catalog="", db="", name="orders"),
+        TableRef(catalog="", db="raw", name="src"),
+    )
+
+
+def test_a_ctes_own_body_reads_the_real_table_of_its_name():
+    """`WITH orders AS (SELECT id FROM orders)` is the ordinary way to wrap a
+    real table, and the inner read is that table: a non-recursive CTE is not
+    in scope inside its own definition. Treating it as the CTE dropped the
+    only reference the body actually had, leaving a model that reads nothing.
+    """
+    body = (
+        "WITH tidy AS (SELECT 1 AS id), orders AS (SELECT id FROM orders) "
+        "SELECT id FROM orders UNION ALL SELECT id FROM tidy"
+    )
+
+    # `tidy` is read and is never a table, so it appears only if CTE reads
+    # stopped being subtracted at all — see the note on the test above.
+    assert [r.name for r in references_in(body, None)] == ["orders"]
+
+
+def test_a_recursive_ctes_own_body_reads_itself_not_a_table():
+    """The opposite case, and why the rule is not simply "a CTE cannot see
+    itself": RECURSIVE is precisely the declaration that it can. Reading this
+    one as an external table would announce an undeclared source for a name
+    that is defined three words earlier.
+    """
+    body = (
+        "WITH RECURSIVE walk AS ("
+        "SELECT 1 AS n UNION ALL SELECT n + 1 AS n FROM walk WHERE n < 10"
+        ") SELECT n FROM walk"
+    )
+
+    assert references_in(body, None) == ()
+
+
+def test_a_cte_defined_after_another_is_not_in_scope_inside_it():
+    """Order within one WITH is load-bearing: `first` cannot read `second`,
+    so a read of `second` inside `first` is a real table, and calling it the
+    CTE would swallow a reference the model genuinely depends on.
+    """
+    body = "WITH first AS (SELECT id FROM second), second AS (SELECT 1 AS id) SELECT id FROM first"
+
+    assert [r.name for r in references_in(body, None)] == ["second"]

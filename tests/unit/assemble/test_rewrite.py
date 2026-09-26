@@ -272,3 +272,25 @@ def test_getvariable_call_with_more_than_one_argument_is_left_alone():
     )
     assert "var(" not in out
     assert "{{" not in out
+
+
+def test_a_read_outside_a_subquerys_cte_is_still_rewritten():
+    """The rewrite half of the scoping rule. A CTE named `orders` inside a
+    subquery used to make the top-level `FROM orders` look like a CTE read, so
+    it was skipped: the model shipped with a bare table name where dbt needed
+    a ref(), and nothing recorded that it had been left behind.
+    """
+    body = (
+        "SELECT id FROM orders "
+        "UNION ALL "
+        "SELECT id FROM (WITH orders AS (SELECT 1 AS id) SELECT id FROM orders) AS sub"
+    )
+
+    out = rewrite_body(body, None, _res("", "", "orders", "ref", "stg_orders"), {})
+
+    assert "{{ ref('stg_orders') }}" in out
+    # The CTE and the read of it inside the subquery keep their own name: they
+    # are not the table, and rewriting them would point the subquery at a
+    # model instead of at the rows it defines two lines above.
+    assert out.count("{{ ref('stg_orders') }}") == 1
+    assert "WITH orders AS" in out

@@ -4,6 +4,7 @@ from dbtw.core.passes.tier1 import (
     drop_ddl_pass,
     drop_session_pass,
     grants_pass,
+    select_pass,
     truncate_insert_pass,
 )
 from dbtw.core.passes.tier2 import append_pass, merge_pass, truncate_insert_columns_pass
@@ -51,6 +52,7 @@ __all__ = [
     "merge_option",
     "merge_pass",
     "run_passes",
+    "select_pass",
     "statement_index",
     "truncate_insert_columns_pass",
     "truncate_insert_pass",

@@ -46,16 +46,26 @@ The table rewrite must re-apply the original alias: a bare `exp.Var` or
 the original table carried an alias — is the one injection shape that
 survives sqlglot's generator intact.
 
-A table's exclusion from rewriting mirrors `refs.py`'s CTE-alias rule
-exactly, via the same shared `naming.is_cte_read`: only an *unqualified*
-name matching a CTE alias is excluded, since a CTE alias is never
-schema-qualified and a qualified reference can never actually be a CTE. The
-two modules must stay mirror images of each other — if refs.py excludes a
-matching CTE read from `_source_entries`/dependency edges but this module's
-own exclusion check disagreed, the read would be rewritten straight past the
-CTE onto an unrelated model that happened to share its name, silently
-substituting different data (the conservative failure mode — leaving a real
-table as written with an unresolved Decision — is always the safe one).
+Which tables are rewritten is not decided here: `naming.is_external_read`
+decides it, and `refs.py` asks the same function the same question. Only a
+read of something outside the query is a candidate — a read of one of the
+query's own CTEs is not — and a qualified reference always is, since a CTE
+alias is never schema-qualified. The two modules must stay mirror images of
+each other: if refs.py excluded a CTE read from `_source_entries`/dependency
+edges but this module's own check disagreed, the read would be rewritten
+straight past the CTE onto an unrelated model that happened to share its
+name, silently substituting different data (the conservative failure mode —
+leaving a real table as written with an unresolved Decision — is always the
+safe one).
+
+Sharing a *comparison* was not enough, and both modules once got this wrong
+in the same way: each built the CTE set it compared against with an unscoped
+`find_all(exp.CTE)`, so a CTE named `orders` inside a subquery excluded a
+read of `orders` at the top level, where it is a real table — here that
+meant the model shipped with a bare warehouse table name where dbt needed a
+`ref()`. `is_external_read` takes the table alone and works the scope out
+itself, so neither module has a set of its own to get wrong. See its
+docstring, and the module docstring of `naming.py`.
 """
 
 from __future__ import annotations
@@ -68,7 +78,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble.resolve import Resolution
-from dbtw.core.naming import is_cte_read, maybe_paren
+from dbtw.core.naming import is_external_read, maybe_paren
 
 
 def rewrite_body(
@@ -82,13 +92,8 @@ def rewrite_body(
     except SqlglotError:
         return body
 
-    ctes = tuple(node.find_all(exp.CTE))
-
     def _rewrite_table(table: exp.Table) -> exp.Expr:
-        is_candidate = bool(table.name) and (
-            table.db or table.catalog or not is_cte_read(table, ctes)
-        )
-        if not is_candidate:
+        if not is_external_read(table):
             return table
         resolution = resolutions.get((table.catalog, table.db, table.name))
         if resolution is None or resolution.kind == "unresolved":
