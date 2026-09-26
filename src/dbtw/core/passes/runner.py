@@ -10,6 +10,7 @@ from dbtw.core.passes.tier1 import (
     drop_ddl_pass,
     drop_session_pass,
     grants_pass,
+    select_pass,
     truncate_insert_pass,
 )
 from dbtw.core.passes.tier2 import append_pass, merge_pass, truncate_insert_columns_pass
@@ -57,6 +58,26 @@ def run_passes(classified: Sequence[ClassifiedStatement], dialect: str | None) -
     # is already satisfied the instant tier 2 finishes; there is no reason
     # to make it wait any longer.
     state = grants_pass(state)
+    # select_pass runs here, after both tiers and after grants_pass, and it is
+    # in neither tuple for a reason of its own. It names a model after the file
+    # the query is in, and refuses when that name is already taken by a model
+    # this conversion builds -- so it has to run when every draft that will
+    # ever exist already does. Inside TIER1_PASSES its check would be blind to
+    # every tier-2 draft (a MERGE target, an append target), and a file called
+    # revenue_daily.sql holding both a MERGE into revenue_daily and a loose
+    # query would have drafted the query as `revenue_daily` first, leaving
+    # merge_pass's own draft to land on it through `replace_draft` as a
+    # "redefinition ... the last definition wins" -- a Decision that would be
+    # false in both directions, since the two statements are not two
+    # definitions of one model and one of them would vanish.
+    #
+    # After grants_pass rather than before, which is the other half of the
+    # same rule: a GRANT attaches to a draft built from a statement that
+    # writes the granted table, and a file-named model is a query that writes
+    # nothing. A GRANT on a table whose name happens to match a file's would
+    # otherwise be attached to a model that has no relationship to it, which
+    # is inventing one.
+    state = select_pass(state)
     # drop_ddl_pass runs last, after both tiers and after grants_pass, not
     # folded into TIER1_PASSES: tier1's truncate_insert_pass defers a
     # column-list TRUNCATE+INSERT pair to tier 2's truncate_insert_columns_pass
