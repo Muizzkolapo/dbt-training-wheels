@@ -23,6 +23,7 @@ from pathlib import Path
 from dbtw.core.assemble import assemble
 from dbtw.core.context import NotADbtProjectError, read_project
 from dbtw.core.emit import (
+    REPORT_NAME,
     OutputInsideProjectError,
     UnsafeOutputPathError,
     emit,
@@ -30,9 +31,15 @@ from dbtw.core.emit import (
 )
 from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest
 from dbtw.core.passes import run_passes
+from dbtw.core.progress import (
+    NOTHING_EXPLAINED,
+    after,
+    load_progress,
+    save_progress,
+    teaching_for,
+)
+from dbtw.core.teach import terms_in
 from dbtw.web import MissingWebExtraError, Session, Source, require_flask
-
-_REPORT_NAME = "CONVERSION_REPORT.md"
 
 # Where `dbtw web` serves. The loopback address and nothing else: a
 # conversation holds the contents of the user's SQL and their dbt project,
@@ -44,6 +51,14 @@ _HOST = "127.0.0.1"
 # Flask's own default, so the address is the one a reader expects. A port
 # already in use raises OSError from the bind, which is already a usage
 # error here — the refusal names the port and --port is the answer to it.
+_NO_REMEMBER_HELP = (
+    "explain every dbt word in full, and record nothing. By default this tool "
+    "remembers which words it has already explained to you for this project, in a "
+    "plain JSON file under your state directory, and stops repeating a word after "
+    "the third time -- moving its meaning to the end of the report rather than "
+    "dropping it. The file holds no SQL"
+)
+
 _DEFAULT_PORT = 5000
 
 
@@ -103,6 +118,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dialect", metavar="DIALECT", default=None, help="The source SQL dialect"
     )
     convert.add_argument(
+        "--no-remember",
+        dest="remember",
+        action="store_false",
+        default=True,
+        help=_NO_REMEMBER_HELP,
+    )
+    convert.add_argument(
         "--inline-vars",
         action="store_true",
         default=False,
@@ -136,6 +158,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="The target dbt project root (or give it in the browser)",
     )
     web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
+    web.add_argument(
+        "--no-remember",
+        dest="remember",
+        action="store_false",
+        default=True,
+        help=_NO_REMEMBER_HELP,
+    )
     web.add_argument(
         "--out",
         metavar="OUT_DIR",
@@ -180,6 +209,7 @@ def _convert(
     dialect: str | None,
     inline_vars: bool,
     unique_key: tuple[str, ...],
+    remember: bool = True,
 ) -> int:
     # Expanded here, once, for both arguments: --out and --project have to be
     # read in the same spelling or emit's in-project guard compares '~/proj'
@@ -197,8 +227,22 @@ def _convert(
     ctx = read_project(project_root)
     change = assemble(state, ctx, inline_vars=inline_vars, unique_key=unique_key)
 
-    result = emit(change, ctx, out_dir)
-    report_path = out_dir / _REPORT_NAME
+    # Looked up before the report is written and recorded after, so a
+    # conversion that fails part way through never claims to have explained a
+    # word the reader never saw.
+    learned = load_progress(project_root) if remember else NOTHING_EXPLAINED
+    result = emit(change, ctx, out_dir, learned)
+    report_path = out_dir / REPORT_NAME
+    if remember and not learned.unreadable:
+        shown = teaching_for(terms_in(report_path.read_text(encoding="utf-8")), learned)
+        try:
+            save_progress(project_root, after((*shown.full, *shown.met), learned))
+        except (OSError, ValueError) as exc:
+            # Never fatal: the conversion on disk is correct and complete, and
+            # what was lost is only that the next one repeats these words.
+            # Never silent either -- a reader who is told nothing would take a
+            # tenth report that reads like a first as the tool not working.
+            print(f"warning: could not record which words were explained: {exc}", file=sys.stderr)
 
     # emit's own Decisions, in emit's own words. A user who reads the terminal
     # and then runs `cp -r` never opens the report, and where the sources file
@@ -215,7 +259,13 @@ def _convert(
 
 
 def _web(
-    sql_path: str | None, project: str, out: str, dialect: str | None, port: int, open_browser: bool
+    sql_path: str | None,
+    project: str,
+    out: str,
+    dialect: str | None,
+    port: int,
+    open_browser: bool,
+    remember: bool = True,
 ) -> int:
     # Asked first, and before anything is read: no argument the user could
     # have written makes this command work without the extra, so a refusal
@@ -252,7 +302,7 @@ def _web(
             "bring both in the browser"
         )
 
-    source = Source(out=out_dir, dialect=dialect)
+    source = Source(out=out_dir, dialect=dialect, remember=remember)
     if project_root is None:
         # Nothing to read and nothing to check: the project arrives on the
         # entry screen, where `Source.start` reads it and renders the same
@@ -315,6 +365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.dialect,
                 args.port,
                 args.open_browser,
+                args.remember,
             )
 
         unique_key = (
@@ -323,7 +374,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             else ()
         )
         return _convert(
-            args.sql_path, args.project, args.out, args.dialect, args.inline_vars, unique_key
+            args.sql_path,
+            args.project,
+            args.out,
+            args.dialect,
+            args.inline_vars,
+            unique_key,
+            args.remember,
         )
     except _USAGE_ERRORS as exc:
         print(str(exc), file=sys.stderr)

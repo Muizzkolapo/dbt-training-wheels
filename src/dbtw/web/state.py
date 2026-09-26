@@ -668,6 +668,12 @@ class Source:
     # either way, which is what `mode` being held *here* rather than passed
     # into `assemble` is meant to make obvious.
     mode: str = "guided"
+    # Whether this walk keeps a record of which dbt words it has explained to
+    # this reader, for this project. True by default and turned off by
+    # `dbtw web --no-remember`, which is the same switch `dbtw convert` has
+    # and means the same thing: explain every word in full, every time, and
+    # write nothing down.
+    remember: bool = True
     _staged: Path | None = field(default=None, repr=False)
 
     def start(

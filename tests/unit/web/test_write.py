@@ -393,9 +393,9 @@ def test_pressing_write_twice_does_not_write_twice(
     writes: list[Path] = []
     real = app_module.emit
 
-    def spy(change, ctx, target):  # type: ignore[no-untyped-def]
+    def spy(change, ctx, target, *rest):  # type: ignore[no-untyped-def]
         writes.append(Path(target))
-        return real(change, ctx, target)
+        return real(change, ctx, target, *rest)
 
     monkeypatch.setattr(app_module, "emit", spy)
 

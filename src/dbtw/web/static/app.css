@@ -160,6 +160,17 @@ main > .glossary { margin: 0 0 14px; padding: 12px 16px; }
                     color: var(--ink); padding: 2px 0; }
 .glossary details[open] summary { color: var(--link); }
 .glossary details p { color: var(--ink-3); font-size: 12px; line-height: 1.5; margin: 2px 0 8px; }
+/* Words this project explained three conversions ago. Quieter than the ones
+   above them and behind a hairline, because they are the same list one step
+   further back -- not a second section competing with it. Still one click
+   from each meaning: a word met three runs ago is still a word the reader may
+   have forgotten. */
+.glossary h3 { font-size: 10px; font-weight: 500; letter-spacing: 0.06em;
+               text-transform: uppercase; color: var(--quiet); margin: 9px 0 4px;
+               padding-top: 8px; border-top: 1px solid var(--rule); }
+.glossary p.all-met { font-size: 12px; color: var(--ink-3); margin: 0 0 6px; line-height: 1.5; }
+.glossary ul.met summary { color: var(--ink-3); }
+.glossary ul.met details[open] summary { color: var(--link); }
 
 /* ── the two registers ───────────────────────────────────────────── */
 .plain { background: var(--fill); border-radius: 8px; padding: 9px 12px; margin: 8px 0;

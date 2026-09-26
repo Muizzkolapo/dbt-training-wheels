@@ -18,7 +18,16 @@ from dbtw.core.emit.example import (
 )
 from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision, statement_index
-from dbtw.core.teach import terms_in
+from dbtw.core.progress import (
+    FULL_SHOWINGS,
+    NOTHING_EXPLAINED,
+    Progress,
+    Teaching,
+    after,
+    state_path,
+    teaching_for,
+)
+from dbtw.core.teach import GLOSSARY, terms_in
 
 _NOT_DONE_YET = """\
 ## Not done yet
@@ -35,7 +44,9 @@ before treating any of this as final.\
 """
 
 
-def render_report(change: ProjectChange, ctx: ProjectContext) -> str:
+def render_report(
+    change: ProjectChange, ctx: ProjectContext, progress: Progress = NOTHING_EXPLAINED
+) -> str:
     summary = _render_summary(change)
     sections = [
         _render_conventions(ctx),
@@ -58,8 +69,33 @@ def render_report(change: ProjectChange, ctx: ProjectContext) -> str:
     # "staging", and a reader who has to go looking for a definition has
     # already been shown to give up: four of five personas never reached the
     # round-1 glossary, which sat at the end.
-    glossary = _render_glossary("\n\n".join([summary, *sections]))
-    return "\n\n".join([summary, glossary, *sections]) + "\n"
+    body = "\n\n".join([summary, *sections])
+    teaching = teaching_for(terms_in(body), progress)
+    glossary = _render_glossary(teaching, progress)
+    # The tally is part of the summary, so it is built once the words in play
+    # are known -- which is only after the rest of the report exists, for the
+    # same reason the glossary is.
+    summary = _with_tally(summary, teaching, progress)
+    below = [_render_met(teaching)] if teaching.met else []
+    return "\n\n".join([summary, glossary, *sections, *below]) + "\n"
+
+
+_TALLY_LABEL = "- **dbt words explained**"
+
+
+def _with_tally(summary: str, teaching: Teaching, progress: Progress) -> str:
+    """The summary, plus how far through the glossary this project has got.
+
+    Counted as it will stand once this conversion is recorded, because the
+    reader is holding this report: a tally that excluded the words on the page
+    in front of them would be wrong by exactly what they can see. Omitted
+    entirely when the record could not be read, since the only honest answer
+    then is that we do not know.
+    """
+    if progress.unreadable:
+        return summary
+    explained = after((*teaching.full, *teaching.met), progress).shown
+    return f"{summary}\n{_TALLY_LABEL}: {len(explained)} of {len(GLOSSARY)}"
 
 
 def _render_summary(change: ProjectChange) -> str:
@@ -90,8 +126,11 @@ _GLOSSARY_INTRO = (
 )
 
 
-def _render_glossary(body: str) -> str:
-    """The dbt words `body` uses, defined, and no others.
+MET_HEADING = "## Words you have met before"
+
+
+def _render_glossary(teaching: Teaching, progress: Progress) -> str:
+    """The dbt words this report uses that it still has to explain.
 
     Read off the assembled report rather than authored, for the reason the
     section exists at all: a hand-kept list is a claim about what the report
@@ -99,12 +138,76 @@ def _render_glossary(body: str) -> str:
     cannot say `dbt build` while the report never mentions it, and cannot
     leave `materialized` undefined while the models table prints it.
 
-    There is no empty case to handle: `_NOT_DONE_YET` is rendered by every
-    report and names four of these words on its own -- see
+    Words this project has already explained `FULL_SHOWINGS` times are named
+    here and defined below instead. They are named rather than simply absent
+    because a definition that silently stops appearing reads as a tool that
+    forgot the word -- and because seeing the list grow is the only way the
+    progression is visible at all.
+
+    There is no empty case to handle for the words in play: `_NOT_DONE_YET`
+    is rendered by every report and names four of these on its own -- see
     test_the_closing_section_alone_guarantees_the_glossary_is_never_empty.
+    Every one of them being folded is a real case though, and then this
+    section is the pointer and nothing else.
     """
-    defined = [f"- **{term.name}** — {term.plain}" for term in terms_in(body)]
-    return "\n".join([_GLOSSARY_HEADING, "", _GLOSSARY_INTRO, "", *defined])
+    lines = [_GLOSSARY_HEADING, ""]
+    if progress.unreadable:
+        # Said here rather than swallowed: a damaged record and a first
+        # conversion produce the same full glossary, and only one of them is
+        # a reason to say nothing.
+        lines += [
+            f"Everything is explained in full below, because {progress.unreadable}. "
+            "Nothing is wrong with this conversion. Every word will go on being "
+            "explained in full until that file can be read again, or is deleted.",
+            "",
+        ]
+    named = ", ".join(f"`{term.name}`" for term in teaching.met)
+    below = f'Their meanings are under "{MET_HEADING.removeprefix("## ")}" at the end.'
+    if not teaching.full:
+        # Nothing new to say. The section becomes the pointer and nothing
+        # else, rather than an intro promising definitions under no
+        # definitions -- which is what a tenth conversion of a project would
+        # otherwise open with.
+        lines += [f"{_ALL_MET_INTRO} They are: {named}. {below}"]
+        return "\n".join(lines)
+    lines += [_GLOSSARY_INTRO, ""]
+    lines += [f"- **{term.name}** — {term.plain}" for term in teaching.full]
+    if teaching.met:
+        lines += [
+            "",
+            f"Already explained in earlier conversions of this project, so not "
+            f"repeated here: {named}. {below}",
+        ]
+    return "\n".join(lines)
+
+
+_ALL_MET_INTRO = (
+    "Every dbt word this report uses was explained in earlier conversions of "
+    "this project, so none is repeated here."
+)
+
+
+def _render_met(teaching: Teaching) -> str:
+    """The words this report stopped explaining, with their meanings.
+
+    At the end rather than omitted. The reader is holding one report, not the
+    three that explained these, and a meaning they cannot reach is a meaning
+    they do not have.
+    """
+    return "\n".join(
+        [
+            MET_HEADING,
+            "",
+            f"Explained in full the first {FULL_SHOWINGS} times you met them, and kept "
+            "here so nothing is only in a report you no longer have.",
+            "",
+            *(f"- **{term.name}** — {term.plain}" for term in teaching.met),
+            "",
+            f"Which words you have met is recorded in {state_path()}. It holds nothing "
+            "about your SQL -- only these names and how often each was explained -- and "
+            "deleting it starts the count again.",
+        ]
+    )
 
 
 def _render_conventions(ctx: ProjectContext) -> str:
