@@ -8,6 +8,7 @@ from dbtw.core.emit.example import (
 from dbtw.core.emit.render import render_model, render_schema_yaml, render_sources_yaml
 from dbtw.core.emit.report import render_report
 from dbtw.core.emit.writer import (
+    REPORT_NAME,
     DuplicateSourceEntryError,
     EmitResult,
     OrphanModelDescriptionError,
@@ -32,6 +33,7 @@ __all__ = [
     "emit",
     "refuse_output_inside_project",
     "render_model",
+    "REPORT_NAME",
     "render_report",
     "render_schema_yaml",
     "render_sources_yaml",

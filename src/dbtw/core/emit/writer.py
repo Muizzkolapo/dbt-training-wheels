@@ -17,8 +17,13 @@ from dbtw.core.context import ProjectContext
 from dbtw.core.emit.render import render_model, render_schema_yaml, render_sources_yaml
 from dbtw.core.emit.report import render_report
 from dbtw.core.passes.types import Decision, SchemaTest
+from dbtw.core.progress import NOTHING_EXPLAINED, Progress
 
-_REPORT_NAME = "CONVERSION_REPORT.md"
+# The report's filename, exported because two other packages need to find
+# the file `emit` wrote: the CLI prints its path, and the web records which
+# words it explained by reading it back. Each kept its own copy of this
+# string until then, which is two places for one name to drift.
+REPORT_NAME = "CONVERSION_REPORT.md"
 _SOURCES_NAME = "sources.yml"
 
 # The name our sources file takes when the target project already uses
@@ -260,7 +265,12 @@ def refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
             )
 
 
-def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResult:
+def emit(
+    change: ProjectChange,
+    ctx: ProjectContext,
+    out_dir: Path,
+    progress: Progress = NOTHING_EXPLAINED,
+) -> EmitResult:
     # First, and before out_dir is created: `ctx` was read from a real dbt
     # project, and writing this conversion into that project is the one thing
     # this package must never do.
@@ -347,8 +357,8 @@ def emit(change: ProjectChange, ctx: ProjectContext, out_dir: Path) -> EmitResul
         else change
     )
 
-    report_path = _safe_join(out_dir, _REPORT_NAME)
-    report_path.write_text(render_report(reported, ctx), encoding="utf-8")
+    report_path = _safe_join(out_dir, REPORT_NAME)
+    report_path.write_text(render_report(reported, ctx, progress), encoding="utf-8")
     written.append(report_path)
 
     return EmitResult(paths=tuple(written), decisions=placement)

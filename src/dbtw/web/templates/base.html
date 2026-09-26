@@ -57,6 +57,56 @@
   carries nothing about the reader's SQL, and the walk reads correctly in the
   fallback when it does not arrive.
 #}
+{%- macro glossary(teaching) %}
+{#
+  Words the reader has already met three times are named rather than defined.
+  The tool is otherwise stateless, so its tenth conversion of a project said
+  the same words in the same place as its first -- and the walkthroughs found
+  four of five readers never reached a glossary block at all, which is what
+  repeating one verbatim ten times does to the fifth.
+
+  Named and not dropped: a definition that silently stops appearing reads as a
+  tool that forgot the word, and a word met three runs ago is still a word the
+  reader may have forgotten. Each stays one click from its meaning, in the
+  same place as before.
+#}
+<section class="glossary" data-aside>
+  <h2>Words used here</h2>
+  {%- if not teaching.full %}
+  {# No heading over an empty list, and no sub-heading under a heading that
+     promised words: with everything already met, the card is the one list and
+     says so in a line rather than in a second heading. #}
+  <p class="all-met"><span data-engine>All explained in earlier conversions of this project.</span></p>
+  {%- endif %}
+  {%- if teaching.full %}
+  <ul class="terms">
+    {%- for term in teaching.full %}
+    <li data-item="term">
+      <details>
+        <summary><span data-engine>{{ term.name }}</span></summary>
+        <p><span data-engine>{{ term.plain }}</span></p>
+      </details>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+  {%- if teaching.met %}
+  {%- if teaching.full %}
+  <h3><span data-engine>Explained in earlier conversions</span></h3>
+  {%- endif %}
+  <ul class="terms met">
+    {%- for term in teaching.met %}
+    <li data-item="met">
+      <details>
+        <summary><span data-engine>{{ term.name }}</span></summary>
+        <p><span data-engine>{{ term.plain }}</span></p>
+      </details>
+    </li>
+    {%- endfor %}
+  </ul>
+  {%- endif %}
+</section>
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
   <head>
@@ -119,39 +169,15 @@
             <li><span class="dot stands"></span> Defaults stand</li>
           </ul>
         </section>
-        {%- if terms %}
-        <section class="glossary" data-aside>
-          <h2>Words used here</h2>
-          <ul class="terms">
-            {%- for term in terms %}
-            <li data-item="term">
-              <details>
-                <summary><span data-engine>{{ term.name }}</span></summary>
-                <p><span data-engine>{{ term.plain }}</span></p>
-              </details>
-            </li>
-            {%- endfor %}
-          </ul>
-        </section>
+        {%- if teaching.full or teaching.met %}
+        {{ glossary(teaching) }}
         {%- endif %}
       </nav>
       {%- endif %}
 
       <main>
-        {%- if terms and not screens %}
-        <section class="glossary" data-aside>
-          <h2>Words used here</h2>
-          <ul class="terms">
-            {%- for term in terms %}
-            <li data-item="term">
-              <details>
-                <summary><span data-engine>{{ term.name }}</span></summary>
-                <p><span data-engine>{{ term.plain }}</span></p>
-              </details>
-            </li>
-            {%- endfor %}
-          </ul>
-        </section>
+        {%- if (teaching.full or teaching.met) and not screens %}
+        {{ glossary(teaching) }}
         {%- endif %}
 
         {%- block main %}{% endblock %}

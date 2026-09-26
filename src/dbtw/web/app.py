@@ -78,6 +78,7 @@ from dbtw.core.deliver import (
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
     PLACEHOLDER_NOTICE,
+    REPORT_NAME,
     SUPPOSED_ROW_LABEL,
     Example,
     OutputInsideProjectError,
@@ -89,6 +90,15 @@ from dbtw.core.emit import (
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.intro import HEADLINE, LEDE, PILLARS, PRIVACY
 from dbtw.core.passes import Decision, Option
+from dbtw.core.progress import (
+    NO_GLOSSARY,
+    NOTHING_EXPLAINED,
+    Progress,
+    after,
+    load_progress,
+    save_progress,
+    teaching_for,
+)
 from dbtw.core.teach import Term, terms_in
 from dbtw.web.state import EmptySourceError, Session, SessionView, Source
 
@@ -519,7 +529,9 @@ def _example_for(decision: Decision, change: ProjectChange) -> Example | None:
     return None
 
 
-def _previews(session: Session, change: ProjectChange) -> tuple[FilePreview, ...]:
+def _previews(
+    session: Session, change: ProjectChange, progress: Progress = NOTHING_EXPLAINED
+) -> tuple[FilePreview, ...]:
     """Every file this conversion would write, with its contents.
 
     Written by `emit` into a directory that is thrown away, and read back,
@@ -533,7 +545,7 @@ def _previews(session: Session, change: ProjectChange) -> tuple[FilePreview, ...
     """
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "preview"
-        result = emit(change, read_project(session.project), out)
+        result = emit(change, read_project(session.project), out, progress)
         return tuple(
             FilePreview(
                 path=path.relative_to(out).as_posix(),
@@ -729,6 +741,20 @@ def _terms(spoken: str) -> tuple[Term, ...]:
     return terms_in(spoken)
 
 
+def _learned(source: Source) -> Progress:
+    """What earlier conversions of this walk's project already explained.
+
+    Empty while there is no conversation, which is the entry screen: there is
+    no project yet, so there is nothing this reader can be said to have met.
+    Read per request rather than held on `Source`, because a reader who
+    deletes the record mid-walk has deleted it, and a cached copy would go on
+    folding words the tool no longer claims to have taught.
+    """
+    if not source.remember or source.session is None:
+        return NOTHING_EXPLAINED
+    return load_progress(source.session.project)
+
+
 def create_app(source: Source) -> Flask:
     """The walk over one conversation, and the screen that starts one.
 
@@ -823,16 +849,24 @@ def create_app(source: Source) -> Flask:
         session = _conversation()
         stale = session.stale_answers()
         if stale:
-            return render_template("stale.html", stale=stale, screens=(), terms=(), here=""), 409
+            return render_template(
+                "stale.html", stale=stale, screens=(), teaching=NO_GLOSSARY, here=""
+            ), 409
         described = session.stale_descriptions()
         if described:
             return render_template(
-                "stale_descriptions.html", stale=described, screens=(), terms=(), here=""
+                "stale_descriptions.html",
+                stale=described,
+                screens=(),
+                teaching=NO_GLOSSARY,
+                here="",
             ), 409
         tagged = session.stale_tags()
         if not tagged:
             return None
-        return render_template("stale_tags.html", stale=tagged, screens=(), terms=(), here=""), 409
+        return render_template(
+            "stale_tags.html", stale=tagged, screens=(), teaching=NO_GLOSSARY, here=""
+        ), 409
 
     def _view() -> SessionView | tuple[str, int] | Response:
         """This conversation's view, or the page to render instead of one.
@@ -872,7 +906,7 @@ def create_app(source: Source) -> Flask:
         return render_template(
             "entry.html",
             screens=(),
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             here="/source",
             started=source.session is not None,
             project=str(source.project) if source.project else "",
@@ -985,7 +1019,7 @@ def create_app(source: Source) -> Flask:
             "project.html",
             screens=_walk(view),
             here="/project",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             project_name=ctx.project_name,
             detections=ctx.detections,
             model_paths=ctx.model_paths,
@@ -1023,7 +1057,7 @@ def create_app(source: Source) -> Flask:
             "start.html",
             screens=_walk(view),
             here="/",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             project=view.change.project_name,
             sql=str(_conversation().sql),
             models=view.change.models,
@@ -1104,7 +1138,7 @@ def create_app(source: Source) -> Flask:
             "everything.html",
             screens=_walk(view),
             here="/everything",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             asks=asks,
             models=models,
             meanings=meanings,
@@ -1148,7 +1182,7 @@ def create_app(source: Source) -> Flask:
             "question.html",
             screens=_walk(view),
             here=f"/questions/{index}",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             decision=decision,
             choices=choices,
             example=example,
@@ -1200,7 +1234,7 @@ def create_app(source: Source) -> Flask:
             "describe.html",
             screens=_walk(view),
             here="/describe",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             models=models,
             meanings=meanings,
             described=sum(1 for row in models if row.description),
@@ -1280,7 +1314,7 @@ def create_app(source: Source) -> Flask:
             "caveats.html",
             screens=_walk(view),
             here="/caveats",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             caveats=_grouped(decided),
             decided=len(decided),
             pending=pending,
@@ -1322,7 +1356,7 @@ def create_app(source: Source) -> Flask:
             "changed.html",
             screens=_walk(view),
             here="/changed",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             conversions=conversions,
             statements=sum(len(row.before) for row in conversions),
         )
@@ -1332,7 +1366,7 @@ def create_app(source: Source) -> Flask:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        previews = _previews(_conversation(), view.change)
+        previews = _previews(_conversation(), view.change, _learned(source))
         spoken = _spoken(
             (preview.path for preview in previews),
             (preview.contents for preview in previews),
@@ -1342,7 +1376,7 @@ def create_app(source: Source) -> Flask:
             "files.html",
             screens=_walk(view),
             here="/files",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             files=previews,
         )
 
@@ -1363,7 +1397,7 @@ def create_app(source: Source) -> Flask:
             "done.html",
             screens=_walk(view),
             here="/done",
-            terms=(),
+            teaching=NO_GLOSSARY,
             commands=[(term.name, term.plain) for term in _terms(_spoken(_COMMANDS))],
             out=str(source.out),
         )
@@ -1407,7 +1441,9 @@ def create_app(source: Source) -> Flask:
         if written is not None and written.change == view.change:
             return _written_page(view, written)
         try:
-            result = emit(view.change, read_project(_conversation().project), source.out)
+            result = emit(
+                view.change, read_project(_conversation().project), source.out, _learned(source)
+            )
         except _WRITE_FAILURES as failure:
             # 500 rather than 400: the form carried nothing wrong. The paths
             # this conversation was started with cannot take the write, and
@@ -1418,6 +1454,7 @@ def create_app(source: Source) -> Flask:
             files=tuple(path.relative_to(source.out).as_posix() for path in result.paths),
             change=view.change,
         )
+        _record(result.paths)
         return _written_page(view, written)
 
     def _written_page(view: SessionView, record: Written) -> str:
@@ -1438,7 +1475,7 @@ def create_app(source: Source) -> Flask:
             "written.html",
             screens=_walk(view),
             here="",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             out=str(record.out),
             files=record.files,
             branch=_branch_name(view.change),
@@ -1489,13 +1526,16 @@ def create_app(source: Source) -> Flask:
                 "written.html",
                 screens=_walk(view),
                 here="",
-                terms=_terms(
-                    _spoken(
-                        str(written.out),
-                        written.files,
-                        str(refusal),
-                        (screen.label for screen in _walk(view) if screen.engine),
-                    )
+                teaching=teaching_for(
+                    _terms(
+                        _spoken(
+                            str(written.out),
+                            written.files,
+                            str(refusal),
+                            (screen.label for screen in _walk(view) if screen.engine),
+                        )
+                    ),
+                    _learned(source),
                 ),
                 out=str(written.out),
                 files=written.files,
@@ -1543,13 +1583,16 @@ def create_app(source: Source) -> Flask:
                 "written.html",
                 screens=_walk(view),
                 here="",
-                terms=_terms(
-                    _spoken(
-                        str(written.out),
-                        written.files,
-                        str(refusal),
-                        (screen.label for screen in _walk(view) if screen.engine),
-                    )
+                teaching=teaching_for(
+                    _terms(
+                        _spoken(
+                            str(written.out),
+                            written.files,
+                            str(refusal),
+                            (screen.label for screen in _walk(view) if screen.engine),
+                        )
+                    ),
+                    _learned(source),
                 ),
                 out=str(written.out),
                 files=written.files,
@@ -1569,7 +1612,7 @@ def create_app(source: Source) -> Flask:
         what this conversion is, so they can fix where it was going and press
         again.
         """
-        previews = _previews(_conversation(), view.change)
+        previews = _previews(_conversation(), view.change, _learned(source))
         spoken = _spoken(
             message,
             str(source.out),
@@ -1581,7 +1624,7 @@ def create_app(source: Source) -> Flask:
             "write_failed.html",
             screens=_walk(view),
             here="",
-            terms=_terms(spoken),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
             message=message,
             out=str(source.out),
             files=previews,
@@ -1655,6 +1698,40 @@ def create_app(source: Source) -> Flask:
             session.drop_stale_materializations()
         return redirect(url_for("start"))
 
+    def _record(paths: Sequence[Path]) -> None:
+        """Note which dbt words this conversion explained, now that it is written.
+
+        After the write and only after it, for the same reason the CLI records
+        here: a conversion that failed part way through never claims to have
+        explained a word the reader never saw.
+
+        Counted off the report this write produced rather than off the screens
+        the reader happened to visit -- the same set the CLI counts, so one
+        tool does not retire a word two runs before the other. That under-counts
+        a reader who read a screen and skipped the report, which is the safe
+        direction: a word stays explained a run longer.
+        """
+        if not source.remember or source.session is None:
+            return
+        learned = _learned(source)
+        if learned.unreadable:
+            return
+        report = next((path for path in paths if path.name == REPORT_NAME), None)
+        if report is None:
+            return
+        shown = teaching_for(terms_in(report.read_text(encoding="utf-8")), learned)
+        try:
+            save_progress(source.session.project, after((*shown.full, *shown.met), learned))
+        except (OSError, ValueError) as failure:
+            # Never fatal and never silent. The files on disk are correct and
+            # complete; what was lost is only that the next conversion repeats
+            # these words, and the reader is told in the terminal they started
+            # the server from.
+            print(
+                f"warning: could not record which words were explained: {failure}",
+                file=sys.stderr,
+            )
+
     def _refused(message: str, key: str) -> str:
         """One refusal, with the walk still around it and a way back into it.
 
@@ -1669,7 +1746,7 @@ def create_app(source: Source) -> Flask:
         return render_template(
             "refused.html",
             screens=screens,
-            terms=_terms(_spoken(message)),
+            teaching=teaching_for(_terms(_spoken(message)), _learned(source)),
             here="",
             message=message,
             back=_question_url(_conversation(), key),
@@ -1688,7 +1765,7 @@ def create_app(source: Source) -> Flask:
         """
         view = _view()
         screens = _walk(view) if isinstance(view, SessionView) else ()
-        return render_template("missing.html", screens=screens, terms=(), here=""), 404
+        return render_template("missing.html", screens=screens, teaching=NO_GLOSSARY, here=""), 404
 
     def _question_url(session: Session, key: str) -> str:
         """The screen `key`'s question is on, or the start of the walk.
