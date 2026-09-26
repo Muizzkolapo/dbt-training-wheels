@@ -64,6 +64,18 @@ class Term:
 # it may name itself and it may use no other word on the JARGON list. That is
 # why `dbt run` relates itself to "build" and not to "dbt build", and why the
 # bracket entry describes the brackets in words instead of printing a pair.
+# The four commands, in the order a first run goes: see what would be sent,
+# send it, check it, and the one that does both. Names only -- what each does
+# is its `Term.plain` below, said once, wherever the glossary is rendered.
+#
+# Here rather than in either surface because both name them: the web's last
+# screen and the report's closing section. Held as `Term.name` spellings and
+# checked against the glossary by
+# test_the_commands_are_all_glossary_terms, so nothing can name a command
+# this tool never defines.
+COMMANDS: tuple[str, ...] = ("dbt compile", "dbt run", "dbt test", "dbt build")
+
+
 GLOSSARY: tuple[Term, ...] = (
     Term(
         name="dbt compile",

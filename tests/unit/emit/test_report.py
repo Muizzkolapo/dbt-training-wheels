@@ -72,6 +72,7 @@ def test_all_sections_present_in_order():
         "## Decisions",
         "## Still pending",
         "## Not done yet",
+        "## Then, in your project",
     ]
 
 
@@ -219,16 +220,39 @@ def test_the_report_defines_materialized_in_both_the_forms_it_prints_it_in():
     assert f"- **{term.name}** — {term.plain}" in out
 
 
-def test_the_report_does_not_define_a_command_it_never_mentions():
-    """The four dbt commands are recommended by the screens, not by the
-    report -- over a real conversion the report names none of them. Defining
-    them here would be the round-1 dump again, four definitions deep."""
+def test_the_report_names_the_commands_and_so_defines_them():
+    """This reverses a decision, on evidence, and the reasoning is worth
+    keeping because the old reasoning was not wrong when it was written.
+
+    It said: the four dbt commands are recommended by the screens, not by the
+    report, and defining them here would be the round-1 dump again, four
+    definitions deep. That was a fair trade while every report defined every
+    word it used on every run -- four extra definitions in every report
+    forever really is a dump.
+
+    What changed is that a word is now explained three times and then folded
+    (see `core.progress`), so naming the commands costs four definitions in a
+    reader's first three conversions and a named list after that. And what
+    the old trade cost was measured: over ten real conversions a reader of
+    the CLI report met 8 of the glossary's 14 words and was never told how to
+    run anything. Two of the four questions the persona's comprehension check
+    asks -- when does this run again, and what would `dbt build` do to it --
+    were unanswerable from the report, while the walk's last screen had named
+    and defined all four commands since it was built.
+
+    The old trade does come back for a reader who passes `--no-remember`:
+    nothing is folded for them, so these four are defined in full in every
+    report they ever generate. That is the flag doing exactly what it says --
+    "explain every dbt word in full, and record nothing" -- and it was already
+    true of the other ten words before this change. It is worth saying out
+    loud rather than leaving implicit, because it is precisely the dump the
+    reasoning above traded away, and the trade only holds while the fold is on.
+    """
     out = _report()
     (term,) = [t for t in GLOSSARY if t.name == "dbt build"]
     rest, _ = _split_glossary(out)
-    assert "dbt build" not in rest
-    assert term.plain not in out
-    assert "- **dbt build**" not in out
+    assert "dbt build" in rest, "named outside the glossary is what makes it defined inside it"
+    assert f"- **{term.name}** — {term.plain}" in out
 
 
 def test_the_glossary_sits_ahead_of_the_first_section_that_uses_one_of_the_words():

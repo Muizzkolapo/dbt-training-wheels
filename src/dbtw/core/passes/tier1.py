@@ -590,8 +590,9 @@ def select_pass(state: PassState) -> PassState:
                     ),
                     plain_reason=(
                         f"The model would be called {name!r}, which is not a name a database "
-                        "will accept. Rename the file using letters, numbers and underscores "
-                        "only, and the query comes through under that name."
+                        "will accept: a name can hold letters, numbers and underscores, and "
+                        "cannot start with a number. Rename the file and the query comes "
+                        "through under the new name."
                     ),
                 )
             )

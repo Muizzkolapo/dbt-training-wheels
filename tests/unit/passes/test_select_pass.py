@@ -281,3 +281,17 @@ def test_a_name_differing_only_in_case_is_already_taken() -> None:
     assert [d.name for d in state.drafts] == ["Orders"], "the query must not claim the name too"
     refusal = next(d for d in state.decisions if ".name_taken." in d.key)
     assert "a table one of its own statements writes" in refusal.reason
+
+
+def test_the_refusal_says_the_rule_the_name_actually_broke() -> None:
+    """`01_weekly_signups.sql` is how a great many people number a folder of
+    scripts, and it was met with "rename the file using letters, numbers and
+    underscores only" -- which that filename already obeys. The register a
+    reader with no dbt reads has to name the rule they broke, or the only
+    thing it tells them is that something is wrong.
+    """
+    state = state_from(SELECT, filename="01_weekly_signups.sql")
+
+    refusal = next(d for d in state.decisions if ".unusable_name." in d.key)
+    assert "cannot start with a number" in refusal.plain_reason
+    assert "not starting with a digit" in refusal.reason
