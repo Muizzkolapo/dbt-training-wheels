@@ -137,7 +137,9 @@
                 class="{{ 'on' if mode == 'direct' else 'off' }}">Direct</button>
       </form>
       {%- endif %}
+      {%- if project_path %}
       <span class="project" data-engine data-identifier>{{ project_path }}</span>
+      {%- endif %}
     </header>
 
     <div class="shell{% if not screens %} solo{% endif %}">

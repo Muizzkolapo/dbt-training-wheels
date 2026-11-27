@@ -9,7 +9,7 @@ and it asks at the moment a command that needs it starts.
 
 from __future__ import annotations
 
-from dbtw.web.state import EmptySourceError, Session, SessionView, Source
+from dbtw.web.state import EmptySourceError, Session, SessionView, Source, UnnamedPasteError
 
 __all__ = [
     "EmptySourceError",
@@ -17,6 +17,7 @@ __all__ = [
     "Session",
     "SessionView",
     "Source",
+    "UnnamedPasteError",
     "require_flask",
 ]
 

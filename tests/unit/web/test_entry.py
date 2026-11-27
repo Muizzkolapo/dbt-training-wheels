@@ -74,7 +74,9 @@ def test_every_screen_of_the_walk_sends_a_reader_to_bring_sql_first(unstarted) -
 def test_pasting_a_query_opens_a_conversation_over_it(unstarted) -> None:  # type: ignore[no-untyped-def]
     _app, client, source, project_dir = unstarted
 
-    response = client.post("/source", data={"project": str(project_dir), "pasted": ONE_APPEND})
+    response = client.post(
+        "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "pasted"}
+    )
 
     assert response.status_code == 302
     assert response.headers["Location"].endswith("/")
@@ -172,7 +174,9 @@ def test_a_second_source_replaces_the_first_rather_than_joining_it(unstarted) ->
     first = source.session.view().change.models
 
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_APPEND}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "pasted"}
+        ).status_code
         == 302
     )
 
@@ -189,7 +193,9 @@ def test_an_answer_given_before_a_new_paste_does_not_survive_it(unstarted) -> No
     """
     _app, client, source, project_dir = unstarted
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_APPEND}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "pasted"}
+        ).status_code
         == 302
     )
     assert source.session is not None
@@ -198,7 +204,9 @@ def test_an_answer_given_before_a_new_paste_does_not_survive_it(unstarted) -> No
     assert source.session.answers
 
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_MERGE}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_MERGE, "name": "pasted"}
+        ).status_code
         == 302
     )
 
@@ -214,14 +222,18 @@ def test_the_staging_directory_does_not_move_between_pastes(unstarted) -> None: 
     """
     _app, client, source, project_dir = unstarted
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_APPEND}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "pasted"}
+        ).status_code
         == 302
     )
     assert source.session is not None
     first = source.session.sql
 
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_MERGE}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_MERGE, "name": "pasted"}
+        ).status_code
         == 302
     )
 
@@ -236,7 +248,9 @@ def test_bringing_sql_writes_nothing_to_the_destination(unstarted) -> None:  # t
     _app, client, source, project_dir = unstarted
 
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_APPEND}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "pasted"}
+        ).status_code
         == 302
     )
 
@@ -267,7 +281,7 @@ def test_a_walk_will_not_start_without_a_dbt_project(unstarted) -> None:  # type
     """
     _app, client, source, _project_dir = unstarted
 
-    refused = client.post("/source", data={"project": "", "pasted": ONE_APPEND})
+    refused = client.post("/source", data={"project": "", "pasted": ONE_APPEND, "name": "pasted"})
 
     assert refused.status_code == 400
     assert source.session is None
@@ -287,7 +301,9 @@ def test_a_path_that_is_not_a_dbt_project_is_refused_in_the_engine_s_words(
     not_a_project = tmp_path / "somewhere-else"
     not_a_project.mkdir()
 
-    refused = client.post("/source", data={"project": str(not_a_project), "pasted": ONE_APPEND})
+    refused = client.post(
+        "/source", data={"project": str(not_a_project), "pasted": ONE_APPEND, "name": "pasted"}
+    )
 
     assert refused.status_code == 400
     assert source.session is None
@@ -308,13 +324,17 @@ def test_a_refused_project_does_not_take_the_previous_source_with_it(
     """
     _app, client, source, project_dir = unstarted
     assert (
-        client.post("/source", data={"project": str(project_dir), "pasted": ONE_APPEND}).status_code
+        client.post(
+            "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "pasted"}
+        ).status_code
         == 302
     )
     before = source.session
     assert before is not None
 
-    refused = client.post("/source", data={"project": str(tmp_path), "pasted": ONE_MERGE})
+    refused = client.post(
+        "/source", data={"project": str(tmp_path), "pasted": ONE_MERGE, "name": "pasted"}
+    )
 
     assert refused.status_code == 400
     assert source.session is before, "the refused project replaced the conversation anyway"

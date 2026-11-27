@@ -65,8 +65,13 @@
       </label>
     </div>
 
+    <label class="field named">
+      <span class="key">File name</span>
+      <input type="text" name="name" value="{{ name }}" spellcheck="false"
+             placeholder="weekly_revenue">
+    </label>
     <textarea name="pasted" rows="14" spellcheck="false"
-              placeholder="INSERT INTO ..."></textarea>
+              placeholder="INSERT INTO ...">{{ pasted }}</textarea>
 
     <div class="bringing-foot">
       <label class="pick">
