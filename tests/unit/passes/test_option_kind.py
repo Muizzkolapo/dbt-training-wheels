@@ -29,6 +29,7 @@ from dbtw.core.passes import (
     Decision,
     Option,
     OptionKind,
+    Subject,
     answer_for,
     append_option,
     inline_option,
@@ -286,6 +287,9 @@ def _question(*options):
         question="q?",
         chosen=options[0].label,
         options=options,
+        # Every tier-2 question names the table it is about; `answer_for`
+        # names it back in the one refusal a reader can cause.
+        subject=Subject(table="x"),
     )
 
 
@@ -340,6 +344,25 @@ def test_the_no_columns_refusal_names_the_prompt_the_option_asks_with():
     with pytest.raises(ValueError) as refused:
         answer_for(keyless, "merge")
     assert merge_option().columns_prompt in str(refused.value)
+
+
+def test_the_no_columns_refusal_names_the_table_not_the_key():
+    keyless = _question(append_option(), merge_option(), verify_option())
+    with pytest.raises(ValueError) as refused:
+        answer_for(keyless, "merge")
+    assert "for x" in str(refused.value)
+    assert keyless.key not in str(refused.value)
+
+
+def test_a_question_asking_for_columns_with_no_subject_is_an_engine_bug():
+    """Never built today: every option with a columns_prompt is on a tier-2
+    question, and every one carries a subject. Refused loudly rather than
+    filled in with a stand-in name, which would hide the bug that made it."""
+    import dataclasses
+
+    bare = dataclasses.replace(_question(append_option(), merge_option()), subject=None)
+    with pytest.raises(ValueError, match="engine bug"):
+        answer_for(bare, "merge")
 
 
 def test_answer_for_refuses_a_kind_the_decision_does_not_offer():

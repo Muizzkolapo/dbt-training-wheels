@@ -147,7 +147,7 @@
       <nav>
         <div class="head">
           <span class="title">Steps</span>
-          <span class="tally"><span data-count="screen">{{ screens | length }}</span> screens</span>
+          <span class="tally"><span data-count="screen">{{ screens | length }}</span> {{ (screens | length) | noun("screen") }}</span>
         </div>
         <ul class="steps">
           {%- for screen in screens %}

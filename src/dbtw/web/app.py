@@ -380,6 +380,17 @@ class Written:
     change: ProjectChange
 
 
+def noun(count: int, singular: str) -> str:
+    """The noun beside a count, in the number the count is in.
+
+    Every tally on every screen read "<n> models", so a conversion of one
+    query said "1 models". Each noun on these screens takes a plain "s", which
+    is what this assumes; a noun that does not would need its plural passed
+    in, and none here does.
+    """
+    return singular if count == 1 else f"{singular}s"
+
+
 def _columns(candidates: Sequence[str], given: Sequence[str]) -> tuple[Column, ...]:
     seen: set[str] = set()
     rows: list[Column] = []
@@ -814,6 +825,7 @@ def create_app(source: Source) -> Flask:
     about a conversion is not where the result goes.
     """
     app = Flask(__name__)
+    app.jinja_env.filters["noun"] = noun
     # The three strings a rendered example is shown under. `emit.example`
     # owns them because each is a claim only that module can vouch for --
     # that the values are placeholders, that the first block is a premise
@@ -1502,7 +1514,7 @@ def create_app(source: Source) -> Flask:
         if not isinstance(view, SessionView):
             return view
         if written is not None and written.change == view.change:
-            return _written_page(view, written)
+            return redirect(url_for("written_page"))
         try:
             result = emit(
                 view.change, read_project(_conversation().project), source.out, _learned(source)
@@ -1518,6 +1530,32 @@ def create_app(source: Source) -> Flask:
             change=view.change,
         )
         _record(result.paths)
+        return redirect(url_for("written_page"))
+
+    @app.get("/written")
+    def written_page() -> str | tuple[str, int] | Response:
+        """What the write, the delivery and the push did, at an address.
+
+        The three POSTs redirect here -- the shape `/answer` already has --
+        so a refresh re-renders rather than asking the browser to send a form
+        again, and Back lands on this page rather than on a submission.
+        Before anything is written there is nothing to show, so it sends the
+        reader to the screen that has the write button -- and so it does
+        after a changed answer, when what was written is no longer this
+        conversion.
+        """
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        # Nothing written, or a write of a conversion the reader has since
+        # changed: either way the screen to be on is the one that writes this
+        # conversion, not a list of files that are not it. Only until it is
+        # delivered: delivery commits these models into the project, and the
+        # walk re-reads the project on every run -- so the conversion differs
+        # from the one written precisely because the delivery worked, and the
+        # result of it is what this page exists to show.
+        if written is None or (delivered is None and written.change != view.change):
+            return redirect(url_for("done"))
         return _written_page(view, written)
 
     def _written_page(view: SessionView, record: Written) -> str:
@@ -1575,7 +1613,7 @@ def create_app(source: Source) -> Flask:
             # offers.
             return redirect(url_for("done"))
         if delivered is not None:
-            return _written_page(view, written)
+            return redirect(url_for("written_page"))
         branch = request.form.get("branch", "") or _branch_name(view.change)
         try:
             delivered = deliver(
@@ -1607,7 +1645,7 @@ def create_app(source: Source) -> Flask:
                 pushed=None,
                 refusal=str(refusal),
             ), 409
-        return _written_page(view, written)
+        return redirect(url_for("written_page"))
 
     @app.post("/push")
     def push_route() -> str | tuple[str, int] | Response:
@@ -1638,7 +1676,7 @@ def create_app(source: Source) -> Flask:
             # walk offers.
             return redirect(url_for("done"))
         if source.pushed is not None:
-            return _written_page(view, written)
+            return redirect(url_for("written_page"))
         try:
             source.pushed = push(_conversation().project, branch=delivered.branch)
         except _PUSH_FAILURES as refusal:
@@ -1664,7 +1702,7 @@ def create_app(source: Source) -> Flask:
                 pushed=None,
                 refusal=str(refusal),
             ), 409
-        return _written_page(view, written)
+        return redirect(url_for("written_page"))
 
     def _write_failed(view: SessionView, message: str) -> str:
         """The refusal in the engine's own words, with the walk around it.

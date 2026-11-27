@@ -67,7 +67,7 @@
    on; these are the engine's own sentences, so the screen that offers the
    choice is not the thing explaining it. #}
 <h2>Built as</h2>
-<p class="tally"><span data-count="meaning">{{ meanings | length }}</span> choices</p>
+<p class="tally"><span data-count="meaning">{{ meanings | length }}</span> {{ (meanings | length) | noun("choice") }}</p>
 <ul class="meanings">
   {%- for name, plain in meanings %}
   <li data-item="meaning">
@@ -83,7 +83,7 @@
   <li data-item="model">
     <h2><span data-engine>{{ row.model.name }}</span>
       {%- if row.description %}
-      <span class="mark" data-item="described">Written</span>
+      <span class="mark" data-item="described">Described</span>
       {%- else %}
       <span class="mark blank">Still blank</span>
       {%- endif %}</h2>

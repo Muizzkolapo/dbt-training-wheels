@@ -20,7 +20,7 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Your project</h1>
-<p class="tally"><span data-count="detection">{{ detections | length }}</span> conventions read from
+<p class="tally"><span data-count="detection">{{ detections | length }}</span> {{ (detections | length) | noun("convention") }} read from
   <span data-engine data-identifier>{{ project_name }}</span></p>
 
 <ul class="detections">

@@ -30,7 +30,7 @@
 
 {%- if produced %}
 <h2>From your answer</h2>
-<p class="tally"><span data-count="produced">{{ produced | length }}</span> records</p>
+<p class="tally"><span data-count="produced">{{ produced | length }}</span> {{ (produced | length) | noun("record") }}</p>
 <ul class="produced">
   {%- for record in produced %}
   <li data-item="produced">
@@ -52,7 +52,7 @@
 {%- endif %}
 
 <h2>Answers</h2>
-<p class="tally"><span data-count="answer">{{ choices | length }}</span> answers</p>
+<p class="tally"><span data-count="answer">{{ choices | length }}</span> {{ (choices | length) | noun("answer") }}</p>
 <ul class="answers">
   {%- for choice in choices %}
   <li data-item="answer"{% if choice.chosen %} class="chosen"{% endif %}>

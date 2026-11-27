@@ -31,7 +31,7 @@
 {% block main %}
 <h1>Written</h1>
 <p class="destination"><span data-engine>{{ out }}</span></p>
-<p class="tally"><span data-count="written">{{ files | length }}</span> files</p>
+<p class="tally"><span data-count="written">{{ files | length }}</span> {{ (files | length) | noun("file") }}</p>
 <ul class="written">
   {%- for path in files %}
   <li data-item="written"><span data-engine>{{ path }}</span></li>

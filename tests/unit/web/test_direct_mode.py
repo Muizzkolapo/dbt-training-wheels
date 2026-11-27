@@ -218,4 +218,4 @@ def test_the_write_action_is_not_gated_in_direct_mode_either(walk: Walk, walk_sq
     writing = [c for c in done.controls if c["form"] == "/write"]
     assert writing, "the write form offers nothing to press"
     assert not [c for c in writing if "required" in c]
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200

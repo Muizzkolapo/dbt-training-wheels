@@ -20,7 +20,7 @@
 <p class="destination"><span data-engine>{{ out }}</span></p>
 
 <h2>Files</h2>
-<p class="tally"><span data-count="file">{{ files | length }}</span> files</p>
+<p class="tally"><span data-count="file">{{ files | length }}</span> {{ (files | length) | noun("file") }}</p>
 <ul class="files">
   {%- for file in files %}
   <li data-item="file">
