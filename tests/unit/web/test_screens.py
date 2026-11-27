@@ -1597,3 +1597,79 @@ def test_a_proposal_nobody_has_taken_is_marked_proposed_not_chosen(
 
     assert '<p class="mark">Chosen</p>' in after
     assert '<p class="mark">Proposed</p>' not in after
+
+
+def _boxes(html: str, kind: str, key: str) -> dict[str, bool]:
+    """Each column checkbox in the form answering question `key` with `kind`:
+    name -> ticked. `key` matters on the one-screen walk, which holds every
+    question's forms.
+    """
+    import re
+
+    form = next(
+        f
+        for f in html.split("<form")[1:]
+        if f'name="kind" value="{kind}"' in f and f'value="{key}"' in f
+    )
+    form = form.split("</form>")[0]
+    return {
+        m.group(1): bool(m.group(2))
+        for m in re.finditer(r'name="columns" value="([^"]+)"( checked)?', form)
+    }
+
+
+def test_the_picker_ticks_the_key_the_reader_already_gave(walk: Walk, walk_sql: Path) -> None:
+    """Found by pressing it. After "merge on event_id" was answered, the same
+    option's button read "merge on event_id" while its event_id box was
+    empty -- so pressing it again sent no columns and was refused with "got
+    no columns", for the answer the button named.
+    """
+    app, client, session = walk(walk_sql)
+    key = next(d.key for d in session.view().questions if ".append." in d.key)
+    index = [d.key for d in session.view().questions].index(key)
+    assert (
+        client.post(
+            "/answer", data={"key": key, "kind": "merge", "columns": ["event_id"]}
+        ).status_code
+        == 302
+    )
+
+    html = client.get(f"/questions/{index}").get_data(as_text=True)
+
+    assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}
+    # The other option asks for columns too, and nobody gave it any.
+    assert _boxes(html, "merge_checked", key) == {"event_id": False, "occurred_at": False}
+    # And what the screen now holds is an answer the engine takes.
+    again = client.post("/answer", data={"key": key, "kind": "merge", "columns": ["event_id"]})
+    assert again.status_code == 302
+
+
+def test_a_typed_key_the_picker_does_not_list_comes_back_in_the_typed_field(
+    walk: Walk, walk_sql: Path
+) -> None:
+    app, client, session = walk(walk_sql)
+    key = next(d.key for d in session.view().questions if ".append." in d.key)
+    index = [d.key for d in session.view().questions].index(key)
+    answered = client.post(
+        "/answer", data={"key": key, "kind": "merge", "typed": "event_id, region"}
+    )
+    assert answered.status_code == 302
+
+    html = client.get(f"/questions/{index}").get_data(as_text=True)
+
+    assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}
+    merge_form = next(f for f in html.split("<form")[1:] if 'name="kind" value="merge"' in f)
+    assert 'name="typed" value="region"' in merge_form.split("</form>")[0]
+
+
+def test_the_one_screen_walk_ticks_the_key_the_reader_already_gave(
+    walk: Walk, walk_sql: Path
+) -> None:
+    app, client, session = walk(walk_sql)
+    key = next(d.key for d in session.view().questions if ".append." in d.key)
+    client.post("/answer", data={"key": key, "kind": "merge", "columns": ["event_id"]})
+    client.post("/mode", data={"mode": "direct"})
+
+    html = client.get("/everything").get_data(as_text=True)
+
+    assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}

@@ -68,14 +68,14 @@
           {%- for column in choice.columns %}
           <li data-item="column">
             {%- if column.tick %}
-            <label><input type="checkbox" name="columns" value="{{ column.name }}"> <span data-engine>{{ column.name }}</span></label>
+            <label><input type="checkbox" name="columns" value="{{ column.name }}"{% if column.checked %} checked{% endif %}> <span data-engine>{{ column.name }}</span></label>
             {%- else %}
             <span data-engine>{{ column.name }}</span>
             {%- endif %}
           </li>
           {%- endfor %}
         </ul>
-        <label>Or type <input type="text" name="typed"></label>
+        <label>Or type <input type="text" name="typed" value="{{ choice.typed }}"></label>
       </fieldset>
       {%- endif %}
       <button type="submit"><span data-engine>{{ choice.option.label }}</span></button>
