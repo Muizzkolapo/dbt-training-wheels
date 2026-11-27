@@ -99,6 +99,21 @@ ul.describe h3 { color: var(--ink); font-size: 15px; font-weight: 500; letter-sp
 .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); gap: 22px;
          max-width: 1240px; margin: 0 auto; padding: 18px 22px 64px; align-items: start; }
 @media (max-width: 62rem) { .shell { grid-template-columns: minmax(0, 1fr); } }
+/* One column on a phone. Stacked as written, the rail's nine steps, the dot
+   legend and the glossary filled the whole first screen, and the question
+   it existed to ask started below the fold. So the rail's own parts join the
+   column: the steps stay first, as one strip that scrolls sideways, and the
+   legend and the glossary go after the screen they explain. */
+@media (max-width: 40rem) {
+  .shell > nav { display: contents; }
+  .shell > nav > .head { order: 0; }
+  .shell > nav > .steps { order: 1; display: flex; gap: 4px; overflow-x: auto;
+                          padding-bottom: 4px; }
+  .shell > nav > .steps li { flex: none; }
+  .shell > main { order: 2; }
+  .shell > nav > .legend, .shell > nav > .glossary { order: 3; margin-top: 0; }
+  .bar .arrow { display: none; }
+}
 /* No rail, one column. The entry screen has no walk to navigate yet, so
    without this its single `main` lands in the 248px rail track and the
    whole landing page renders in a gutter. */
@@ -360,6 +375,9 @@ pre {
                         word-break: break-all; }
 
 /* ── tables (the worked example) ─────────────────────────────────── */
+/* Wider than a phone at four columns, so it scrolls inside its own box
+   rather than pushing the whole page sideways. */
+.scroll { overflow-x: auto; max-width: 100%; }
 table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 th, td { border: 1px solid var(--rule); padding: 5px 8px; text-align: left; }
 thead th { background: var(--fill); font-weight: 500; }

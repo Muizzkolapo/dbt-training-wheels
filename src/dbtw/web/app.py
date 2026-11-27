@@ -180,6 +180,12 @@ class Choice:
     chosen: bool
     prompt: str
     columns: tuple[Column, ...]
+    # Whether the reader has answered this question. The engine proposes an
+    # option on every question, so `chosen` alone cannot tell "the reader
+    # took this" from "the SQL suggests this" -- and marking the proposal
+    # "Chosen" contradicted the rail's dot, which says the question still
+    # wants an answer.
+    answered: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,7 +373,9 @@ def _columns(candidates: Sequence[str]) -> tuple[Column, ...]:
     return tuple(rows)
 
 
-def _choices(decision: Decision, prompts: dict[str, str]) -> tuple[Choice, ...]:
+def _choices(
+    decision: Decision, prompts: dict[str, str], answered: Container[str]
+) -> tuple[Choice, ...]:
     candidates = decision.subject.candidates if decision.subject is not None else ()
     return tuple(
         Choice(
@@ -375,6 +383,7 @@ def _choices(decision: Decision, prompts: dict[str, str]) -> tuple[Choice, ...]:
             chosen=option.label == decision.chosen,
             prompt=prompts.get(option.kind, ""),
             columns=_columns(candidates) if prompts.get(option.kind) else (),
+            answered=decision.key in answered,
         )
         for option in decision.options
     )
@@ -1111,7 +1120,9 @@ def create_app(source: Source) -> Flask:
         asks = [
             Asking(
                 decision=decision,
-                choices=_choices(decision, view.prompts.get(decision.key, {})),
+                choices=_choices(
+                    decision, view.prompts.get(decision.key, {}), _conversation().answers
+                ),
                 index=index,
             )
             for index, decision in enumerate(view.questions)
@@ -1158,7 +1169,7 @@ def create_app(source: Source) -> Flask:
         if not 0 <= index < len(view.questions):
             abort(404)
         decision = view.questions[index]
-        choices = _choices(decision, view.prompts.get(decision.key, {}))
+        choices = _choices(decision, view.prompts.get(decision.key, {}), _conversation().answers)
         example = _example_for(decision, view.change)
         produced = _produced_by(_conversation(), view.change, decision.key)
         spoken = _spoken(
