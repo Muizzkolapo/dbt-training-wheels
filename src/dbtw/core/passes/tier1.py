@@ -88,8 +88,8 @@ def build_models_pass(state: PassState) -> PassState:
                     stmt,
                     index,
                     "build",
-                    action="left as-is: couldn't determine the target table name",
-                    reason="a model needs a name; the target isn't a plain table reference",
+                    action="left as-is: could not find the target table name",
+                    reason="a model needs a name. The target is not a plain table reference",
                 )
             )
             continue
@@ -118,12 +118,12 @@ def build_models_pass(state: PassState) -> PassState:
                     index,
                     "build.supersede",
                     action=(
-                        f"superseded: this earlier definition of {table.name} is replaced "
-                        "by a later full rebuild"
+                        "superseded: a later full rebuild replaces this earlier definition "
+                        f"of {table.name}"
                     ),
                     reason=(
-                        "a later statement in this conversion fully rebuilds this table; dbt keeps "
-                        "only the final definition"
+                        "a later statement in this conversion fully rebuilds this table. "
+                        "dbt keeps only the final definition"
                     ),
                 )
             )
@@ -134,8 +134,11 @@ def build_models_pass(state: PassState) -> PassState:
                     stmt,
                     index,
                     "build.redefinition",
-                    action=f"redefinition of {table.name} — kept the last definition",
-                    reason="defined twice; a dbt model is one file, so the last definition wins",
+                    action=f"redefinition of {table.name}: kept the last definition",
+                    reason=(
+                        "this conversion has two definitions of this table. A dbt model is one "
+                        "file, so the last definition wins"
+                    ),
                 )
             )
         elif verdict == "collision":
@@ -147,12 +150,12 @@ def build_models_pass(state: PassState) -> PassState:
                     "build.collision",
                     action=(
                         f"{existing.qualified_name} and {draft.qualified_name} both map to "
-                        f"model {table.name} — kept {draft.qualified_name}; resolve the "
-                        "collision before deploying"
+                        f"model {table.name}: kept {draft.qualified_name}. Resolve the "
+                        "collision before you deploy"
                     ),
                     reason=(
-                        "two different source tables produce the same model name; dbt needs "
-                        "one definition per model"
+                        "two different source tables produce the same model name. dbt needs "
+                        "one definition for each model"
                     ),
                 )
             )
@@ -162,7 +165,10 @@ def build_models_pass(state: PassState) -> PassState:
                 index,
                 "build",
                 action=f"created model {table.name} (materialized='{materialization}')",
-                reason="dbt models are SELECTs; the CREATE wrapper becomes materialization config",
+                reason=(
+                    "a dbt model is a SELECT. The CREATE statement around the SELECT "
+                    "becomes the materialization config"
+                ),
             )
         )
     return PassState(
@@ -220,7 +226,10 @@ def truncate_insert_pass(state: PassState) -> PassState:
                     action=(
                         f"deferred: TRUNCATE+INSERT into {table.name} has an explicit column list"
                     ),
-                    reason=("column-to-column mapping is a Tier 2 decision; left for that pass"),
+                    reason=(
+                        "a Tier 2 pass decides how each column maps to a column. Tier 1 "
+                        "leaves this statement for that pass"
+                    ),
                     source_file=stmt.raw.source_file,
                     line_start=stmt.raw.line_start,
                     line_end=stmt.raw.line_end,
@@ -252,8 +261,11 @@ def truncate_insert_pass(state: PassState) -> PassState:
                     stmt,
                     index,
                     "truncate_insert.redefinition",
-                    action=f"redefinition of {table.name} — kept the last definition",
-                    reason="defined twice; a dbt model is one file, so the last definition wins",
+                    action=f"redefinition of {table.name}: kept the last definition",
+                    reason=(
+                        "this conversion has two definitions of this table. A dbt model is one "
+                        "file, so the last definition wins"
+                    ),
                 )
             )
         elif verdict == "collision":
@@ -265,12 +277,12 @@ def truncate_insert_pass(state: PassState) -> PassState:
                     "truncate_insert.collision",
                     action=(
                         f"{existing.qualified_name} and {draft.qualified_name} both map to "
-                        f"model {table.name} — kept {draft.qualified_name}; resolve the "
-                        "collision before deploying"
+                        f"model {table.name}: kept {draft.qualified_name}. Resolve the "
+                        "collision before you deploy"
                     ),
                     reason=(
-                        "two different source tables produce the same model name; dbt needs "
-                        "one definition per model"
+                        "two different source tables produce the same model name. dbt needs "
+                        "one definition for each model"
                     ),
                 )
             )
@@ -282,7 +294,10 @@ def truncate_insert_pass(state: PassState) -> PassState:
                 action=(
                     f"TRUNCATE + INSERT INTO {table.name} became one model (materialized='table')"
                 ),
-                reason="truncate-then-insert is a full rebuild, like dbt's table materialization",
+                reason=(
+                    "a TRUNCATE before an INSERT is a full rebuild, like dbt's table "
+                    "materialization"
+                ),
             )
         )
     return PassState(
@@ -310,8 +325,8 @@ def grants_pass(state: PassState) -> PassState:
                     "grants",
                     action="dropped: REVOKE has no dbt equivalent",
                     reason=(
-                        "dbt's grants config is declarative — each run applies exactly "
-                        "the listed grants, so revocation is expressed by omission"
+                        "dbt's grants config is declarative. Each run applies exactly the "
+                        "listed grants, so the config expresses a revocation by omitting the grant"
                     ),
                 )
             )
@@ -322,7 +337,7 @@ def grants_pass(state: PassState) -> PassState:
         # Matched on naming.target_key's folded name, not on raw text: a
         # GRANT spelling its table `orders` names the model `CREATE TABLE
         # Orders` just built, and dropping it as "an object this conversion
-        # doesn't create" contradicts the model file written in the same run.
+        # does not create" contradicts the model file written in the same run.
         grant_identity = None if table is None else target_key(table)
         match = next(
             (
@@ -340,11 +355,11 @@ def grants_pass(state: PassState) -> PassState:
                     "grants",
                     action=(
                         "dropped with note: GRANT references an object "
-                        "this conversion doesn't create"
+                        "this conversion does not create"
                     ),
                     reason=(
-                        "dbt grants attach to a model's config; there is "
-                        "no model here to attach them to"
+                        "dbt attaches grants to the config of a model. This conversion "
+                        "builds no model that this GRANT can attach to"
                     ),
                 )
             )
@@ -361,8 +376,8 @@ def grants_pass(state: PassState) -> PassState:
                 "grants",
                 action=f"attached grants to model {d.name}",
                 reason=(
-                    "GRANT statements become the model's grants config, "
-                    "applied by dbt after each build"
+                    "GRANT statements become the grants config of the model. "
+                    "dbt applies the grants after each build"
                 ),
             )
         )
@@ -387,7 +402,7 @@ def drop_session_pass(state: PassState) -> PassState:
                 index,
                 "session",
                 action=f"dropped session statement: {excerpt(stmt.raw.text, state.dialect, 60)}",
-                reason="connection and session state live in profiles.yml, not in models",
+                reason="dbt keeps connection and session state in profiles.yml, not in models",
             )
         )
     return PassState(
@@ -436,8 +451,8 @@ def drop_ddl_pass(state: PassState) -> PassState:
                     "ddl",
                     action=f"dropped solo TRUNCATE: {excerpt(stmt.raw.text, state.dialect, 60)}",
                     reason=(
-                        "a TRUNCATE with no surviving INSERT pair has no dbt equivalent; dbt's "
-                        "table materialization rebuilds from scratch on every run"
+                        "a TRUNCATE with no surviving INSERT pair has no dbt equivalent. "
+                        "dbt's table materialization rebuilds the table completely on every run"
                     ),
                 )
             )
@@ -452,8 +467,8 @@ def drop_ddl_pass(state: PassState) -> PassState:
                 "ddl",
                 action=f"dropped DDL statement: {excerpt(stmt.raw.text, state.dialect, 60)}",
                 reason=(
-                    "dbt rebuilds objects from scratch; if an index is genuinely needed it "
-                    "belongs in a post-hook"
+                    "dbt rebuilds objects completely. If an index is really necessary, the "
+                    "index belongs in a post-hook"
                 ),
             )
         )
@@ -574,14 +589,15 @@ def select_pass(state: PassState) -> PassState:
                         f"left as-is: {filename} holds {count} queries, and a file names one model"
                     ),
                     reason=(
-                        f"a model takes its name from its file, so {filename} has one name to "
-                        f"give and {count} queries wanting it. Put each query in a file of its "
-                        "own, named for what it builds, and each becomes a model."
+                        f"a model takes its name from its file. So {filename} has one name to "
+                        f"give, and {count} queries want that name. Put each query in its own "
+                        "file, with a name for what the query builds. Then each query becomes "
+                        "a model."
                     ),
                     plain_reason=(
-                        f"The file's name is the model's name, and there are {count} queries in "
-                        f"{filename} -- one name for {count} things. Split them into a file each "
-                        "and they all come through."
+                        f"The name of the file is the name of the model. {filename} holds "
+                        f"{count} queries, so one name must serve {count} things. Put each "
+                        "query in its own file. Then each query becomes a model."
                     ),
                 )
             )
@@ -595,16 +611,17 @@ def select_pass(state: PassState) -> PassState:
                     "select.unusable_name",
                     action=f"left as-is: dbt cannot name a model after {filename}",
                     reason=(
-                        f"a model's name is its file's name, and dbt uses it as a relation "
-                        f"identifier and as the argument to ref() -- letters, digits and "
-                        f"underscores, not starting with a digit. {filename} is not one, and "
-                        "renaming it here would give the model a name you never wrote."
+                        "a model's name is its file's name. dbt uses that name as a relation "
+                        "identifier and as the argument to ref(). So the name must hold only "
+                        "letters, digits and underscores, and must not start with a digit. "
+                        f"{filename} does not obey this rule. If this conversion renamed the "
+                        "file, the model would get a name that you never wrote."
                     ),
                     plain_reason=(
-                        f"The model would be called {name!r}, which is not a name a database "
-                        "will accept: a name can hold letters, numbers and underscores, and "
-                        "cannot start with a number. Rename the file and the query comes "
-                        "through under the new name."
+                        f"The model would get the name {name!r}. A database will not accept "
+                        "that name. A name can hold letters, numbers and underscores, and "
+                        "cannot start with a number. Rename the file. Then the query becomes "
+                        "a model with the new name."
                     ),
                 )
             )
@@ -628,31 +645,32 @@ def select_pass(state: PassState) -> PassState:
             if claimed_by is not None:
                 here, there = _distinguish(stmt.raw.source_file, claimed_by)
                 reason = (
-                    f"a model's name is its file's name, so {here} asks to be called "
-                    f"{name} -- and so does {there}. Two files of one name are two models "
-                    "wanting one name. Rename either file and both queries come through, "
-                    "each under its own file's name."
+                    f"a model's name is its file's name. So {here} asks for the name "
+                    f"{name}, and {there} asks for the same name. Two files with one name "
+                    "are two models that want one name. Rename one of the two files. Then "
+                    "both queries become models, each with the name of its own file."
                 )
                 plain = (
-                    f"Two files here are both called {filename} -- {here} and {there} -- and "
-                    f"the file's name is the model's name, so both ask to be called {name}. "
-                    "Rename one of them and they both come through."
+                    f"Two files here have the same name, {filename}: {here} and {there}. "
+                    "The name of the file is the name of the model, so both files ask for "
+                    f"the name {name}. Rename one of the two files. Then both queries "
+                    "become models."
                 )
             else:
                 reason = (
-                    f"a model's name is its file's name, so {filename} asks to be called "
-                    f"{name} -- and this conversion already builds a model of that name from "
-                    f"{taken.qualified_name}, a table one of its own statements writes. Two "
-                    "models cannot share a name, and this query is not that table's "
-                    "definition, so folding them together would invent a query you never "
-                    "wrote. Put the query in a file of its own name and it becomes a model "
-                    "of it."
+                    f"a model's name is its file's name. So {filename} asks for the name "
+                    f"{name}. This conversion already builds a model with that name from "
+                    f"{taken.qualified_name}, a table that one of its own statements writes. "
+                    "Two models cannot share a name. This query is not the definition of "
+                    "that table, so a combination of the two would invent a query that you "
+                    "never wrote. Put the query in a file with a name of its own. Then the "
+                    "query becomes a model with that name."
                 )
                 plain = (
-                    f"{name} is already the name of something this conversion builds, and it "
-                    f"is the name {filename} asks for. The two are not the same query, so "
-                    "neither can be dropped: put this query in a differently named file and "
-                    "it comes through under that name."
+                    f"{name} is already the name of something that this conversion builds. "
+                    f"{filename} asks for the same name. The two are not the same query, so "
+                    "this conversion cannot drop either one. Put this query in a file with a "
+                    "different name. Then the query becomes a model with that name."
                 )
             decisions.append(
                 _decision(
@@ -683,18 +701,19 @@ def select_pass(state: PassState) -> PassState:
                     "select.reads_itself",
                     action=f"left as-is: a model called {name} would read itself",
                     reason=(
-                        f"the query reads {circular.sql(dialect=state.dialect)} and the file is "
-                        f"{filename}, so a model named after its file would select from itself: "
-                        f"dbt resolves ref('{name}') to the model, never to the table it was "
-                        f"named after. dbt's own convention for a model reading one raw table is "
-                        f"to prefix it -- stg_{name}.sql -- which leaves the table free to be "
-                        "declared as a source."
+                        f"the query reads {circular.sql(dialect=state.dialect)}, and the file "
+                        f"is {filename}. So a model with the name of its file would select from "
+                        f"itself. In dbt, ref('{name}') resolves to the model, never to the table "
+                        "that gave the model its name. For a model that reads one raw table, "
+                        "the dbt convention is a prefix on the file name, for example "
+                        f"stg_{name}.sql. The prefix keeps the table name free, so you can "
+                        "declare the table as a source."
                     ),
                     plain_reason=(
-                        f"The query reads a table called {name} and the file is called "
-                        f"{filename}, so the model would be asked to read itself. Rename the "
-                        f"file -- stg_{name}.sql is what dbt projects usually call this -- and "
-                        "the table it reads stays the table it reads."
+                        f"The query reads a table with the name {name}, and the file has the "
+                        f"name {filename}. So the model would read itself. Rename the file. "
+                        f"dbt projects usually give this kind of file a name like stg_{name}.sql. "
+                        "Then the query still reads the same table."
                     ),
                 )
             )
@@ -729,15 +748,17 @@ def select_pass(state: PassState) -> PassState:
                 "select",
                 action=f"created model {name} (materialized='view')",
                 reason=(
-                    f"a dbt model is a SELECT in a file and takes its name from that file; this "
-                    f"query is in {filename}, so the model is {name}. The query itself is "
-                    "unchanged. The script stored nothing, so materialized='view' keeps that "
-                    "true -- the query runs whenever something reads the model."
+                    "a dbt model is a SELECT in a file, and the model takes its name from "
+                    f"that file. This query is in {filename}, so the model is {name}. This "
+                    "conversion does not change the query. The script stored nothing, and "
+                    "materialized='view' keeps that true. The query runs each time that "
+                    "something reads the model."
                 ),
                 plain_reason=(
-                    f"Your file is called {filename}, so this is now called {name} -- that is "
-                    "the whole naming rule. The query is the one you wrote, untouched. Like "
-                    "running it by hand it saves no rows: whatever reads it runs the query."
+                    f"Your file has the name {filename}, so this model now has the name "
+                    f"{name}. That one fact is the full naming rule. The query is the one that you "
+                    "wrote, with no changes. The model saves no rows, the same as when you "
+                    "run the query by hand. Each thing that reads the model runs the query."
                 ),
             )
         )

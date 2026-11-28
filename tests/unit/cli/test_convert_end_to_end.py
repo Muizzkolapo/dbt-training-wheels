@@ -194,7 +194,7 @@ def test_a_deferred_column_list_rebuild_does_not_also_claim_the_truncate_was_sol
     TRUNCATE at that point with "no surviving INSERT pair" contradicts the
     Decision printed beside it. Both halves stay pending together."""
     report = _report(tmp_path, STAR_REBUILD)
-    assert "cannot map columns positionally" in report
+    assert "cannot map the columns positionally" in report
     assert "no surviving INSERT pair" not in report
     assert "dropped solo TRUNCATE" not in report
 
@@ -255,7 +255,7 @@ def test_a_grant_matches_its_model_across_a_case_difference(tmp_path):
         "CREATE TABLE Orders AS SELECT id, amount FROM raw.orders;\n"
         "GRANT SELECT ON orders TO analyst;\n",
     )
-    assert "this conversion doesn't create" not in report
+    assert "this conversion does not create" not in report
     (body,) = [b for name, b in _models(tmp_path).items() if "rders" in name]
     assert "grants" in body
     assert "analyst" in body

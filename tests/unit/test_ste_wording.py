@@ -44,7 +44,6 @@ PROJECTS = FIXTURES / "projects"
 PENDING = {
     "teach",
     "report",
-    "tier1",
     "tier2",
 }
 

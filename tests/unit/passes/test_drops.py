@@ -31,7 +31,7 @@ def test_solo_truncate_dropped_by_ddl_pass():
     out = drop_ddl_pass(_state((0, _stmt("TRUNCATE TABLE t", "truncate"))))
     assert out.pending == ()
     (dec,) = out.decisions
-    assert "rebuilds from scratch" in dec.reason
+    assert "rebuilds the table completely on every run" in dec.reason
 
 
 def test_later_tier_kinds_untouched_by_both():

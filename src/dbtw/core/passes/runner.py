@@ -52,7 +52,7 @@ def run_passes(classified: Sequence[ClassifiedStatement], dialect: str | None) -
     # a GRANT on a table that only a tier-2 pass builds (e.g. a MERGE target
     # converted by merge_pass) must see that draft to attach to — matching
     # it before tier 2 runs would drop the GRANT with a "this conversion
-    # doesn't create it" Decision that is false, since the conversion does
+    # does not create it" Decision that is false, since the conversion does
     # create it, two passes later. It runs before drop_ddl_pass rather than
     # after because its only dependency — every draft that will ever exist —
     # is already satisfied the instant tier 2 finishes; there is no reason

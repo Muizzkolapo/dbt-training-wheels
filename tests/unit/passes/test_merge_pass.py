@@ -170,7 +170,7 @@ def test_a_restricted_update_set_records_its_columns_and_the_config_that_restore
     caveat = matching[0]
     assert "city" in caveat
     assert "email" in caveat
-    assert "every column the model selects" in caveat
+    assert "every column that the model selects" in caveat
 
 
 def test_a_merge_that_deletes_is_refused_and_stays_pending():
@@ -739,7 +739,7 @@ def test_a_branch_that_writes_nothing_from_the_source_is_refused():
     assert len(out.pending) == 1
     assert len(out.decisions) == 1, out.decisions
     assert out.decisions[0].action.startswith("deferred:")
-    assert "no value taken from the source" in out.decisions[0].action
+    assert "no value from the source" in out.decisions[0].action
 
 
 def test_a_matched_branch_that_only_sets_a_constant_is_refused_too():
@@ -755,7 +755,7 @@ def test_a_matched_branch_that_only_sets_a_constant_is_refused_too():
     out = merge_pass(_state((0, _stmt(sql))))
     assert out.drafts == ()
     assert len(out.decisions) == 1, out.decisions
-    assert "no value taken from the source" in out.decisions[0].action
+    assert "no value from the source" in out.decisions[0].action
     assert "t.is_deleted = TRUE" in out.decisions[0].action
 
 
@@ -857,7 +857,7 @@ def test_a_positional_insert_of_defaults_is_refused_even_with_no_column_list():
     )
     out = merge_pass(_state((0, _stmt(sql))))
     assert out.drafts == ()
-    assert "no value taken from the source" in out.decisions[0].action
+    assert "no value from the source" in out.decisions[0].action
 
 
 def test_a_positional_insert_reading_the_source_still_converts():
@@ -1071,7 +1071,7 @@ def test_an_insert_star_keeps_the_star_body_and_the_update_caveat_says_why():
     assert _selects(sql) == ["*"]
     (update,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "assign" in c]
     assert "every column it selects" in update
-    assert "not narrowed to the columns this MERGE writes" in update
+    assert "does not narrow the model body to the columns that this MERGE writes" in update
     assert "INSERT *" in update
 
 
@@ -1096,7 +1096,7 @@ def test_a_value_that_is_not_a_source_column_keeps_the_star_body():
     )
     assert _selects(sql) == ["*"]
     (insert,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "inserts only" in c]
-    assert "city is written from UPPER(s.city)" in insert
+    assert "this MERGE writes city from UPPER(s.city)" in insert
 
 
 def test_a_column_written_from_two_different_source_columns_keeps_the_star_body():
@@ -1107,4 +1107,4 @@ def test_a_column_written_from_two_different_source_columns_keeps_the_star_body(
     )
     assert _selects(sql) == ["*"]
     (insert,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "inserts only" in c]
-    assert "city is written from s.town in one place and from s.city in another" in insert
+    assert "writes city from s.town in one place and from s.city in another place" in insert
