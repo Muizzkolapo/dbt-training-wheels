@@ -13,6 +13,8 @@ what it refuses matters more than what it does.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from dbtw.core.deliver import (
     NotAGitRepoError,
     deliver,
 )
+from dbtw.core.emit import WRITE_RECORD_NAME
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -58,11 +61,26 @@ def _repo(tmp_path: Path) -> Path:
 
 
 def _conversion(out: Path) -> Path:
-    """A written conversion, as `emit` leaves one."""
-    (out / "models" / "staging").mkdir(parents=True)
-    (out / "models" / "staging" / "stg_events.sql").write_text("select 1\n", encoding="utf-8")
-    (out / "models" / "staging" / "stg_events.yml").write_text("version: 2\n", encoding="utf-8")
-    (out / "CONVERSION_REPORT.md").write_text("# what happened\n", encoding="utf-8")
+    """A written conversion, as `emit` leaves one: the files, and the record
+    of which files the write produced. Delivery reads the record, not the
+    directory, so a conversion without one is not a conversion it delivers.
+    """
+    files = {
+        "models/staging/stg_events.sql": "select 1\n",
+        "models/staging/stg_events.yml": "version: 2\n",
+        "CONVERSION_REPORT.md": "# what happened\n",
+    }
+    for relative, text in files.items():
+        (out / relative).parent.mkdir(parents=True, exist_ok=True)
+        (out / relative).write_text(text, encoding="utf-8")
+    record = {
+        "format": 1,
+        "files": {
+            relative: hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for relative, text in files.items()
+        },
+    }
+    (out / WRITE_RECORD_NAME).write_text(json.dumps(record), encoding="utf-8")
     return out
 
 
@@ -262,3 +280,90 @@ def test_a_conversion_can_be_delivered_end_to_end_from_the_real_pipeline(
     for relative in result.files:
         assert (root / relative).is_file(), f"{relative} did not land"
     assert _git(root, "status", "--porcelain").strip() == ""
+
+
+# --- what a delivery carries: the latest write, and nothing else in out_dir
+
+_REWRITE_CHAIN = (
+    "INSERT INTO revenue_events SELECT order_id, amount FROM raw_orders;\n"
+    "INSERT INTO revenue_daily SELECT order_id, amount FROM revenue_events;\n"
+)
+
+
+def _three_layers_repo(tmp_path: Path) -> Path:
+    import shutil
+
+    root = tmp_path / "project"
+    shutil.copytree(FIXTURES / "three_layers", root)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "reader@example.invalid")
+    _git(root, "config", "user.name", "The Reader")
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts):
+        _git(root, "add", "--", str(path.relative_to(root)))
+    _git(root, "commit", "-q", "-m", "the project as it was")
+    return root
+
+
+def test_a_delivery_after_a_rewrite_carries_the_moved_model_once(tmp_path: Path) -> None:
+    """Written with the model in marts, then again with it in intermediate:
+    the branch holds the model in intermediate and nowhere else. Two copies
+    would be two models with one name, which dbt refuses to parse.
+    """
+    from tests.unit.assemble.helpers import convert
+
+    from dbtw.core.emit import emit
+    from dbtw.core.passes import answer_for
+
+    root = _three_layers_repo(tmp_path)
+    ctx = read_project(root)
+    out = tmp_path / "out"
+    pristine = convert(_REWRITE_CHAIN, project="three_layers")
+    emit(pristine, ctx, out)
+    question = next(d for d in pristine.decisions if d.key.startswith("assemble.layer."))
+    moved = convert(
+        _REWRITE_CHAIN,
+        project="three_layers",
+        answers={question.key: answer_for(question, "intermediate")},
+    )
+    emit(moved, ctx, out)
+
+    result = deliver(out, ctx, branch="dbtw/revenue", message="convert revenue")
+
+    assert "models/intermediate/revenue_daily.sql" in result.files
+    assert "models/marts/revenue_daily.sql" not in result.files
+    assert not (root / "models" / "marts" / "revenue_daily.sql").exists()
+    committed = _git(root, "show", "--name-only", "--pretty=format:", "HEAD").split()
+    assert sorted(committed) == sorted(result.files)
+
+
+def test_a_file_of_the_readers_own_in_out_dir_is_not_delivered(tmp_path: Path) -> None:
+    """The out_dir can hold the reader's own files. Delivery copies what the
+    write produced, so a scratch note beside the conversion stays where the
+    reader left it rather than being committed into their project.
+    """
+    root = _repo(tmp_path)
+    out = _conversion(tmp_path / "out")
+    (out / "scratch.sql").write_text("select 'mine'\n", encoding="utf-8")
+
+    result = deliver(out, read_project(root), branch="dbtw/events", message="m")
+
+    assert "scratch.sql" not in result.files
+    assert not (root / "scratch.sql").exists()
+    assert WRITE_RECORD_NAME not in result.files
+    assert not (root / WRITE_RECORD_NAME).exists()
+
+
+def test_a_recorded_file_that_is_gone_is_refused_before_anything_is_copied(
+    tmp_path: Path,
+) -> None:
+    """Delivering the rest would put part of a conversion on a branch that
+    claims all of it.
+    """
+    root = _repo(tmp_path)
+    out = _conversion(tmp_path / "out")
+    (out / "models" / "staging" / "stg_events.yml").unlink()
+
+    with pytest.raises(ValueError, match="stg_events.yml"):
+        deliver(out, read_project(root), branch="dbtw/events", message="m")
+
+    assert _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() != "dbtw/events"

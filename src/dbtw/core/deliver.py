@@ -46,13 +46,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dbtw.core.context import ProjectContext
+from dbtw.core.emit import REPORT_NAME, written_by_last_emit
 
 # The report is delivered with the models rather than left behind in the
 # output directory. It is the review narrative for exactly this change --
 # every Decision, in the engine's own words -- and a pull request whose
 # reasoning sits in a directory nobody pushed is a pull request a reviewer
 # reads without it.
-_ALWAYS_DELIVERED = "CONVERSION_REPORT.md"
+_ALWAYS_DELIVERED = REPORT_NAME
 
 
 class NotAGitRepoError(ValueError):
@@ -117,7 +118,8 @@ class Delivery:
 
 
 def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) -> Delivery:
-    """Copy `out_dir` into the project on a new branch, and commit it.
+    """Copy the latest write in `out_dir` into the project on a new branch,
+    and commit it. Only the files that write produced: see `_deliverable`.
 
     Every refusal fires before the first file is copied. A delivery that
     stopped half way would leave the reader's project holding some of a
@@ -132,8 +134,8 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     files = _deliverable(out_dir)
     if not files:
         raise ValueError(
-            f"nothing to deliver: {out_dir} holds no files. Write the conversion "
-            "before delivering it"
+            f"nothing to deliver: {out_dir} holds no conversion this tool wrote. "
+            "Write the conversion before delivering it"
         )
 
     _git(root, "checkout", "-b", branch)
@@ -236,15 +238,33 @@ def _refuse_unless_branch_exists(root: Path, branch: str) -> None:
 
 
 def _deliverable(out_dir: Path) -> tuple[str, ...]:
-    """Every file in `out_dir`, project-relative, report last.
+    """The files the latest write into `out_dir` produced, project-relative,
+    report last.
+
+    Read off the record `emit` keeps of its latest write, not off a listing
+    of the directory. A listing carried everything the directory held: a
+    model an earlier write had put in another layer, which made the branch
+    hold two models with one name, and any file of the reader's own that
+    they kept beside the conversion. Neither is the conversion they were
+    shown on the written screen, which is the list `EmitResult.paths` gave
+    and the record holds.
+
+    A recorded file that is gone is refused before anything is copied:
+    delivering the rest would put part of a conversion on a branch that
+    claims all of it.
 
     Sorted, so a delivery's file list does not depend on the order a
-    filesystem happened to walk a directory in, with the report at the end
-    because it is the one file that is about the others.
+    write happened to produce files in, with the report at the end because
+    it is the one file that is about the others.
     """
-    found = sorted(
-        path.relative_to(out_dir).as_posix() for path in out_dir.rglob("*") if path.is_file()
-    )
+    found = sorted(written_by_last_emit(out_dir))
+    missing = [name for name in found if not (out_dir / name).is_file()]
+    if missing:
+        raise ValueError(
+            f"cannot deliver {out_dir}: the latest write there produced "
+            f"{', '.join(missing)}, and {'it is' if len(missing) == 1 else 'they are'} no "
+            "longer there. Write the conversion again before delivering it"
+        )
     models = [name for name in found if name != _ALWAYS_DELIVERED]
     report = [name for name in found if name == _ALWAYS_DELIVERED]
     return tuple(models + report)

@@ -6,6 +6,8 @@ nothing in this slice touches the target dbt project itself. Validation
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,6 +27,22 @@ from dbtw.core.progress import NOTHING_EXPLAINED, Progress
 # string until then, which is two places for one name to drift.
 REPORT_NAME = "CONVERSION_REPORT.md"
 _SOURCES_NAME = "sources.yml"
+
+# The record of which files the latest write into an out_dir produced, kept
+# in that out_dir beside the report. Exported because delivery reads it: what
+# "Put on a branch" copies into the reader's project is the files the latest
+# write produced, not whatever else the directory happens to hold.
+#
+# It exists because a second write into the same out_dir has to know what the
+# first one left there. Without it, a model an answer moved from one layer to
+# another stayed in the layer it left -- two models with one name, which dbt
+# refuses to parse -- and a model the script stopped building stayed as well.
+# The directory listing cannot answer the question: the out_dir is the
+# reader's directory too, and a file this tool did not write is never one it
+# removes. A dot-file, so a reader browsing the conversion does not mistake
+# it for part of it; never in `EmitResult.paths`, so no screen lists it.
+WRITE_RECORD_NAME = ".dbtw-written.json"
+_RECORD_FORMAT = 1
 
 # The name our sources file takes when the target project already uses
 # sources.yml in the directory ours belongs in. It keeps the "sources" stem, so
@@ -54,6 +72,10 @@ class EmitResult:
 
     paths: tuple[Path, ...]
     decisions: tuple[Decision, ...]
+    # Files the previous write into this out_dir produced and this one does
+    # not, removed by this write. Each also has a Decision in `decisions`;
+    # the paths are here so a screen can list them as it lists `paths`.
+    removed: tuple[Path, ...] = ()
 
 
 class DuplicateSourceEntryError(ValueError):
@@ -116,6 +138,21 @@ class OutputInsideProjectError(ValueError):
     itself and fires before anything is written at all, because by the time a
     model path could notice, out_dir is the project and the first model file
     has already landed on top of the user's own.
+    """
+
+
+class StaleOutputError(ValueError):
+    """The previous write's files cannot be cleared safely.
+
+    Two causes, both input-driven, so a usage error to every front end: the
+    record of the previous write cannot be read, or a file that write
+    produced, and that this write no longer produces, has been changed since.
+
+    Refused rather than worked around. Reading a damaged record as empty
+    would leave the previous write's stale files in place, to be delivered
+    beside this one's -- the defect this record exists to remove, with
+    nothing said. Removing an edited file would delete the reader's work.
+    Raised before anything is written, so the out_dir is as it was.
     """
 
 
@@ -324,11 +361,12 @@ def emit(
             "walk showed; one naming no model is a dbtw bug."
         )
 
+    # Every file rendered before any is written, so that what the previous
+    # write left behind is known -- and refused, if it cannot be cleared --
+    # while the out_dir is still exactly as that write left it.
+    planned: list[tuple[Path, str]] = []
     for model in change.models:
-        model_path = _safe_join(out_dir, model.path)
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        model_path.write_text(render_model(model), encoding="utf-8")
-        written.append(model_path)
+        planned.append((_safe_join(out_dir, model.path), render_model(model)))
 
         # A .yml is written for a model that has a test, a description, or
         # both -- one file per model, not one per thing said about it. A
@@ -337,31 +375,165 @@ def emit(
         model_tests = tuple(tests_by_model.get(model.name, ()))
         schema = render_schema_yaml(model.name, model_tests, described.get(model.name, ""))
         if schema:
-            schema_path = _safe_join(out_dir, _schema_yaml_rel(model))
-            schema_path.parent.mkdir(parents=True, exist_ok=True)
-            schema_path.write_text(schema, encoding="utf-8")
-            written.append(schema_path)
+            planned.append((_safe_join(out_dir, _schema_yaml_rel(model)), schema))
 
     if change.sources:
-        sources_path = _safe_join(out_dir, sources_rel)
-        sources_path.parent.mkdir(parents=True, exist_ok=True)
-        sources_path.write_text(render_sources_yaml(change.sources), encoding="utf-8")
-        written.append(sources_path)
-
-    # The report has to answer for every file emit wrote, and where the
-    # sources file landed is only knowable here, because only here is the
-    # path it lands on decided.
-    reported = (
-        dataclasses.replace(change, decisions=(*change.decisions, *placement))
-        if placement
-        else change
-    )
+        planned.append((_safe_join(out_dir, sources_rel), render_sources_yaml(change.sources)))
 
     report_path = _safe_join(out_dir, REPORT_NAME)
+    produced = {path.relative_to(out_dir).as_posix() for path, _ in planned} | {REPORT_NAME}
+    stale = _stale(out_dir, _read_record(out_dir), produced)
+    removals = tuple(_removed(relative) for relative in stale)
+
+    # The report has to answer for every file emit wrote, and for every file
+    # it removed. Where the sources file landed and what the previous write
+    # left behind are only knowable here.
+    emitted = (*placement, *removals)
+    reported = (
+        dataclasses.replace(change, decisions=(*change.decisions, *emitted)) if emitted else change
+    )
+
+    for path, text in planned:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        written.append(path)
+
+    # After this write's own files and before the report: the report says
+    # these are gone, so it is written once they are.
+    removed = tuple(_safe_join(out_dir, relative) for relative in stale)
+    for path in removed:
+        path.unlink()
+
     report_path.write_text(render_report(reported, ctx, progress), encoding="utf-8")
     written.append(report_path)
 
-    return EmitResult(paths=tuple(written), decisions=placement)
+    # Last, so the record never lists a file this write did not finish. A
+    # write that fails part way leaves the previous record in place, and the
+    # next write clears against it: every path it names that is still there
+    # and unchanged is still ours.
+    _write_record(out_dir, written)
+
+    return EmitResult(paths=tuple(written), decisions=emitted, removed=removed)
+
+
+def written_by_last_emit(out_dir: Path) -> tuple[str, ...]:
+    """The files the latest write into `out_dir` produced, out_dir-relative.
+
+    Empty when nothing has been written there by this tool -- no record at
+    all. A record that cannot be read raises `StaleOutputError` rather than
+    reading as empty, for the reason that class gives.
+    """
+    return tuple(_read_record(out_dir))
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_record(out_dir: Path) -> dict[str, str]:
+    """The previous write's files, by out_dir-relative path, with the sha256
+    of the bytes it wrote. Empty when there is no record.
+
+    No record is the one ordinary empty case: an out_dir this tool has not
+    written to, or one written before the record existed. Everything else
+    that is not a record in the shape `_write_record` writes is refused.
+    """
+    record_path = out_dir / WRITE_RECORD_NAME
+    if not record_path.exists():
+        return {}
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError both
+        raise _unreadable(record_path, f"it is not JSON ({exc})") from exc
+    if not isinstance(record, dict) or record.get("format") != _RECORD_FORMAT:
+        raise _unreadable(record_path, f"it is not a format-{_RECORD_FORMAT} record")
+    files = record.get("files")
+    if not isinstance(files, dict) or not all(
+        isinstance(path, str) and isinstance(digest, str) for path, digest in files.items()
+    ):
+        raise _unreadable(record_path, "its file list is not a map of path to digest")
+    if WRITE_RECORD_NAME in files:
+        raise _unreadable(record_path, "it lists itself as a file of the conversion")
+    return dict(files)
+
+
+def _unreadable(record_path: Path, why: str) -> StaleOutputError:
+    return StaleOutputError(
+        f"cannot read {record_path}, the record of which files the previous write "
+        f"into this directory produced: {why}. Without it, files that write produced "
+        "and this one does not would stay beside this conversion's own and be "
+        f"delivered with them. Delete {WRITE_RECORD_NAME} and any files of the previous "
+        "conversion from the directory, then write again"
+    )
+
+
+def _stale(out_dir: Path, previous: Mapping[str, str], produced: set[str]) -> tuple[str, ...]:
+    """The previous write's files that this write does not produce and that
+    are still there, as that write left them. Sorted.
+
+    A recorded path that is no longer there is nothing to remove: the reader
+    removed it, which is the state this function exists to reach. A recorded
+    path whose bytes have changed is no longer the file this tool wrote, so
+    it is refused -- see `StaleOutputError`. Every path is put through
+    `_safe_join` first: the record is a file on disk, and a path in it that
+    escapes out_dir was never written there by this tool.
+    """
+    stale: list[str] = []
+    edited: list[str] = []
+    for relative in sorted(set(previous) - produced):
+        path = _safe_join(out_dir, relative)
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_file() or _digest(path) != previous[relative]:
+            edited.append(relative)
+        else:
+            stale.append(relative)
+    if edited:
+        one = len(edited) == 1
+        it = "it" if one else "them"
+        raise StaleOutputError(
+            f"{_listed(edited)} {'was' if one else 'were'} written by the previous write "
+            f"into this directory, and this conversion no longer produces {it} -- but "
+            f"{'it has' if one else 'they have'} changed since. This tool removes only "
+            f"files exactly as it wrote them, so nothing was written. Move {it} out of "
+            f"the directory, or delete {it}, then write again"
+        )
+    return tuple(stale)
+
+
+def _removed(relative: str) -> Decision:
+    """The Decision recording one file this write removed."""
+    return _decision(
+        "removed",
+        relative,
+        f"removed {relative}, which the previous write into this directory produced "
+        "and this one does not",
+        f"Every file this tool writes into an output directory is listed in "
+        f"{WRITE_RECORD_NAME}, beside this report. {relative} was on that list, and this "
+        "conversion no longer produces it: an answer moved its model to another layer, "
+        "or the script no longer builds it. Left in place it would sit beside this "
+        "conversion's own files -- a model moved to another layer would be there twice "
+        "under one name, which dbt refuses to parse -- and copying the directory into "
+        "the project would carry it across. A file this tool did not write is never "
+        "removed, and one it wrote that has since been changed stops the write instead.",
+    )
+
+
+def _write_record(out_dir: Path, written: list[Path]) -> None:
+    """Record which files this write produced, with a digest of each.
+
+    Written beside its final name and moved into place, so a record is
+    either the previous write's or this one's, never half of either. The
+    digest is of the bytes on disk, read back, rather than of the text
+    rendered: it is the file the next write compares against.
+    """
+    record = {
+        "format": _RECORD_FORMAT,
+        "files": {path.relative_to(out_dir).as_posix(): _digest(path) for path in written},
+    }
+    staged = out_dir / f"{WRITE_RECORD_NAME}.tmp"
+    staged.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    staged.replace(out_dir / WRITE_RECORD_NAME)
 
 
 def _safe_join(out_dir: Path, relative: str | Path) -> Path:

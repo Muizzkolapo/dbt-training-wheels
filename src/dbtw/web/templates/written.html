@@ -21,6 +21,11 @@
   are the ones `emit` reported writing rather than a second derivation of
   where it puts things. The count beside them is the length of that list.
 
+  Removed lists the files the previous write into this directory produced
+  and this one does not -- `EmitResult.removed`, in the order `emit` gave.
+  Shown only when there are any. Each one is also a Decision in the report,
+  which says why in the engine's words; this list only names them.
+
   Delivery is offered here and not before, and the ordering is the point:
   what it copies into the reader's own project is this directory, whose
   contents they have just read file by file. Once it has run, the form is
@@ -37,6 +42,15 @@
   <li data-item="written"><span data-engine>{{ path }}</span></li>
   {%- endfor %}
 </ul>
+{%- if removed %}
+<h2>Removed</h2>
+<p class="tally"><span data-count="removed">{{ removed | length }}</span> {{ (removed | length) | noun("file") }}</p>
+<ul class="written">
+  {%- for path in removed %}
+  <li data-item="removed"><span data-engine>{{ path }}</span></li>
+  {%- endfor %}
+</ul>
+{%- endif %}
 
 {%- if delivered %}
 <h2>Delivered</h2>

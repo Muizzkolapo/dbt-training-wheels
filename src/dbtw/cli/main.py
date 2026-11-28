@@ -25,6 +25,7 @@ from dbtw.core.context import NotADbtProjectError, read_project
 from dbtw.core.emit import (
     REPORT_NAME,
     OutputInsideProjectError,
+    StaleOutputError,
     UnsafeOutputPathError,
     emit,
     refuse_output_inside_project,
@@ -81,6 +82,9 @@ class UnexpandablePathError(ValueError):
 # OSError covers FileNotFoundError plus its siblings that a bad --out can
 # raise (FileExistsError when --out names an existing file, PermissionError,
 # IsADirectoryError, ...) — all input-driven, not a dbtw bug.
+# StaleOutputError is input-driven too: a file the previous write into --out
+# produced has been edited since, or that write's record is damaged, and the
+# message names what to move or delete.
 # MissingWebExtraError is here on the same test and not because it is an
 # input: an install without the web extra is something the user can change,
 # and the message says what to change it to. Contrast DuplicateSourceEntryError
@@ -92,6 +96,7 @@ _USAGE_ERRORS = (
     NotADbtProjectError,
     UnsafeOutputPathError,
     OutputInsideProjectError,
+    StaleOutputError,
     UnexpandablePathError,
     MissingWebExtraError,
 )

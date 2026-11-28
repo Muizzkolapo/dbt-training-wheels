@@ -53,6 +53,7 @@ from dbtw.core.emit import (
     SUPPOSED_ROW_LABEL,
     emit,
     worked_example,
+    written_by_last_emit,
 )
 from dbtw.core.intro import HEADLINE, LEDE, PILLARS, PRIVACY
 from dbtw.core.teach import GLOSSARY
@@ -187,6 +188,13 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
     could forget to pass would make the check pass by having nothing to say.
     """
     produced: list[str] = [str(session.sql), str(session.project), str(out)]
+
+    # The files a write already in `out` produced, read off the record `emit`
+    # keeps there. A later write that no longer produces one removes it, and
+    # the written screen names what it removed -- a path `emit` wrote, from a
+    # conversion that is no longer the one on screen, so no run above can
+    # produce it. Empty until something has been written.
+    produced.extend(written_by_last_emit(out))
 
     pristine = _pristine(session).view().change
     produced.extend(_from_change(pristine))
