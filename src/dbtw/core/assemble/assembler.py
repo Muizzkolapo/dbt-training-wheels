@@ -102,8 +102,8 @@ def _resolve_layer(
 
     if fallback_layer is not None:
         reason = (
-            f"no {role} layer in the target project's model tree; "
-            f"used the {fallback_role} layer instead"
+            f"the model tree of the target project has no {role} layer, so this "
+            f"conversion used the {fallback_role} layer instead"
         )
         action = f"placed {name} in the {fallback_role} layer (no {role} layer available)"
         return fallback_layer, [_decision("layer_fallback", name, action, reason)]
@@ -113,8 +113,9 @@ def _resolve_layer(
         # deterministically (ctx.layers is already sorted by name).
         any_layer = layers[0]
         reason = (
-            f"no {role} layer, and no mart/staging/intermediate layer either, in the "
-            f"target project's model tree; used the only layer found: {any_layer.name}"
+            f"the model tree of the target project has no {role} layer, and no "
+            "mart/staging/intermediate layer either. This conversion used the only "
+            f"layer that it found: {any_layer.name}"
         )
         action = (
             f"placed {name} in the {any_layer.name} layer "
@@ -122,8 +123,8 @@ def _resolve_layer(
         )
         return any_layer, [_decision("layer_fallback", name, action, reason)]
 
-    reason = f"no {role} layer in the target project's model tree; no other layer available"
-    action = f"could not place {name} in a {role} layer; no layer available at all"
+    reason = f"the model tree of the target project has no {role} layer and no other layer"
+    action = f"could not place {name} in a {role} layer: no layer available at all"
     return None, [_decision("layer_fallback", name, action, reason)]
 
 
@@ -171,18 +172,22 @@ def _cross_ref_questions(
             action=f"declared {entry} as this project's own source",
             reason=(
                 f"the {other.project_name} project builds a model called {model.name} "
-                f"({model.path}); a table of that name here could be the same table, "
-                "and a source declaration is the answer that depends on nobody"
+                f"({model.path}). A table with that name here could be the same table. "
+                "A source declaration is the answer that depends on no other team"
             ),
             plain_reason=(
-                f"Another team's project has something called {model.name} too. It "
-                "might be this same table tidied up, or it might just share a name -- "
-                "which is why this is asked rather than done."
+                f"Another team's project also has something called {model.name}. That "
+                "item might be this same table after the other team cleaned it. Or the "
+                "two might only share a name. For that reason, this tool asks you and "
+                "does not decide on its own."
             ),
             source_file="",
             line_start=0,
             line_end=0,
-            question=f"Should {entry} be read from {other.project_name}, or declared here?",
+            question=(
+                f"Should this project read {entry} from {other.project_name}, "
+                f"or declare {entry} here?"
+            ),
             plain_question=f"Where should {entry} come from?",
             options=options,
             chosen=options[0].label,
@@ -221,27 +226,28 @@ def _cross_dependency_caveat(model: str, project: str, target: str) -> Decision:
         f"{model}.{project}.{target}",
         (
             f"{model} reads ref('{project}', '{target}'). Declare {project} as a "
-            "dependency before dbt can resolve it"
+            "dependency before dbt can resolve the ref"
         ),
         (
-            f"a two-argument ref resolves only when {project} is declared as a "
-            f"dependency of this project and {target} allows access from other "
-            f"projects. Add `{entry}` to dependencies.yml at this project's root, or "
-            f"add `- name: {project}` to its existing projects: list. Set "
+            f"a two-argument ref resolves only when this project declares {project} "
+            f"as a dependency and {target} allows access from other projects. Add "
+            f"`{entry}` to dependencies.yml at the root of this project. Or add "
+            f"`- name: {project}` to the existing projects: list in that file. Set "
             f"`access: public` on {target} in {project}. Project dependencies are a "
             "dbt Mesh feature. dbt Cloud resolves them, and dbt-core alone may not. "
             "Without the dependency, dbt parse cannot find the ref. Without public "
             "access, dbt refuses the ref with an access error. This conversion does "
-            "not write dependencies.yml, because delivery would overwrite one already there"
+            "not write dependencies.yml, because delivery would overwrite a "
+            "dependencies.yml that is already there"
         ),
         plain_reason=(
-            f"Your model now reads {target} from the {project} project. That only "
-            f"works after your project lists {project} as a project it relies on, "
-            f"and {project} agrees to share {target} with other projects. Until "
-            "then your model will not run. The exact lines to add are given above. "
-            "The paid, hosted version of the tool supports this, and the free "
-            "version on its own may not. "
-            "This tool does not add the lines, so it cannot overwrite a file you already have."
+            f"Your model now reads {target} from the {project} project. This read "
+            f"works only after two changes. First, your project must list {project} "
+            f"as a project that it relies on. Second, {project} must agree to share "
+            f"{target} with other projects. Until then, your model will not run. "
+            "The text above gives the exact lines to add. The paid, hosted version of "
+            "dbt supports this, and the free version alone may not. This tool does "
+            "not add the lines, so this tool cannot overwrite a file that you already have."
         ),
         tier=2,
     )
@@ -278,20 +284,22 @@ def _layer_choice(
         tier=2,
         action=f"placed {name} in the {derived} layer",
         reason=(
-            "a model nothing else in this conversion reads is a mart, one that "
-            "others read is intermediate, and one that reads no model of ours is "
-            "staging -- read off this conversion's own dependency graph"
+            "this conversion reads its own dependency graph. A model that no other "
+            "model in this conversion reads is a mart. A model that other models "
+            "read is intermediate. A model that reads no model of this conversion "
+            "is staging"
         ),
         plain_reason=(
-            "Worked out from what reads what: nothing here reads this one, or "
-            "something does, or it reads nothing of ours. That is a guess about "
-            "how you will use it, and you know that better than this does."
+            "This tool found the place from what reads what. Nothing here reads "
+            "this table, or something here reads it, or it reads nothing that this "
+            "conversion builds. That place is a guess about how you will use the "
+            "table. You know that better than this tool does."
         ),
         source_file="",
         line_start=0,
         line_end=0,
         question=layer_question(name, derived, options),
-        plain_question=f"Where should {name} live?",
+        plain_question=f"Where should {name} go?",
         options=options,
         chosen=chosen.label if chosen is not None else "",
         subject=Subject(table=name, columns=(), candidates=()),
@@ -372,21 +380,22 @@ def _final_name(
     # conversion does to it: the sentence has to stay true for a script whose
     # target does not exist in the database yet.
     reason = (
-        f"the {layer.name} layer's models all share the {layer.prefix!r} prefix: {evidence}. "
-        f"The rename is not a migration. dbt writes the relations its own models name, and "
-        f"{draft_name} is not one of them, so dbt creates {final_name} beside it. "
-        f"{draft_name} is left exactly as it was. Nothing in this project writes to it "
-        f"again. Everything still selecting from {draft_name} goes on reading {draft_name}. "
-        f"It never sees a row only {final_name} has. Repointing those readers at "
-        f"{final_name} is manual work this conversion leaves to you."
+        f"all models in the {layer.name} layer share the {layer.prefix!r} prefix: {evidence}. "
+        f"The rename is not a migration. dbt writes the relations that its own models name. "
+        f"The relation {draft_name} is not one of them, so dbt creates {final_name} beside "
+        f"it. The relation {draft_name} stays exactly as it was. Nothing in this project "
+        f"writes to {draft_name} again. Everything that selects from {draft_name} now still "
+        f"reads {draft_name} after the rename. Such a reader never sees a row that only "
+        f"{final_name} has. Repointing those readers at {final_name} is manual work that "
+        f"this conversion leaves to you."
     )
     plain_reason = (
-        f"Renaming does not move the table. Afterwards there are two of them. {draft_name} "
-        f"is left exactly as it was. {final_name} is the new one, and it is the only one "
-        f"anything here writes to. A dashboard, a scheduled job or a saved query pointed at "
-        f"{draft_name} goes on reading {draft_name}. It never sees a row that only "
-        f"{final_name} has. Pointing each of those at {final_name} is a change someone has "
-        f"to make by hand."
+        f"Renaming does not move the table. After the rename, there are two tables. The "
+        f"table {draft_name} stays exactly as it was. The new table is {final_name}. Of the "
+        f"two tables, this project writes only to {final_name}. A dashboard, a scheduled "
+        f"job or a saved query that points at {draft_name} still reads {draft_name}. That "
+        f"reader never sees a row that only {final_name} has. Someone has to point each of "
+        f"those readers at {final_name} by hand."
     )
     return final_name, [_decision("rename", draft_name, action, reason, plain_reason=plain_reason)]
 
@@ -524,7 +533,11 @@ def _incremental_filter_caveat(
     conditions = _row_filters(node, dialect)
     if not conditions:
         return []
-    named = "; ".join(conditions)
+    # Each condition in “ ”, as the description refusal quotes a reader's own
+    # text, so a comma or an AND inside a condition cannot read as the joint
+    # between two of them -- and no semicolon joins them.
+    marked = [f"“{condition}”" for condition in conditions]
+    named = marked[0] if len(marked) == 1 else ", ".join(marked[:-1]) + " and " + marked[-1]
     quoted = (
         f"the script's WHERE ({named})"
         if len(conditions) == 1
@@ -547,26 +560,27 @@ def _incremental_filter_caveat(
     # `WHERE x IS NOT NULL` would drop a negation into the clause that says
     # every run re-reads the whole source.
     reason = (
-        f"{final_name}'s filtering is the script's own, copied verbatim: {named}. Nothing "
-        "here can tell whether it was meant as this model's incremental watermark. "
-        "Narrowing a condition that was not meant as one would change which rows the model "
-        "produces. So no guard was written around it. It stays a fixed condition: every "
-        "run evaluates it over the whole of this model's source rather than over what "
-        "arrived since the last run. The work re-done grows with the table. A row that "
-        "does not match is selected by no run at all, however late it arrives. If the "
-        "filtering compares a date, a row turning up afterwards carrying an earlier one "
-        f"never enters {final_name}. Narrowing or guarding the filtering is manual work "
-        "this conversion leaves to you."
+        f"the filtering of {final_name} is the script's own, copied verbatim: {named}. "
+        "Nothing here can tell whether the script meant it as the incremental watermark "
+        "of this model. If the script did not mean it as a watermark, narrowing it would "
+        "change which rows the model produces. So this conversion wrote no guard around "
+        "it. The filtering stays a fixed condition. Every run evaluates it over the whole "
+        "of this model's source, rather than over what arrived since the last run. The "
+        "work that each run repeats grows with the table. A row that does not match is "
+        "selected by no run at all, however late it arrives. If the filtering compares a "
+        "date, a row that arrives later with an earlier date never enters "
+        f"{final_name}. Narrowing or guarding the filtering is manual work that this "
+        "conversion leaves to you."
     )
     plain_reason = (
-        f"The filtering that decides which rows this takes -- {named} -- comes from your "
-        'script, copied word for word and left alone. It does not mean "only what is new '
-        'since last time". It means the same thing every time. So each run goes back over '
-        "the whole of that table again, however much has piled up. A row that does not "
-        "match is taken by no run at all, however late it turns up. If the filtering "
-        "compares a date, a row arriving afterwards with an earlier date on it never gets "
-        "in. Narrowing the filtering so that it asks only for what is new is something "
-        "someone has to do by hand."
+        f"The filter that decides which rows this table takes comes from your script: "
+        f"{named}. This tool copied the filter word for word and did not change it. The "
+        'filter does not mean "only what is new since last time". The filter means the '
+        "same thing every time. So each run reads the whole of that table again, however "
+        "large the table grows. A row that does not match is taken by no run at all, however "
+        "late it arrives. If the filter compares a date, a row that arrives later with an "
+        "earlier date never enters this table. Someone has to narrow the filter by hand "
+        "so that it asks only for what is new."
     )
     return [
         _decision(
@@ -737,16 +751,16 @@ def _source_entries(
                     "source_written_here",
                     f"{source_name}.{table}",
                     f"{source_name}.{table} is read here and not declared as a source",
-                    f"this script writes {source_name}.{table} ({writer}), so it is not a "
-                    "raw table read from somewhere else -- but the statement that writes "
-                    "it is not one this conversion built, so there is no model to point "
-                    "at either. The reference is left as written",
+                    f"this script writes {source_name}.{table} ({writer}), so the table is "
+                    "not a raw table that the script reads from somewhere else. But this "
+                    "conversion did not build the statement that writes the table, so "
+                    "there is also no model to point at. The reference stays as written",
                     plain_reason=(
-                        f"Your script both writes {table} and reads it back. The part "
-                        "that writes it is not something this conversion could turn into "
-                        "a model, so there is nothing here to point the reading at -- and "
-                        "calling it a raw table from somewhere else would be wrong, "
-                        "because it is yours."
+                        f"Your script writes {table} and also reads {table} after that. "
+                        f"This conversion could not turn the part that writes {table} into "
+                        "a model. So this conversion has nothing to point the read at. To "
+                        f"call {table} a raw table from somewhere else would also be wrong, "
+                        f"because {table} is yours."
                     ),
                     tier=2,
                 )
@@ -759,8 +773,8 @@ def _source_entries(
                     "source_dedup",
                     f"{source_name}.{table}",
                     f"{source_name}.{table} already declared as a source",
-                    f"already declared as a source in {already_declared.declared_in}; "
-                    "skipped to avoid duplicating it",
+                    f"{already_declared.declared_in} already declares this table as a "
+                    "source. This conversion skipped it to avoid a duplicate declaration",
                 )
             )
             continue
@@ -772,8 +786,8 @@ def _source_entries(
                 "source_unqualified",
                 name,
                 f"{name} is read but not schema-qualified",
-                f"{name} can't be declared as a source without a schema; inventing "
-                "one would be a fabrication, so it stays as written until Tier 2 "
+                f"a source declaration needs a schema, and {name} has none. To invent a "
+                f"schema would be a fabrication. So {name} stays as written until Tier 2 "
                 "resolves it",
             )
         )
@@ -820,9 +834,9 @@ def _topological(models: list[AssembledModel]) -> tuple[list[AssembledModel], li
                 _decision(
                     "cycle",
                     ",".join(remainder),
-                    f"dependency cycle among {', '.join(remainder)}; kept in alphabetical order",
-                    "a cycle among these models prevents a topological order; "
-                    "falling back to alphabetical order instead of failing",
+                    f"dependency cycle among {', '.join(remainder)}: kept in alphabetical order",
+                    "a cycle among these models prevents a topological order. This "
+                    "conversion uses alphabetical order instead of failing",
                 )
             )
         ordered_names.extend(remainder)
@@ -912,7 +926,8 @@ def _upgrade_to_merge(
     this very question. Which of the two inputs asked for it is the one
     thing that does differ, and it is named: a report that credited
     `--unique-key` for a merge nobody passed a flag for would describe a
-    run that never happened. `caveat` is appended to `reason` verbatim --
+    run that never happened. `caveat` is one sentence (or empty), added to
+    `reason` verbatim --
     callers own its exact wording, so this function never has to guess (and
     can never fabricate) what's actually true of the model's body
     (FINDING 6).
@@ -954,12 +969,12 @@ def _upgrade_to_merge(
         # them, so naming it from the key it was given would report a
         # question the user was never asked.
         because = (
-            f"this question was answered {answered.option.label!r}, naming "
+            f"the answer to this question was {answered.option.label!r}, which names "
             f"{_keys_str(keys)} as that key"
         )
     else:
         by = "--unique-key"
-        because = "--unique-key was supplied on the command line"
+        because = "the command line supplied --unique-key"
     if declared_test:
         # Only an option naming a single key declares a test -- an answer
         # resolving one to more than one key is refused by
@@ -972,11 +987,20 @@ def _upgrade_to_merge(
         chosen_option = checked[0]
         also = f", which also declares dbt's {declared_test} test on {keys[0]}"
         check_note = (
-            f"; the answer asks dbt to check that key too, so a {declared_test} test on "
-            f"{keys[0]} is declared beside this model"
+            f"The answer asks dbt to check that key too, so this conversion declares a "
+            f"{declared_test} test on {keys[0]} beside this model"
         )
     else:
         chosen_option, also, check_note = merge_answer, "", ""
+    # One sentence for each fact. `caveat` is a whole sentence or empty, and
+    # so is `check_note`, so the joined reason never needs a semicolon.
+    sentences = [
+        because,
+        "An append incremental re-inserts everything the model selects on every run",
+        "So this conversion switched this model to a merge on the given key instead",
+        caveat,
+        check_note,
+    ]
     return dataclasses.replace(
         dec,
         action=(
@@ -984,11 +1008,7 @@ def _upgrade_to_merge(
             f"(incremental_strategy='merge', unique_key={list(keys)!r}) — upgraded "
             f"from append by {by}{also}"
         ),
-        reason=(
-            f"{because}; an append incremental re-inserts everything the model "
-            "selects on every run, so this model was switched to a merge on the "
-            "given key instead" + caveat + check_note
-        ),
+        reason=". ".join(sentence for sentence in sentences if sentence),
         chosen=chosen_option.label,
         options=(merge_answer, append_option()) + checked,
         # The key this question now turns on. Every other field here says the
@@ -1027,10 +1047,10 @@ def _downgrade_to_append(dec: Decision, draft_name: str, keys: tuple[str, ...]) 
             "by an answer to this question"
         ),
         reason=(
-            f"this question was answered {append_answer.label!r}: {keys_str} came off "
-            "the MERGE's ON clause, and the answer rejects it as identifying a row "
-            "uniquely, so every row this model selects is appended instead of merged "
-            "on that key"
+            f"the answer to this question was {append_answer.label!r}. The key "
+            f"{keys_str} came from the ON clause of the MERGE. The answer rejects that "
+            "key as a unique identifier of a row. So this model appends every row that "
+            "it selects, and does not merge rows on that key"
         ),
         chosen=append_answer.label,
         options=(append_answer, merge_option(keys))
@@ -1061,10 +1081,11 @@ def _confirm_with_check(
             f"{test} test declared on {keys[0]}"
         ),
         reason=(
-            f"this question was answered {option.label!r}: {_keys_str(keys)} came off the "
-            "MERGE's ON clause and the answer keeps it as the unique key, and asks dbt to "
-            f"check that claim -- a {test} test on {keys[0]}, declared beside this model, "
-            "which fails once two rows share a value"
+            f"the answer to this question was {option.label!r}. The key {_keys_str(keys)} "
+            "came from the ON clause of the MERGE, and the answer keeps it as the unique "
+            "key. The answer also asks dbt to check that claim. For that check, this "
+            f"conversion declares a {test} test on {keys[0]} beside this model. The test "
+            "fails when two rows share a value"
         ),
         chosen=option.label,
     )
@@ -1121,19 +1142,19 @@ def _flag_overridden_decision(
     # who has just been told a key was not used still has to be told what the
     # table does instead.
     left = (
-        f"matching rows on {_keys_str(after.unique_key)}"
+        f"matches rows on {_keys_str(after.unique_key)}"
         if after.unique_key
-        else "adding every row it finds, every run"
+        else "adds every row that it finds, on every run"
     )
     # The answer took effect exactly when the model came out carrying the key
     # it asked for -- an empty one for "append every row", the named one for a
     # merge.
     if after.unique_key == answered.keys:
-        outcome = f"its own question was answered {taken} instead"
-        aftermath = "so it was taken and the flag was not applied here"
+        outcome = f"the answer to its own question was {taken} instead"
+        aftermath = "So this conversion took that answer and did not apply the flag here"
         plain_aftermath = (
-            f"So that answer was taken for {draft_name}, and {keys_str} was not used here. "
-            f"{draft_name} is left {left}."
+            f"So this tool took that answer for {draft_name}. This tool did not match rows "
+            f"on {keys_str} here. As a result, {draft_name} {left}."
         )
     else:
         # Spelled in dbt's own config vocabulary, the same way `_upgrade_to_merge`
@@ -1147,33 +1168,33 @@ def _flag_overridden_decision(
         else:
             left_as = f"incremental_strategy={after.incremental_strategy!r}, no unique_key"
         outcome = (
-            f"its own question was answered {taken}, and that answer was not applied "
-            f"either — the model is left as this conversion built it ({left_as})"
+            f"the answer {taken} to its own question was not applied either. The model "
+            f"is left as this conversion built it ({left_as})"
         )
         aftermath = (
-            "so the flag was dropped for this model; the answer that displaced it was "
-            "then declined on its own merits, for the reason recorded in the Decision "
-            "beside this one"
+            "So this conversion dropped the flag for this model. Then this conversion "
+            "declined the answer that displaced the flag, for a reason of its own. The "
+            "Decision beside this one records that reason"
         )
         plain_aftermath = (
-            f"So {keys_str} was not used here. The answer that displaced it was then turned "
-            "down for a reason of its own, written in the record beside this one. "
-            f"{draft_name} was left {left}."
+            f"So this tool did not match rows on {keys_str} here. Then this tool refused "
+            f"the answer that displaced {keys_str}, for a reason of its own. The record "
+            f"beside this one gives that reason. As a result, {draft_name} {left}."
         )
     return Decision(
         key=f"assemble.unique_key_overridden.{draft_name}",
         tier=2,
         action=f"--unique-key {keys_str} was not applied to {draft_name}: {outcome}",
         reason=(
-            "--unique-key answers every incremental question in this run at once, "
-            "and this model's own question was answered separately; the answer "
-            f"naming this one model is the more specific of the two, {aftermath}"
+            "--unique-key answers every incremental question in this run at once. This "
+            "model has its own question, with a separate answer. The answer that names "
+            f"this one model is the more specific of the two. {aftermath}"
         ),
         plain_reason=(
-            f"{keys_str} was asked for on the command line, which asks the same thing of "
-            f"every table in this run at once. {draft_name} was asked about on its own, and "
-            f"answered on its own. An answer about one table is the more particular of the "
-            f"two. {plain_aftermath}"
+            f"You asked for {keys_str} on the command line. That request asks the same "
+            "thing of every table in this run at once. Separately, this tool asked about "
+            f"{draft_name} on its own, and you answered for {draft_name} on its own. An "
+            f"answer about one table is the more particular of the two. {plain_aftermath}"
         ),
         source_file="",
         line_start=0,
@@ -1273,8 +1294,8 @@ def _apply_unique_key(
 
             if known is None:
                 caveat = (
-                    " (this model's body could not be parsed to confirm its output "
-                    "columns, so this could not be verified)"
+                    "This conversion could not parse the body of this model to confirm "
+                    "its output columns, so this conversion could not verify the key"
                 )
             else:
                 # An unnamed projection can never match a key, so this one
@@ -1300,18 +1321,20 @@ def _apply_unique_key(
                                 f"{draft_name}: it does not select {absent}"
                             ),
                             reason=(
-                                "a merge's unique_key must be one of the model's own "
-                                "output columns; forcing this key onto a model that "
-                                "doesn't select it would fail at dbt run time, so it "
-                                "was left as an append incremental instead"
+                                "the unique_key of a merge must be one of the output "
+                                "columns of the model. To force this key onto a model "
+                                "that does not select it would fail at dbt run time. So "
+                                "this conversion left the model as an append incremental "
+                                "instead"
                             ),
                             plain_reason=(
-                                f"{draft_name} does not select {absent}, so nothing was set "
-                                "up to match rows on it. Matching a new row against one "
-                                "already in the table needs a column the model itself gives "
-                                f"back. {draft_name} goes on adding every row it finds, every "
-                                "run, which is what naming a column was meant to stop. Name a "
-                                "column this model does select, or change the query so that "
+                                f"The table {draft_name} does not select {absent}, so this "
+                                f"tool did not set {draft_name} to match rows on {absent}. To "
+                                "match a new row against a row already in the table, the "
+                                "model itself must return that column. So "
+                                f"{draft_name} still adds every row that it finds, on every "
+                                "run. Naming a column was meant to stop that. Name a column "
+                                "that this model does select, or change the query so that "
                                 f"it selects {absent}."
                             ),
                             source_file="",
@@ -1340,27 +1363,27 @@ def _apply_unique_key(
                                 "ambiguous, not confirmed"
                             ),
                             reason=(
-                                "a quoted output column is case-sensitive, so whether "
-                                "it's really the same column as the unquoted key "
-                                "value asked for can't be told from the SQL text "
-                                "alone -- the same ambiguous/same/different tri-state "
-                                "naming.compare_targets uses for cross-statement "
-                                "target identity; left as an append incremental "
-                                "rather than guessing either way"
+                                "a quoted output column is case-sensitive. The SQL text "
+                                "alone cannot tell whether that column is really the same "
+                                "column as the unquoted key value in the request. This "
+                                "case is the same ambiguous/same/different tri-state that "
+                                "naming.compare_targets uses for cross-statement target "
+                                "identity. So this conversion left the model as an append "
+                                "incremental, rather than guessing either way"
                             ),
                             plain_reason=(
-                                f"The column named was {asked}, written without quote marks. "
-                                f"{draft_name} selects "
-                                f"{written} instead, with quote marks around it, and quote "
-                                "marks make the capital and small letters part of a column's "
-                                "name. There is nothing in the text of the query that settles "
-                                "whether those are one column spelled two ways or two "
-                                "different columns. Guessing wrong would match rows on the "
-                                f"wrong column, so nothing was set up to match on {asked} at "
-                                f"all. {draft_name} goes on adding every row it finds, every "
-                                "run. Ask for it with the same capital and small letters the "
-                                "query uses, or take the quote marks off that column in the "
-                                "query."
+                                f"The column named was {asked}, without quote marks. The "
+                                f"table {draft_name} selects {written} instead, with quote "
+                                "marks around it. Quote marks make the capital and small "
+                                "letters part of the name of a column. Nothing in the text "
+                                "of the query tells whether those are one column with two "
+                                "spellings or two different columns. A wrong guess would "
+                                "match rows on the wrong column. So this tool did not set "
+                                f"{draft_name} to match rows on {asked} at all. As a result, "
+                                f"{draft_name} still adds every row that it finds, on every "
+                                "run. Ask for the column with the same capital and small "
+                                "letters that the query uses. Or remove the quote marks "
+                                "from that column in the query."
                             ),
                             source_file="",
                             line_start=0,
@@ -1372,8 +1395,8 @@ def _apply_unique_key(
 
                 if has_star and not all_matched:
                     caveat = (
-                        f" (this model selects *, so whether it actually projects "
-                        f"{model_keys_str} could not be verified)"
+                        "This model selects *, so this conversion could not verify "
+                        f"whether the model actually projects {model_keys_str}"
                     )
                 else:
                     caveat = ""
@@ -1433,10 +1456,11 @@ def _apply_unique_key(
                         # bug rather than a usage error when it is reached.
                         if len(answered.keys) != 1:
                             raise MulticolumnCheckedAnswerError(
-                                f"{model.name} took a checked answer naming "
-                                f"{_keys_str(answered.keys)}; dbt's unique test checks one "
-                                "column, and _incremental_answers refuses more than one "
-                                "before applying anything, so reaching here is a dbtw bug."
+                                f"{model.name} took a checked answer that names "
+                                f"{_keys_str(answered.keys)}. The unique test of dbt checks "
+                                "one column. The function _incremental_answers refuses more "
+                                "than one column before it applies anything. So this error "
+                                "is a dbtw bug."
                             )
                         index = _find_incremental_decision_index(
                             decisions, model.source_indices, merge_option(model.unique_key).label
@@ -1474,25 +1498,26 @@ def _apply_unique_key(
                         tier=2,
                         action=(
                             f"{draft_name} kept its script-derived unique_key "
-                            f"({_keys_str(model.unique_key)}); --unique-key {keys_str} "
+                            f"({_keys_str(model.unique_key)}). --unique-key {keys_str} "
                             "was not applied"
                         ),
                         reason=(
-                            "this model's own MERGE ON clause is stronger evidence of "
+                            "the MERGE ON clause of this model is stronger evidence of "
                             "its true unique key than a blanket --unique-key flag on "
-                            "the command line, so the script-derived key was kept "
-                            "instead of the flag's"
+                            "the command line. So this conversion kept the "
+                            "script-derived key instead of the key from the flag"
                         ),
                         plain_reason=(
-                            "The statement this model came from already names the column "
-                            f"{draft_name} matches rows on, which is "
-                            f"{_keys_str(model.unique_key)}. {keys_str} was asked for on the "
-                            "command line, which asks the same thing of every table in this "
-                            "run at once. A column the statement itself names is evidence "
-                            f"about this one table in particular. So {draft_name} goes on "
-                            f"matching rows on {_keys_str(model.unique_key)}. {keys_str} was "
-                            "not used here. To change that, change the statement in your "
-                            "script."
+                            "The statement that this model came from already names the "
+                            f"column that {draft_name} matches rows on: "
+                            f"{_keys_str(model.unique_key)}. You asked for {keys_str} on "
+                            "the command line. That request asks the same thing of every "
+                            "table in this run at once. A column that the statement itself "
+                            "names is evidence about this one table in particular. So "
+                            f"{draft_name} still matches rows on "
+                            f"{_keys_str(model.unique_key)}. This tool did not match rows "
+                            f"on {keys_str} here. To change that, change the statement in "
+                            "your script."
                         ),
                         source_file="",
                         line_start=0,
@@ -1538,16 +1563,16 @@ def _apply_unique_key(
                 ),
                 reason=(
                     "no model converted from this SQL has an append or merge "
-                    "incremental strategy, so there was nothing for --unique-key to "
-                    "apply to -- check for a typo in the flag or in the input SQL"
+                    "incremental strategy, so --unique-key had nothing to apply to. "
+                    "Check for a typo in the flag or in the input SQL"
                 ),
                 plain_reason=(
-                    "Nothing this conversion built is brought up to date by adding to what "
-                    f"is already in it, so there was nothing for {keys_str} to be used on. "
-                    "Matching rows on a column is only a choice for a table that is added "
-                    "to; every table here is worked out again from nothing each time. "
-                    "Check the spelling of what was typed, and check that the script really "
-                    "does add rows to a table that is already there."
+                    "No table that this conversion built gets new rows added to the rows "
+                    f"already in it. So this tool applied {keys_str} to no table. Matching rows on "
+                    "a column is a choice only for a table that gets rows added. Each time, "
+                    "every table here is worked out again from nothing. Check the spelling "
+                    "of what you typed. Also check that the script really adds rows to a "
+                    "table that is already there."
                 ),
                 source_file="",
                 line_start=0,
@@ -1639,9 +1664,9 @@ def _incremental_answers(
             # with the prompt naming what is missing, which is the more useful
             # of the two messages for a caller who supplied nothing.
             raise UnknownAnswerError(
-                f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}; that "
+                f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}. That "
                 f"option declares dbt's {chosen_option.declares_test} test, which checks "
-                "one column, so it can only be answered with one column"
+                "one column. So an answer to that option can name only one column"
             )
         answered_keys[model.name] = _AnsweredKey(option=chosen_option, keys=keys)
     return answered_keys, questions
@@ -1818,20 +1843,20 @@ CHOOSABLE = ("view", "table", "ephemeral")
 # they are explained beside the choice rather than looked up.
 MATERIALIZATION_PLAIN: Mapping[str, str] = {
     "view": (
-        "Nothing is stored. The query runs every time something reads the model, "
-        "so it is always current and costs nothing until then."
+        "Nothing is stored. The query runs every time something reads the model. "
+        "So the model is always current, and it costs nothing until something reads it."
     ),
     # Not "when dbt runs": `terms_in` matches substrings, and that phrase
     # would put `dbt run`'s definition on the describe screen for a sentence
     # that is not about the command.
     "table": (
         "The rows are worked out once, each time the project is built, and "
-        "kept. Fast to read, and only as fresh as the last build."
+        "kept. The table is fast to read, and only as fresh as the last build."
     ),
     "ephemeral": (
-        "Nothing is built at all. dbt pastes this model's query into whatever "
-        "reads it, so a step that only exists to feed the next one never becomes "
-        "a table in the warehouse."
+        "Nothing is built at all. dbt pastes the query of this model into each "
+        "query that reads it. So a step that exists only to feed the next step "
+        "never becomes a table in the warehouse."
     ),
 }
 
@@ -1873,14 +1898,16 @@ def _materialized(
         raise UnknownModelError(
             f"{_keys_str(tuple(unknown))} named in materializations, and this conversion "
             f"builds {_keys_str(tuple(sorted(by_name))) or 'no models'}. A materialization "
-            "is chosen for a model the walk showed; one naming another is a caller bug"
+            "is for a model that the walk showed. A materialization that names another "
+            "model is a caller bug"
         )
     wrong = sorted({value for value in asked.values() if value not in CHOOSABLE})
     if wrong:
         raise UnsupportedMaterializationError(
-            f"{_keys_str(tuple(wrong))} is not a materialization this walk offers "
-            f"({_keys_str(CHOOSABLE)}). Whether a model is incremental is settled by the "
-            "question this walk asks about it, which carries a strategy and a key with it"
+            f"{_keys_str(tuple(wrong))} is not a materialization that this walk offers "
+            f"({_keys_str(CHOOSABLE)}). The question that this walk asks about a model "
+            "decides whether the model is incremental. That question carries a strategy "
+            "and a key"
         )
 
     decisions: list[Decision] = []
@@ -1903,15 +1930,16 @@ def _materialized(
                     model.name,
                     f"{model.name} is materialized as {chosen}, so its incremental "
                     "config was dropped",
-                    f"dbt reads incremental_strategy and unique_key only for an "
-                    f"incremental model; {model.name} was "
-                    f"{model.incremental_strategy or 'incremental'} and is now {chosen}, "
-                    "so both were removed rather than written where dbt would ignore them",
+                    "dbt reads incremental_strategy and unique_key only for an "
+                    f"incremental model. The model {model.name} was "
+                    f"{model.incremental_strategy or 'incremental'} and is now {chosen}. "
+                    "So this conversion removed both, rather than write them where dbt "
+                    "would ignore them",
                     plain_reason=(
-                        "You asked for this one to be rebuilt as a "
-                        f"{chosen}. The settings about adding rows to what is already "
-                        "there only mean something when it adds rather than rebuilds, "
-                        "so they have gone."
+                        f"You asked to rebuild this model as {chosen}. The settings about "
+                        "adding rows to the rows already there mean something only when "
+                        "the model adds rows and does not rebuild. So this tool removed "
+                        "those settings."
                     ),
                 )
             )
@@ -1939,8 +1967,8 @@ def _tagged(
     if unknown:
         raise UnknownModelError(
             f"{_keys_str(tuple(unknown))} named in tags, and this conversion builds "
-            f"{_keys_str(tuple(sorted(by_name))) or 'no models'}. A tag is put on a model "
-            "the walk showed; one naming another is a caller bug"
+            f"{_keys_str(tuple(sorted(by_name))) or 'no models'}. A tag goes on a model "
+            "that the walk showed. A tag that names another model is a caller bug"
         )
     return tuple(
         dataclasses.replace(model, tags=clean_tags(asked.get(model.name, ()))) for model in models
@@ -1993,8 +2021,9 @@ def _model_descriptions(
     if unknown:
         raise UnknownModelError(
             f"{_keys_str(tuple(unknown))} named in descriptions, and this conversion "
-            f"builds {_keys_str(tuple(sorted(by_name))) or 'no models'}. A description is written "
-            "against a model the walk showed; one naming another is a caller bug"
+            f"builds {_keys_str(tuple(sorted(by_name))) or 'no models'}. A description is for "
+            "a model that the walk showed. A description that names another model is a "
+            "caller bug"
         )
     described = tuple(
         ModelDescription(model=model.name, text=written[model.name].strip())
@@ -2133,7 +2162,7 @@ def assemble(
                     "collision",
                     draft.name,
                     f"{final_name} already exists in the target project at {existing.path}",
-                    "a model with this final name is already present in the target project",
+                    "the target project already has a model with this final name",
                 )
             )
 
@@ -2146,11 +2175,11 @@ def assemble(
                 _decision(
                     "path",
                     draft.name,
-                    f"placed {final_name} at {path} — no layer resolved for it",
-                    f"the target project has no layers at all, so there is nowhere to "
-                    f"place {final_name}; fell back to the first configured model-path, "
-                    f"and AssembledModel.layer records the role ({role}) since there is "
-                    f"no real layer name to record",
+                    f"placed {final_name} at {path}: no layer resolved for it",
+                    "the target project has no layers at all, so no layer can hold "
+                    f"{final_name}. This conversion used the first configured model-path "
+                    f"instead. AssembledModel.layer records the role ({role}), because "
+                    "there is no real layer name to record",
                 )
             )
 
@@ -2166,8 +2195,8 @@ def assemble(
                     draft.name,
                     f"materialized config omitted for {final_name} "
                     f"(matches the {layer.name} layer default of {layer.materialization!r})",
-                    "materialization matches the layer's detected default; "
-                    "config omitted so the project default takes over",
+                    "the materialization matches the detected default of the layer. This "
+                    "conversion omitted the config so that the project default applies",
                 )
             )
         else:
@@ -2241,10 +2270,10 @@ def assemble(
                 _decision(
                     "collision",
                     draft.name,
-                    f"{draft.name} and {kept.name} {resolves} — kept {kept.name}",
-                    "a dbt model is one file, and on a case-insensitive filesystem two "
-                    "names differing only in case are one file too — only one definition "
-                    "can survive; resolve this collision in the source SQL",
+                    f"{draft.name} and {kept.name} {resolves}: kept {kept.name}",
+                    "a dbt model is one file. On a case-insensitive filesystem, two names "
+                    "that differ only in case are also one file. So only one definition "
+                    "can survive. Resolve this collision in the source SQL",
                 )
             )
 
@@ -2439,12 +2468,12 @@ def assemble(
                     key=f"assemble.variable.{variable.name}",
                     tier=2,
                     action=(
-                        f"{variable.name} already declared as a var in the target project; "
+                        f"{variable.name} already declared as a var in the target project: "
                         "its reference was rewritten to var(), not re-declared"
                     ),
                     reason=(
-                        f"{variable.name} is already declared in the target project's vars; "
-                        "declaring it again would duplicate it"
+                        f"the vars of the target project already declare {variable.name}, "
+                        "and a second declaration would duplicate it"
                     ),
                     source_file=variable.source_file,
                     line_start=variable.line_start,
@@ -2470,7 +2499,7 @@ def assemble(
                 # exactly like the keep-as-var case, honestly worded.
                 action = (
                     f"{variable.name} has no default in the source SQL, so there is no "
-                    "literal value to inline; kept as a dbt var instead"
+                    "literal value to inline. This conversion kept it as a dbt var instead"
                 )
             else:
                 action = (
@@ -2498,8 +2527,8 @@ def assemble(
             action=action,
             reason=(
                 f"{variable.name} is a script parameter with no fixed value in the "
-                "source SQL; it can be kept as a run-time dbt var or inlined as a "
-                "literal constant"
+                "source SQL. This conversion can keep it as a run-time dbt var, or "
+                "inline it as a literal constant"
             ),
             source_file=variable.source_file,
             line_start=variable.line_start,
@@ -2588,8 +2617,8 @@ def assemble(
                 tier=2,
                 action=f"rewrote {model.name}'s body: " + ", ".join(summary_parts),
                 reason=(
-                    "raw table references were mapped to this project's models and "
-                    "sources so the body runs as dbt Jinja"
+                    "this conversion mapped raw table references to the models and "
+                    "sources of this project, so the body runs as dbt Jinja"
                 ),
                 source_file="",
                 line_start=0,
@@ -2610,7 +2639,7 @@ def assemble(
                     key=f"assemble.rewrite_unresolved.{model.name}.{label}",
                     tier=2,
                     action=(
-                        f"{label} in {model.name} left as written; could not resolve it "
+                        f"{label} in {model.name} left as written: could not resolve it "
                         "to ref() or source()"
                     ),
                     reason=r.reason,
@@ -2669,33 +2698,34 @@ def assemble(
                     None,
                 )
                 accepts = (
-                    f"answerable keys: {answerable_now}"
+                    f"the answerable keys are {answerable_now}"
                     if answerable_now
                     else "this run has no answerable questions"
                 )
                 if carried is not None:
                     raise UnknownAnswerError(
-                        f"{key} is a question this conversion carries ({carried.action}), but "
-                        "the statement it describes produced no model in this change, so "
-                        f"there is nothing for an answer to it to change; {accepts}"
+                        f"{key} is a question this conversion carries ({carried.action}). "
+                        "But the statement that it describes produced no model in this "
+                        f"change, so an answer to it has nothing to change. Also, "
+                        f"{accepts}"
                     )
                 raise UnknownAnswerError(
-                    f"no question with key {key} in this conversion; {accepts}. A key is "
-                    "only valid for a run that read the same SQL at the same path -- see "
+                    f"no question with key {key} in this conversion, and {accepts}. A key is "
+                    "valid only for a run that read the same SQL at the same path. See "
                     "UnknownAnswerError"
                 )
             chosen_option = answerable[key].get(answer.label)
             if chosen_option is None:
                 offered = ", ".join(sorted(answerable[key]))
                 raise UnknownAnswerError(
-                    f"{key} does not offer {answer.label!r}; it offers {offered}"
+                    f"{key} does not offer {answer.label!r}. The question offers {offered}"
                 )
             if chosen_option.columns_prompt:
                 if not answer.columns:
                     raise UnknownAnswerError(
-                        f"{key} was answered {answer.label!r} with no columns; that "
-                        f"option needs {chosen_option.columns_prompt}, and cannot be "
-                        "applied without them"
+                        f"{key} was answered {answer.label!r} with no columns. That "
+                        f"option needs {chosen_option.columns_prompt}, and this conversion "
+                        "cannot apply it without them"
                     )
                 # The upper bound on those columns -- an option that also
                 # asks dbt to check them can only be answered with the one
@@ -2707,8 +2737,8 @@ def assemble(
             elif answer.columns:
                 raise UnknownAnswerError(
                     f"{key} was answered {answer.label!r} with columns "
-                    f"{_keys_str(answer.columns)}; that option takes no columns, so "
-                    "they would have been discarded"
+                    f"{_keys_str(answer.columns)}. That option takes no columns, so "
+                    "this conversion would discard them"
                 )
 
     return ProjectChange(

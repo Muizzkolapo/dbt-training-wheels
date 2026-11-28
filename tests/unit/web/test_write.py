@@ -188,7 +188,7 @@ def test_an_answer_in_the_browser_writes_what_the_equivalent_cli_flag_writes(
     assert len(differing) == 1, [(at, mine[at], flagged[at]) for at in differing]
     (at,) = differing
     assert "--unique-key" in flagged[at] and "--unique-key" not in mine[at]
-    assert "answered 'merge on a unique key'" in mine[at], mine[at]
+    assert "the answer to this question was 'merge on a unique key'" in mine[at], mine[at]
 
     # Not vacuous: the answered tree really is different from the unanswered
     # one, so the agreement above is two converters agreeing rather than two

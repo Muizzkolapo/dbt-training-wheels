@@ -149,7 +149,7 @@ def test_an_answer_the_assembler_refuses_is_not_recorded(project_dir: Path, sql_
     session = Session(project=project_dir, sql=sql_file, dialect=None, answers={})
     (question,) = session.questions()
 
-    with pytest.raises(UnknownAnswerError, match="only be answered with one column"):
+    with pytest.raises(UnknownAnswerError, match="can name only one column"):
         session.answer(question.key, "merge_checked", ("order_id", "amount"))
 
     assert session.answers == {}
@@ -319,7 +319,7 @@ def test_the_answers_dict_the_caller_passed_in_is_the_one_that_is_updated(
     session.answer(question.key, "merge", ("order_id",))
     assert held == {question.key: ("merge", ("order_id",))}
 
-    with pytest.raises(UnknownAnswerError, match="only be answered with one column"):
+    with pytest.raises(UnknownAnswerError, match="can name only one column"):
         session.answer(question.key, "merge_checked", ("order_id", "amount"))
     # The answer that already stood is still there, unaltered by the refusal.
     assert held == {question.key: ("merge", ("order_id",))}

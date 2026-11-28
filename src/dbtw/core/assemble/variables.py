@@ -66,12 +66,12 @@ def _spark_deferral_decision(stmt: ClassifiedStatement, index: int) -> Decision:
     return Decision(
         key=f"variables.spark_set_var_deferred.{raw.source_file}:{index}",
         tier=2,
-        action="left SET VAR/SET VARIABLE statement as written; not converted to a dbt var",
+        action="left SET VAR/SET VARIABLE statement as written: not converted to a dbt var",
         reason=(
-            "Spark/Databricks has no GETVARIABLE function; a SET VAR-declared "
-            "session variable is read back by a bare identifier, which parses "
-            "identically to a column reference — there is no safe way to tell "
-            "them apart, so this statement is left pending for a human to resolve"
+            "Spark/Databricks has no GETVARIABLE function. A query reads a SET "
+            "VAR-declared session variable with a bare identifier, and that identifier "
+            "parses identically to a column reference. No safe way exists to tell "
+            "them apart. So this statement stays pending for a human to resolve"
         ),
         source_file=raw.source_file,
         line_start=raw.line_start,

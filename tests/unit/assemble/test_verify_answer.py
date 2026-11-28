@@ -398,7 +398,7 @@ def test_a_checked_answer_on_a_star_model_merges_with_the_caveat_and_records_the
     (test,) = change.tests
     assert test == SchemaTest(model=model.name, column="order_id", test="unique")
     dec = _question_for(change, "revenue_events")
-    assert "could not be verified" in dec.reason
+    assert "could not verify" in dec.reason
     assert dec.chosen == verify_option(("order_id",)).label
 
 
