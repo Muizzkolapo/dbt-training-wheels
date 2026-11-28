@@ -40,9 +40,11 @@ def test_case_end_does_not_eat_a_real_split():
 
 
 def test_line_numbers_are_one_based_and_span_the_statement():
+    # The comment on line 3 belongs to the second statement's text. The
+    # statement itself starts on line 4, where its SQL starts.
     spans = split_sql("SELECT 1;\n\n-- note\nSELECT\n  2;\n")
     assert (spans[0].line_start, spans[0].line_end) == (1, 1)
-    assert (spans[1].line_start, spans[1].line_end) == (3, 5)
+    assert (spans[1].line_start, spans[1].line_end) == (4, 5)
 
 
 def test_empty_and_whitespace_input_yield_no_spans():
@@ -72,3 +74,23 @@ def test_nested_begin_case_end_proc_still_keeps_body_whole():
     sql = "CREATE PROCEDURE p AS BEGIN SELECT CASE WHEN 1=1 THEN 'a' END; END; SELECT 9"
     spans = split_sql(sql, dialect="tsql")
     assert len(spans) == 2
+
+
+def test_a_leading_comment_stays_in_the_text_but_the_line_is_the_first_sql_line():
+    """The demo's nightly.sql has its header comment on line 1 and the INSERT
+    on line 2. The comment stays in the text, because it becomes the leading
+    comment of the model. The line that a Decision cites is the INSERT.
+    """
+    spans = split_sql("-- nightly load\nINSERT INTO t\nSELECT 1;\n\n/* two\nlines */\nSELECT 2;")
+
+    assert spans[0].text.startswith("-- nightly load")
+    assert (spans[0].line_start, spans[0].line_end) == (2, 3)
+    assert spans[1].text.startswith("/* two")
+    assert (spans[1].line_start, spans[1].line_end) == (7, 7)
+
+
+def test_a_statement_that_is_only_a_comment_starts_on_its_first_line():
+    spans = split_sql("SELECT 1;\n\n-- trailing note\n-- and more")
+
+    assert spans[1].text == "-- trailing note\n-- and more"
+    assert (spans[1].line_start, spans[1].line_end) == (3, 4)

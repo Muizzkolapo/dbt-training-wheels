@@ -186,13 +186,21 @@ def test_totality_cases_cover_every_kind():
 
 
 # A Postgres regex match. With no dialect, sqlglot stops at the `!` of `!~`.
-# The statement starts on line 30 of its file, and the `!` is on its third
-# line, so the reader must look at line 32 of the file.
+# The comment of the statement is on line 30 of its file, and its SQL starts
+# on line 31. The `!` is on the third line of the text, so the reader must
+# look at line 32 of the file.
 _POSTGRES_ONLY = "-- users by name\nSELECT name\nFROM users WHERE name !~ '^x' AND id NOT IN (1, 2)"
 
 
 def _unparseable(text: str = _POSTGRES_ONLY, dialect: str | None = None) -> str:
-    raw = RawStatement(source_file="t.sql", index=3, text=text, line_start=30, line_end=32)
+    first_sql_line = 31 if text.startswith("--") else 30
+    raw = RawStatement(
+        source_file="t.sql",
+        index=3,
+        text=text,
+        line_start=first_sql_line,
+        line_end=30 + text.count("\n"),
+    )
     stmt = classify(raw, dialect)
     assert stmt.kind == "unsupported"
     return stmt.reason
@@ -314,3 +322,23 @@ def test_an_unparseable_reason_follows_the_structural_rules_of_ste(text, dialect
     from tests.unit.test_ste_wording import findings
 
     assert findings(_unparseable(text, dialect)) == []
+
+
+def test_an_unparseable_statement_after_a_comment_names_its_line_in_the_file(tmp_path):
+    """The splitter cites the first SQL line of a statement, after its
+    leading comment. sqlglot counts lines from the top of the text, which
+    includes that comment. The reason must still name the line in the file.
+    """
+    from dbtw.core.ingest import classify_statements, ingest
+
+    script = tmp_path / "users.sql"
+    script.write_text(
+        "SELECT 1;\n-- users by name\n-- second note\nSELECT name\nFROM users WHERE name !~ 'x'",
+        encoding="utf-8",
+    )
+
+    stmt = classify_statements(ingest(script))[1]
+
+    assert stmt.raw.line_start == 4, "the cited line is the first SQL line"
+    assert stmt.kind == "unsupported"
+    assert "line 5" in stmt.reason, stmt.reason

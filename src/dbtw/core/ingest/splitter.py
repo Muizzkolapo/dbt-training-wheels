@@ -4,6 +4,12 @@ Tokenizer-based: semicolons inside strings never split (they are STRING
 tokens), and BEGIN/CASE...END depth tracking keeps procedure bodies whole.
 Comments occupy the raw text between statements, so slicing between
 semicolon offsets attaches leading comments to the following statement.
+
+A span's text keeps those leading comments, because they become the leading
+comments of the model. Its `line_start` is the line of its first SQL token,
+because that is the line a reader looks for: a Decision that cites the
+comment above an INSERT points at the wrong line. The line of the first
+character of the text is `line_end - text.count("\n")`.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ _BEGIN_TRANSACTION_WORDS = frozenset({"TRANSACTION", "TRAN", "WORK"})
 @dataclass(frozen=True, slots=True)
 class Span:
     text: str
-    line_start: int  # 1-based, inclusive
+    line_start: int  # 1-based: the first SQL line, after any leading comment
     line_end: int  # 1-based, inclusive
 
 
@@ -35,7 +41,12 @@ def split_sql(text: str, dialect: str | None = None) -> list[Span]:
     spans: list[Span] = []
     depth = 0
     start = 0
+    # The offset of the first token after `start`. A comment is not a token,
+    # so this is where the SQL of the statement starts.
+    first: int | None = None
     for i, tok in enumerate(tokens):
+        if first is None and tok.token_type != TokenType.SEMICOLON:
+            first = tok.start
         if tok.token_type == TokenType.BEGIN:
             nxt = tokens[i + 1] if i + 1 < len(tokens) else None
             is_transaction_begin = (
@@ -50,17 +61,24 @@ def split_sql(text: str, dialect: str | None = None) -> list[Span]:
         elif tok.token_type == TokenType.END:
             depth = max(0, depth - 1)
         elif tok.token_type == TokenType.SEMICOLON and depth == 0:
-            span = _span_between(text, start, tok.start)
+            span = _span_between(text, start, tok.start, first)
             if span:
                 spans.append(span)
             start = tok.end + 1
-    tail = _span_between(text, start, len(text))
+            first = None
+    tail = _span_between(text, start, len(text), first)
     if tail:
         spans.append(tail)
     return spans
 
 
-def _span_between(text: str, begin: int, end: int) -> Span | None:
+def _span_between(text: str, begin: int, end: int, first: int | None = None) -> Span | None:
+    """The statement in `text[begin:end]`, or None when it is only whitespace.
+
+    `first` is the offset of its first SQL token. It is None when the piece
+    has no token: a piece that is only a comment, or input that could not be
+    tokenized. Then the statement starts where its text starts.
+    """
     piece = text[begin:end]
     stripped = piece.strip()
     if not stripped:
@@ -68,8 +86,9 @@ def _span_between(text: str, begin: int, end: int) -> Span | None:
     lead = len(piece) - len(piece.lstrip())
     abs_start = begin + lead
     abs_end = abs_start + len(stripped)  # exclusive
+    sql_start = abs_start if first is None else first
     return Span(
         text=stripped,
-        line_start=text.count("\n", 0, abs_start) + 1,
+        line_start=text.count("\n", 0, sql_start) + 1,
         line_end=text.count("\n", 0, abs_end - 1) + 1,
     )

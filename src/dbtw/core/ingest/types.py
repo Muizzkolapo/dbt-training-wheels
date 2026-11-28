@@ -34,7 +34,7 @@ class RawStatement:
     source_file: str  # path as passed to ingest(), normalized by Path(); OS-native separators
     index: int  # 0-based position within its file
     text: str  # original text, stripped of surrounding whitespace, no trailing ;
-    line_start: int  # 1-based, inclusive
+    line_start: int  # 1-based: the first SQL line, after any leading comment
     line_end: int  # 1-based, inclusive
 
 
