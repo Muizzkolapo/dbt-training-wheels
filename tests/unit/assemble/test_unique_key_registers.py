@@ -33,6 +33,11 @@ from tests.unit.register_claims import Claim, names, scoped_clauses
 from dbtw.core.passes.types import Answer
 
 ONE_APPEND = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+# `amount * 2` has no output name, so the SQL text does not give every column
+# of this model. A typed key that matches no named column is accepted here and
+# declined with a Decision. Where every column is knowable, `assemble` refuses
+# such a key instead -- see test_decisions_follow_the_answers.py.
+UNNAMED_APPEND = "INSERT INTO revenue_events SELECT order_id, amount * 2 FROM stg_orders;\n"
 TWO_APPENDS = ONE_APPEND + "INSERT INTO page_views SELECT order_id, ts FROM stg_views;\n"
 ONE_MERGE = (
     "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
@@ -56,8 +61,10 @@ def _decision(change, key: str):
 
 
 def _not_selected():
-    key = _question(convert(ONE_APPEND), "revenue_events").key
-    change = convert(ONE_APPEND, answers={key: Answer("merge on a unique key", ("customer_id",))})
+    key = _question(convert(UNNAMED_APPEND), "revenue_events").key
+    change = convert(
+        UNNAMED_APPEND, answers={key: Answer("merge on a unique key", ("customer_id",))}
+    )
     return (
         change,
         _decision(change, "assemble.unique_key_not_selected.revenue_events"),
@@ -88,9 +95,9 @@ def _overridden_taken():
 def _overridden_declined():
     """The flag displaced by an answer the body check then declined, so
     neither input reached the model."""
-    key = _question(convert(ONE_APPEND), "revenue_events").key
+    key = _question(convert(UNNAMED_APPEND), "revenue_events").key
     change = convert(
-        ONE_APPEND,
+        UNNAMED_APPEND,
         unique_key=("order_id",),
         answers={key: Answer("merge on a unique key", ("customer_id",))},
     )

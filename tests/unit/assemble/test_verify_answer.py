@@ -23,6 +23,11 @@ from dbtw.core.passes.types import (
 )
 
 APPEND_SQL = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+# `amount * 2` has no output name, so the SQL text does not give every column
+# of this model. A typed key that matches no named column is accepted here and
+# declined with a Decision. Where every column is knowable, `assemble` refuses
+# such a key instead -- see test_decisions_follow_the_answers.py.
+UNNAMED_SQL = "INSERT INTO revenue_events SELECT order_id, amount * 2 FROM stg_orders;\n"
 MERGE_SQL = (
     "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
     "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
@@ -250,10 +255,12 @@ def test_a_checked_answer_naming_a_column_the_model_does_not_select_records_no_t
     """The body check declines a key the model never projects, whoever asked
     for it. A test recorded anyway would declare a dbt check on a column the
     model does not have -- and would claim a check beside a model that was
-    left an append, which is not what the report says happened."""
-    change = convert(
-        APPEND_SQL, answers=answers_for_append(Answer(verify_option().label, ("customer_id",)))
-    )
+    left an append, which is not what the report says happened.
+
+    Only where the columns are not all knowable. Where they are, the answer
+    is refused before anything is applied, so no test is recorded either."""
+    key = _key_for(UNNAMED_SQL, "revenue_events")
+    change = convert(UNNAMED_SQL, answers={key: Answer(verify_option().label, ("customer_id",))})
     (model,) = change.models
     assert (model.incremental_strategy, model.unique_key) == ("append", ())
     assert change.tests == ()

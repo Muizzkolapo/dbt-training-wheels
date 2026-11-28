@@ -27,6 +27,8 @@ from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry,
 from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ModelInfo, ProjectContext
 from dbtw.core.naming import is_qualified, qualified_name, same_identifier
+from dbtw.core.passes import tier1, tier2
+from dbtw.core.passes.tier2 import MERGE_CAVEATS
 from dbtw.core.passes.types import (
     Answer,
     Decision,
@@ -321,7 +323,25 @@ def _layer_choice(
         # written twice, and the second copy is free to word it differently
         # from the one every other answer gets.
         return derived, decision
-    return taken.kind, dataclasses.replace(decision, chosen=taken.label)
+    if taken.kind == derived:
+        return taken.kind, dataclasses.replace(decision, chosen=taken.label)
+    # The answer moved the model, so the Decision says where the model is
+    # now. The graph reading stays in the reason, because it is still the
+    # proposal that the question offered, and the reason says that the answer
+    # replaced it.
+    return taken.kind, dataclasses.replace(
+        decision,
+        action=f"placed {name} in the {taken.kind} layer, by the answer to this question",
+        reason=(
+            f"{decision.reason}. This reading proposed the {derived} layer for {name}. The "
+            f"answer to this question chose the {taken.kind} layer instead"
+        ),
+        plain_reason=(
+            f"{decision.plain_reason} This tool first proposed a different place. Your "
+            "answer chose this place instead."
+        ),
+        chosen=taken.label,
+    )
 
 
 def _final_name(
@@ -1587,7 +1607,8 @@ def _incremental_answers(
     models: list[AssembledModel],
     decisions: tuple[Decision, ...],
     answers: Mapping[str, Answer],
-) -> tuple[dict[str, _AnsweredKey], list[Decision]]:
+    dialect: str | None,
+) -> tuple[dict[str, _AnsweredKey], list[Decision], dict[str, str]]:
     """Pair each incremental model with the tier-2 question that produced it,
     and read this run's answer to that question.
 
@@ -1603,13 +1624,20 @@ def _incremental_answers(
     into the two failure modes that matter: a legitimate answer refused, or
     an answer accepted for a question nothing acts on.
 
+    The third value maps each final model name to the key of its own
+    question. `_follow_final_models` reads it to find the question again once
+    the model is final.
+
     This is also where an answer is refused for asking a checked option to
     check more than the one column dbt's built-in test can check. That
     refusal cannot wait for assemble()'s validation gate, which runs once the
-    answers collected here have already been applied.
+    answers collected here have already been applied. A typed column that the
+    model does not select is refused here too, for the same reason -- see
+    `_refuse_unselected_key`.
     """
     answered_keys: dict[str, _AnsweredKey] = {}
     questions: list[Decision] = []
+    question_keys: dict[str, str] = {}
     append_label = append_option().label
     for model in models:
         if model.incremental_strategy == "append":
@@ -1625,6 +1653,7 @@ def _incremental_answers(
         if not dec.question or not dec.options:
             continue
         questions.append(dec)
+        question_keys[model.name] = dec.key
 
         answer = answers.get(dec.key)
         chosen_option = (
@@ -1668,8 +1697,54 @@ def _incremental_answers(
                 f"option declares dbt's {chosen_option.declares_test} test, which checks "
                 "one column. So an answer to that option can name only one column"
             )
+        if chosen_option.columns_prompt:
+            _refuse_unselected_key(dec, model, answer, keys, dialect)
         answered_keys[model.name] = _AnsweredKey(option=chosen_option, keys=keys)
-    return answered_keys, questions
+    return answered_keys, questions, question_keys
+
+
+def _refuse_unselected_key(
+    dec: Decision,
+    model: AssembledModel,
+    answer: Answer,
+    keys: tuple[str, ...],
+    dialect: str | None,
+) -> None:
+    """Refuse a typed key column that the model does not select, where the
+    columns of the model are all knowable.
+
+    The columns are all knowable when the body parses and has no star and no
+    unnamed projection. That is the same rule that fills `Subject.candidates`
+    (`tier2._projected_columns`), so the refusal and the column picker agree.
+    Then a missing column is a fact, and the answer is a mistake that the
+    reader can correct. Accepting it and leaving the model an append put
+    "append every row" on the screen as the reader's choice, which it was not.
+
+    Where the columns are not all knowable, the answer is accepted, and
+    `_apply_unique_key` declines the key with a Decision that gives the
+    reason. A star can select the column, so a refusal there would refuse a
+    key that can be correct. A quoted output column that differs only in case
+    is not a missing column either. `_apply_unique_key` records that case as
+    ambiguous.
+    """
+    known = known_projections(model.body, dialect)
+    if known is None:
+        return
+    projections, has_star, has_unnamed = known
+    if has_star or has_unnamed or not keys:
+        return
+    missing = [key for key in keys if _key_status(key, projections)[0] == "missing"]
+    if not missing:
+        return
+    table = dec.subject.table if dec.subject is not None else model.name
+    # Once each, in the order of the SELECT: `SELECT order_id, amount AS
+    # order_id` has two projections and one name to answer with.
+    selected = _keys_str(tuple(dict.fromkeys(name for name, _ in projections)))
+    raise UnknownAnswerError(
+        f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}. The model "
+        f"{table} does not select {_keys_str(tuple(missing))}. The columns that {table} "
+        f"selects are {selected}. Answer with columns from that list"
+    )
 
 
 class UnknownAnswerError(ValueError):
@@ -1946,6 +2021,259 @@ def _materialized(
     return tuple(placed), decisions
 
 
+# The assemble Decisions whose premise is that the model is incremental, by
+# the kind in their key (`assemble.<kind>.<draft name>`). Each one says what
+# an incremental model does with its filter or its unique key. None of that
+# is true of a model that the reader built as a view, a table or ephemeral.
+_INCREMENTAL_PREMISE = (
+    "incremental_filter",
+    "unique_key_not_selected",
+    "unique_key_ambiguous",
+    "unique_key_overridden",
+    "unique_key_ignored",
+)
+
+
+def _follow_final_models(
+    decisions: tuple[Decision, ...],
+    before: Sequence[AssembledModel],
+    final: Sequence[AssembledModel],
+    question_keys: Mapping[str, str],
+    final_to_draft_name: Mapping[str, str],
+    drafted_materialization: Mapping[str, str],
+) -> tuple[Decision, ...]:
+    """The Decisions, each made true of the model as this run writes it.
+
+    The passes record a Decision when they draft a model, and assemble
+    records more as it places the model. Two later stages then change the
+    model: the answers to the incremental questions (`_apply_unique_key`), and
+    the reader's materializations (`_materialized`, the last stage). A
+    Decision recorded before those stages describes the model before them.
+    Without this step, a run kept a merge caveat beside a model that an answer
+    made an append. It also kept "became an incremental model" on a question
+    beside a model that the reader built as a view.
+
+    So this step runs once, on the final models, for every Decision that has
+    a premise about the model:
+
+    1. A merge caveat (`tier2.MERGE_CAVEATS`) stays only while the model
+       merges.
+    2. An assemble Decision about the filter or the key of an incremental
+       model (`_INCREMENTAL_PREMISE`) stays only while the model is
+       incremental.
+    3. The incremental question of a model that the reader built as
+       something else stays, because the reader's answer stays held. Its
+       action and reason then say that the build choice replaced it.
+    4. A tier-1 or tier-2 Decision that records the materialization of the
+       draft (`DRAFT_MATERIALIZATION_RECORDS` in each pass module) stays. If
+       the reader chose another materialization, its action, reason and
+       plain reason then say that the choice replaced the drafted one.
+
+    `before` is the models as the answers left them, in the order that
+    `final` has them: `_materialized` keeps the order.
+    """
+    removed: set[str] = set()
+    rewritten: dict[str, Decision] = {}
+    by_key = {d.key: d for d in decisions}
+    for prior, model in zip(before, final, strict=True):
+        draft_name = final_to_draft_name[model.name]
+        if model.incremental_strategy != "merge":
+            removed.update(
+                d.key
+                for d in decisions
+                if statement_index(d) in model.source_indices
+                and any(d.key.startswith(f"tier2.{name}.") for name in MERGE_CAVEATS)
+            )
+        if model.incremental_strategy is None:
+            removed.update(f"assemble.{kind}.{draft_name}" for kind in _INCREMENTAL_PREMISE)
+        key = question_keys.get(model.name)
+        if (
+            key is not None
+            and prior.incremental_strategy is not None
+            and model.incremental_strategy is None
+        ):
+            rewritten[key] = _replaced_by_build_choice(by_key[key], draft_name, prior, model)
+        drafted = drafted_materialization[model.name]
+        chosen = model.materialization
+        # A model with no choice carries the drafted materialization, or None
+        # where it matches the layer default. A choice equal to the draft
+        # changes nothing that these Decisions say.
+        if chosen is not None and chosen != drafted:
+            rewritten.update(
+                (d.key, _drafted_materialization_replaced(d, model.name, drafted, chosen))
+                for d in decisions
+                if _records_drafted_materialization(d)
+                and statement_index(d) in model.source_indices
+            )
+    return tuple(rewritten.get(d.key, d) for d in decisions if d.key not in removed)
+
+
+def _records_drafted_materialization(dec: Decision) -> bool:
+    """Whether `dec` is one of the pass Decisions that record the
+    materialization of the draft they create.
+
+    The key is compared whole, as `<tier>.<name>.<source_file>:<index>`. A
+    prefix test would also take `tier1.build.collision.<...>`, which says
+    nothing about a materialization.
+    """
+    index = statement_index(dec)
+    return any(
+        dec.key == f"{tier}.{name}.{dec.source_file}:{index}"
+        for tier, names in (
+            ("tier1", tier1.DRAFT_MATERIALIZATION_RECORDS),
+            ("tier2", tier2.DRAFT_MATERIALIZATION_RECORDS),
+        )
+        for name in names
+    )
+
+
+def _drafted_materialization_replaced(
+    dec: Decision, model_name: str, drafted: str, chosen: str
+) -> Decision:
+    """A pass Decision that recorded the drafted materialization, once the
+    reader chose another one.
+
+    The record of the draft stays, because it says what the script became.
+    Each register then says that the choice replaced it, so no sentence
+    describes the drafted materialization as the one this run writes.
+    """
+    replaced = (
+        f"The choice of how to build {model_name} replaced materialized='{drafted}' "
+        f"with materialized='{chosen}'"
+    )
+    return dataclasses.replace(
+        dec,
+        action=f"{dec.action}. {replaced}",
+        reason=(
+            f"{dec.reason.rstrip('.')}. {replaced}. So the config of {model_name} says "
+            f"materialized='{chosen}'. The text above about {drafted} describes the draft "
+            "before that choice"
+        ),
+        plain_reason=" ".join(
+            text
+            for text in (
+                dec.plain_reason,
+                f"You chose {chosen!r} as the way to build {model_name}. That choice "
+                f"replaces what this note says about how {model_name} is built.",
+            )
+            if text
+        ),
+    )
+
+
+def _replaced_by_build_choice(
+    dec: Decision, draft_name: str, prior: AssembledModel, model: AssembledModel
+) -> Decision:
+    """The incremental question of a model that the reader built as a view,
+    a table or ephemeral.
+
+    The question, its options and its chosen answer stay as they are. The
+    answer is still the reader's, and it applies again when the build choice
+    is removed. Only the record of the outcome changes, because the model on
+    disk is not incremental.
+    """
+    config = f"incremental_strategy={prior.incremental_strategy!r}"
+    if prior.unique_key:
+        config += f", unique_key={list(prior.unique_key)!r}"
+    built = model.materialization
+    return dataclasses.replace(
+        dec,
+        action=(
+            f"{draft_name} is built as {built}, by the choice of how to build {model.name}. "
+            f"That choice replaced the incremental model that this question decides ({config})"
+        ),
+        reason=(
+            f"{dec.reason.rstrip('.')}. The choice of how to build {model.name} is {built}. "
+            "dbt reads incremental_strategy and unique_key only for an incremental model. So "
+            "this conversion did not write them. The answer to this question stays recorded, "
+            "and the answer applies again if that choice is removed"
+        ),
+        plain_reason=" ".join(
+            text
+            for text in (
+                dec.plain_reason,
+                f"You chose {built!r} as the way to build {model.name}. So {model.name} does "
+                "not add rows to the rows already there. Your answer to this question stays "
+                "saved. Your answer applies again if you remove that choice.",
+            )
+            if text
+        ),
+    )
+
+
+def _ephemeral_caveats(
+    models: Sequence[AssembledModel], layers: Sequence[LayerInfo]
+) -> list[Decision]:
+    """What an ephemeral model does not do, where it applies.
+
+    dbt builds no relation for an ephemeral model. dbt pastes its query into
+    each model that reads it with ref(). Two things in a converted model then
+    do nothing, and the config alone does not say so:
+
+    1. The grants. There is no relation to grant on. The grants stay in the
+       config, so they apply again if the model is built as something else.
+    2. The model itself, when no model of this change reads it. `dbt run`
+       then creates nothing for it.
+
+    The materialization is the one the model takes: its own config, or else
+    its layer default. A model in a layer that defaults to ephemeral is
+    ephemeral too, whether or not a reader chose it.
+    """
+    defaults = {layer.name: layer.materialization for layer in layers}
+    read = {dep for model in models for dep in model.depends_on}
+    caveats: list[Decision] = []
+    for model in models:
+        if (model.materialization or defaults.get(model.layer)) != "ephemeral":
+            continue
+        if model.grants:
+            granted = " and ".join(
+                f"{privilege} to {', '.join(grantees)}" for privilege, grantees in model.grants
+            )
+            who = ", ".join(sorted({g for _, grantees in model.grants for g in grantees}))
+            caveats.append(
+                _decision(
+                    "ephemeral_grants",
+                    model.name,
+                    f"caveat: {model.name} is ephemeral, so dbt applies none of its grants "
+                    f"({granted})",
+                    "dbt builds no relation for an ephemeral model. dbt pastes the query of "
+                    "the model into each model that reads it. So there is no relation to "
+                    f"grant {granted} on, and the grants in the config do nothing. This "
+                    "conversion kept the grants in the config. They apply again if the "
+                    "model is built as a view or a table",
+                    plain_reason=(
+                        f"Nothing is built for {model.name}, so there is nothing to give "
+                        f"access to. The access that your script gave to {who} does nothing "
+                        f"while {model.name} is built this way. To give that access, build "
+                        f"{model.name} as a view or a table."
+                    ),
+                    tier=2,
+                )
+            )
+        if model.name not in read:
+            caveats.append(
+                _decision(
+                    "ephemeral_unread",
+                    model.name,
+                    f"caveat: {model.name} is ephemeral and no model in this change reads "
+                    "it, so dbt run builds nothing for it",
+                    "dbt builds no relation for an ephemeral model. dbt pastes the query of "
+                    "the model into each model that reads it with ref(). No model in this "
+                    f"change reads {model.name}. So dbt run creates nothing in the database "
+                    f"for {model.name}, until a model reads it with ref()",
+                    plain_reason=(
+                        f"Nothing is built for {model.name} on its own. Its query runs only "
+                        f"inside the queries that read {model.name}. Nothing in this "
+                        f"conversion reads {model.name}. So a run of the project makes nothing "
+                        f"for {model.name}. If people must query {model.name}, build it as a "
+                        "view or a table."
+                    ),
+                    tier=2,
+                )
+            )
+    return caveats
+
+
 def _tagged(
     asked: Mapping[str, Sequence[str]], models: Sequence[AssembledModel]
 ) -> tuple[AssembledModel, ...]:
@@ -2136,6 +2464,13 @@ def assemble(
     # different bug.
     placement_decisions: dict[int, list[Decision]] = {}
 
+    # What the reader asked each model be built as, keyed by FINAL name. Read
+    # here as well as by `_materialized` at the end, because two placement
+    # Decisions below describe the materialization the model will take: the
+    # layer options, and the omission of a config that matches the layer
+    # default. Both have to describe the model after the reader's choice.
+    asked_materializations = materializations or {}
+
     for draft_index, draft in enumerate(drafts):
         local_decisions: list[Decision] = []
         derived = role_for(draft.name, deps, dependents_frozen)
@@ -2145,15 +2480,25 @@ def assemble(
             layer_options(roles, derived, draft.materialization),
             answers_map,
         )
-        if layer_question_decision is not None:
-            local_decisions.append(layer_question_decision)
-            layer_questions.append(layer_question_decision)
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
-        local_decisions.extend(layer_decisions)
 
         final_name, name_decisions = _final_name(draft.name, layer, detections_by_key)
-        local_decisions.extend(name_decisions)
         final_names[draft.name] = final_name
+        asked = asked_materializations.get(final_name)
+
+        if layer_question_decision is not None:
+            if asked is not None:
+                # The final name is known only once the layer is, so the
+                # options are built a second time here with the reader's
+                # choice. A label does not name a materialization, so the
+                # answer that chose one of these options still matches it.
+                layer_question_decision = dataclasses.replace(
+                    layer_question_decision, options=layer_options(roles, derived, asked)
+                )
+            local_decisions.append(layer_question_decision)
+            layer_questions.append(layer_question_decision)
+        local_decisions.extend(layer_decisions)
+        local_decisions.extend(name_decisions)
 
         existing = existing_by_name.get(final_name)
         if existing is not None:
@@ -2183,8 +2528,11 @@ def assemble(
                 )
             )
 
+        # A reader's choice is written into the config whatever its value
+        # (`_materialized`), so a model with one omits nothing.
         if (
             layer is not None
+            and asked is None
             and draft.materialization == layer.materialization
             and draft.incremental_strategy is None
         ):
@@ -2289,6 +2637,10 @@ def assemble(
     # Step 8: translate dependency names to final names now that every draft has one.
     models: list[AssembledModel] = []
     final_to_draft_name: dict[str, str] = {}
+    # The materialization each kept draft carried, keyed by final name. The
+    # Decisions that recorded it are rewritten if a reader chooses another
+    # one -- see `_follow_final_models`.
+    drafted_materialization: dict[str, str] = {}
     for draft_index, draft in enumerate(drafts):
         if draft_index in dropped_indices:
             continue
@@ -2296,6 +2648,7 @@ def assemble(
         depends_on = tuple(sorted({final_names[dep] for dep in deps[draft.name]}))
         models.append(dataclasses.replace(model, depends_on=depends_on))
         final_to_draft_name[model.name] = draft.name
+        drafted_materialization[model.name] = draft.materialization
 
     ordered, cycle_decisions = _topological(models)
     new_decisions.extend(cycle_decisions)
@@ -2317,8 +2670,8 @@ def assemble(
     answerable_decisions: list[Decision] = []
 
     inherited_decisions = state.decisions
-    incremental_answers, incremental_questions = _incremental_answers(
-        ordered, inherited_decisions, answers_map
+    incremental_answers, incremental_questions, question_keys = _incremental_answers(
+        ordered, inherited_decisions, answers_map, state.dialect
     )
     answerable_decisions.extend(incremental_questions)
     # Only the layer questions of drafts that survived. A question collected
@@ -2650,11 +3003,19 @@ def assemble(
             )
 
     final_models, materialization_decisions = _materialized(
-        materializations or {}, rewritten_models
+        asked_materializations, rewritten_models
     )
     new_decisions.extend(materialization_decisions)
+    new_decisions.extend(_ephemeral_caveats(final_models, ctx.layers))
 
-    all_decisions = inherited_decisions + tuple(new_decisions)
+    all_decisions = _follow_final_models(
+        inherited_decisions + tuple(new_decisions),
+        rewritten_models,
+        final_models,
+        question_keys,
+        final_to_draft_name,
+        drafted_materialization,
+    )
 
     # Validated last, once answerable_decisions is complete: an answer names
     # a Decision key from a *previous* run of this same conversion, and that
