@@ -1,4 +1,5 @@
 import dataclasses
+from pathlib import Path
 
 from dbtw.core.assemble import assemble
 from dbtw.core.assemble.types import AssembledModel
@@ -147,19 +148,51 @@ def test_the_merge_example_updates_a_row_where_the_append_example_copies_it():
     assert len(merge.model_after) < len(append.model_after)
 
 
-def test_a_body_that_projects_a_star_has_no_example():
+def _star_conversion(tmp_path):
+    """The fixture with one change: its MERGE also inserts every column
+    (`INSERT *`), so the merge model's body stays `SELECT *`."""
+    original = Path("tests/fixtures/sql/incremental_etl.sql").read_text(encoding="utf-8")
+    star = original.replace(
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name;",
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name\nWHEN NOT MATCHED THEN INSERT *;",
+    )
+    assert star != original, "the fixture's MERGE changed; this helper no longer edits it"
+    script = tmp_path / "incremental_etl.sql"
+    script.write_text(star, encoding="utf-8")
+    ir = ingest(str(script), None)
+    return (
+        assemble(
+            run_passes(classify_statements(ir), ir.dialect),
+            read_project("tests/fixtures/projects/jaffle_shop"),
+        ),
+        ir.dialect,
+    )
+
+
+def test_a_body_that_projects_a_star_has_no_example(tmp_path):
     """dim_customers is SELECT *, so the real column list is unknown. An
     example listing guessed columns would be invented."""
-    change, dialect = _conversion()
+    change, dialect = _star_conversion(tmp_path)
     dec = next(d for d in change.decisions if d.question and "customer_id" in d.question)
     model = next(m for m in change.models if "customers" in m.name)
     assert worked_example(dec, model, dialect) is None
 
 
-def test_the_star_body_is_refused_for_its_star_and_not_for_failing_to_parse():
+def test_a_merge_body_that_selects_named_columns_has_an_example_over_them():
+    """The fixture's MERGE writes customer_id and name, so its body selects
+    them, and the example shows exactly those columns."""
+    change, dialect = _conversion()
+    dec = next(d for d in change.decisions if d.question and "customer_id" in d.question)
+    model = next(m for m in change.models if "customers" in m.name)
+    example = worked_example(dec, model, dialect)
+    assert example is not None
+    assert example.columns == ("customer_id", "name")
+
+
+def test_the_star_body_is_refused_for_its_star_and_not_for_failing_to_parse(tmp_path):
     """The refusal above passes if the body is unreadable for any reason. It
     must be the star that stops it, or the module is not doing its job."""
-    change, dialect = _conversion()
+    change, dialect = _star_conversion(tmp_path)
     model = next(m for m in change.models if "customers" in m.name)
     known = _parseable_projections(model.body, dialect)
     assert known is not None, "the body did not parse; the refusal is for the wrong reason"

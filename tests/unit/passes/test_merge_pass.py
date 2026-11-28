@@ -1,3 +1,7 @@
+import pytest
+import sqlglot
+from sqlglot import exp
+
 from dbtw.core.ingest import ClassifiedStatement, RawStatement
 from dbtw.core.passes import Decision, PassState
 from dbtw.core.passes.tier2 import merge_pass
@@ -123,6 +127,14 @@ MERGE_BOTH_BRANCHES = (
     "WHEN MATCHED THEN UPDATE SET t.city = s.city, t.email = s.email "
     "WHEN NOT MATCHED THEN INSERT (id, city, email) VALUES (s.id, s.city, s.email)"
 )
+# The same branches over a subquery USING. The subquery becomes the model body
+# as written, so the body is not narrowed to the columns the MERGE writes and
+# both column restrictions are real differences from dbt's merge.
+MERGE_BOTH_BRANCHES_FROM_SUBQUERY = (
+    "MERGE INTO dim_c AS t USING (SELECT * FROM stg_c) AS s ON t.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET t.city = s.city, t.email = s.email "
+    "WHEN NOT MATCHED THEN INSERT (id, city, email) VALUES (s.id, s.city, s.email)"
+)
 MERGE_STAR_UPDATE = (
     "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
     "WHEN MATCHED THEN UPDATE SET t.* = s.* "
@@ -151,7 +163,7 @@ def test_a_restricted_update_set_records_its_columns_and_the_config_that_restore
     other column of a matched row is clobbered on each run. `merge_update_columns`
     is the adapter-specific config that restores the restriction -- named in
     prose, never emitted, since the adapter isn't known at convert time."""
-    out = merge_pass(_state((0, _stmt(MERGE_BOTH_BRANCHES))))
+    out = merge_pass(_state((0, _stmt(MERGE_BOTH_BRANCHES_FROM_SUBQUERY))))
     assert out.drafts
     matching = [c for c in _caveats(out) if "merge_update_columns" in c]
     assert len(matching) == 1, _caveats(out)
@@ -327,7 +339,7 @@ def test_updated_columns_from_several_branches_dedupe_case_insensitively_in_orde
 MERGE_QUOTED_COLUMN = (
     "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
     'WHEN MATCHED THEN UPDATE SET t."City" = s.a, t.city = s.b '
-    "WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id)"
+    "WHEN NOT MATCHED THEN INSERT *"
 )
 
 
@@ -383,7 +395,7 @@ def test_an_insert_branch_with_no_column_list_records_no_column_caveat():
 def test_a_restricted_update_and_a_restricted_insert_are_reported_separately():
     """Two different restrictions on two different branches -- one Decision
     each, so neither hides behind the other."""
-    out = merge_pass(_state((0, _stmt(MERGE_BOTH_BRANCHES))))
+    out = merge_pass(_state((0, _stmt(MERGE_BOTH_BRANCHES_FROM_SUBQUERY))))
     assert out.drafts
     caveats = _caveats(out)
     assert len(caveats) == 2, caveats
@@ -552,7 +564,7 @@ def _insert_caveat(sql: str) -> str:
 
 def test_the_update_caveat_counts_the_matched_branches_it_describes():
     assert "a WHEN MATCHED branch of dim_c assigns only city, email" in _update_caveat(
-        MERGE_BOTH_BRANCHES
+        MERGE_BOTH_BRANCHES_FROM_SUBQUERY
     )
     assert (
         "2 WHEN MATCHED branches of dim_c assign only city, email between them"
@@ -900,3 +912,199 @@ def test_a_quoted_alias_still_does_not_fold_into_a_different_case():
     out = merge_pass(_state((0, _stmt(sql))))
     assert out.drafts == ()
     assert any("no unique key" in d.action for d in out.decisions)
+
+
+# --- the model body. dbt's merge writes every column the model selects, on
+# update and on insert alike. The body was always `SELECT * FROM <source>`, so
+# a MERGE that writes three columns became a model that wrote every column of
+# its source -- columns the script never wrote. Where every written value is a
+# plain column of a USING table, the body selects exactly those columns, each
+# under the target column name it is written to.
+
+
+def _selects(sql: str) -> list[str]:
+    """The model body's projections, rendered one by one."""
+    (draft,) = merge_pass(_state((0, _stmt(sql)))).drafts
+    query = sqlglot.parse_one(draft.body)
+    assert isinstance(query, exp.Select), draft.body
+    return [projection.sql() for projection in query.selects]
+
+
+MERGE_REPORTED = (
+    "MERGE INTO dim_customer AS t "
+    "USING analytics.customers_raw AS s "
+    "ON t.customer_id = s.customer_id "
+    "WHEN MATCHED THEN UPDATE SET t.name = s.name, t.email = s.email "
+    "WHEN NOT MATCHED THEN INSERT (customer_id, name, email) "
+    "VALUES (s.customer_id, s.name, s.email)"
+)
+
+
+def test_the_reported_merge_selects_only_the_columns_it_writes():
+    out = merge_pass(_state((0, _stmt(MERGE_REPORTED))))
+    (draft,) = out.drafts
+    assert _selects(MERGE_REPORTED) == ["s.customer_id", "s.name", "s.email"]
+    assert "analytics.customers_raw AS s" in draft.body
+    assert draft.unique_key == ("customer_id",)
+
+
+def test_the_reported_merge_records_no_column_caveat_once_the_body_selects_what_it_writes():
+    """Both column caveats said the model writes every column it selects. That
+    was a difference only while the body selected every source column. Now
+    the update writes name and email (and the key, to its own value) and the
+    insert writes the three columns it lists, so neither caveat is true."""
+    out = merge_pass(_state((0, _stmt(MERGE_REPORTED))))
+    assert _caveats(out) == []
+
+
+def test_an_insert_column_written_from_a_differently_named_source_column_is_aliased():
+    sql = (
+        "MERGE INTO dim_customer AS t USING analytics.customers_raw AS s "
+        "ON t.customer_id = s.customer_id "
+        "WHEN MATCHED THEN UPDATE SET t.full_name = s.name "
+        "WHEN NOT MATCHED THEN INSERT (customer_id, full_name) VALUES (s.customer_id, s.name)"
+    )
+    assert _selects(sql) == ["s.customer_id", "s.name AS full_name"]
+    # The values caveat said dbt fills full_name from a source column named
+    # full_name. The alias makes dbt fill it from s.name, as the script did.
+    assert _caveats(merge_pass(_state((0, _stmt(sql))))) == []
+
+
+def test_a_matched_update_of_a_column_the_insert_does_not_list_is_selected_and_named():
+    """The update writes updated_at and the insert does not. The body must
+    select updated_at, or dbt would stop updating it. dbt then also writes
+    updated_at into an inserted row, which the script left to the default."""
+    sql = (
+        "MERGE INTO dim_customer AS t USING analytics.customers_raw AS s "
+        "ON t.customer_id = s.customer_id "
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name, t.updated_at = s.updated_at "
+        "WHEN NOT MATCHED THEN INSERT (customer_id, name) VALUES (s.customer_id, s.name)"
+    )
+    assert _selects(sql) == ["s.customer_id", "s.name", "s.updated_at"]
+    caveats = _caveats(merge_pass(_state((0, _stmt(sql)))))
+    assert len(caveats) == 1, caveats
+    assert "inserts only customer_id, name" in caveats[0]
+    assert "writes updated_at into every inserted row" in caveats[0]
+
+
+def test_a_matched_branch_that_skips_a_column_another_branch_writes_is_named():
+    """Two matched branches: one writes city and email, one writes only city.
+    The body selects email, so dbt also updates email on the rows the second
+    branch handles."""
+    caveats = _caveats(merge_pass(_state((0, _stmt(MERGE_TWO_MATCHED_BRANCHES)))))
+    (update,) = [c for c in caveats if "merge_update_columns" in c]
+    assert "updates email in every matched row" in update
+    assert "city in every matched row" not in update
+
+
+def test_a_matched_only_merge_selects_its_key_and_the_columns_it_updates():
+    """No INSERT branch, so the key comes from the ON clause. The update
+    caveat goes: the model updates n and the key, nothing else."""
+    assert _selects(MERGE) == ["s.id", "s.n"]
+    caveats = _caveats(merge_pass(_state((0, _stmt(MERGE)))))
+    assert [c for c in caveats if "merge_update_columns" in c] == []
+
+
+def test_an_on_key_matched_to_a_differently_named_source_column_is_aliased():
+    """`ON t.cid = s.customer_id` keys the target on cid. The model must carry
+    cid, filled from s.customer_id, or unique_key names a column the model
+    does not have."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.cid = s.customer_id "
+        "WHEN MATCHED THEN UPDATE SET t.n = s.n "
+        "WHEN NOT MATCHED THEN INSERT (cid, n) VALUES (s.customer_id, s.n)"
+    )
+    assert _selects(sql) == ["s.customer_id AS cid", "s.n"]
+    (draft,) = merge_pass(_state((0, _stmt(sql)))).drafts
+    assert draft.unique_key == ("cid",)
+
+
+def test_a_matched_only_on_key_of_a_different_name_is_aliased_too():
+    """No branch writes the key, so only the ON clause names its source."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON s.customer_id = t.cid "
+        "WHEN MATCHED THEN UPDATE SET t.n = s.n"
+    )
+    assert _selects(sql) == ["s.customer_id AS cid", "s.n"]
+
+
+@pytest.mark.parametrize(
+    ("assignment", "selected"),
+    [
+        # Unquoted identifiers fold, so CITY and city are one name: no alias.
+        ("t.CITY = s.city", "s.city"),
+        # A quoted name keeps its case, so "City" and city differ: alias.
+        ('t."City" = s.city', 's.city AS "City"'),
+        # The same quoted name on both sides: no alias.
+        ('t."City" = s."City"', 's."City"'),
+        # A quoted lowercase name and an unquoted one of another case differ.
+        ('t."city" = s.CITY', 's.CITY AS "city"'),
+    ],
+)
+def test_an_alias_is_written_exactly_when_the_names_differ_as_identifiers(assignment, selected):
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        f"WHEN MATCHED THEN UPDATE SET {assignment}"
+    )
+    assert _selects(sql) == ["s.id", selected]
+
+
+def test_an_unaliased_using_table_qualifies_the_selected_columns_by_its_name():
+    sql = (
+        "MERGE INTO dim_c USING stg_c ON dim_c.id = stg_c.id "
+        "WHEN MATCHED THEN UPDATE SET n = stg_c.n "
+        "WHEN NOT MATCHED THEN INSERT (id, n) VALUES (stg_c.id, stg_c.n)"
+    )
+    assert _selects(sql) == ["stg_c.id", "stg_c.n"]
+
+
+# --- where no projection can be derived, the body stays the USING source and
+# the column caveat says why.
+
+
+def test_an_insert_star_keeps_the_star_body_and_the_update_caveat_says_why():
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.city "
+        "WHEN NOT MATCHED THEN INSERT *"
+    )
+    assert _selects(sql) == ["*"]
+    (update,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "assign" in c]
+    assert "every column it selects" in update
+    assert "not narrowed to the columns this MERGE writes" in update
+    assert "INSERT *" in update
+
+
+def test_a_using_subquery_keeps_its_query_as_the_body_and_the_insert_caveat_says_why():
+    sql = (
+        "MERGE INTO dim_c AS t USING (SELECT * FROM raw.c) AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.city "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (s.id, s.city)"
+    )
+    (draft,) = merge_pass(_state((0, _stmt(sql)))).drafts
+    assert draft.body == "SELECT\n  *\nFROM raw.c"
+    (insert,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "inserts only" in c]
+    assert "every column it selects" in insert
+    assert "USING source is a subquery" in insert
+
+
+def test_a_value_that_is_not_a_source_column_keeps_the_star_body():
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.city "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (s.id, UPPER(s.city))"
+    )
+    assert _selects(sql) == ["*"]
+    (insert,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "inserts only" in c]
+    assert "city is written from UPPER(s.city)" in insert
+
+
+def test_a_column_written_from_two_different_source_columns_keeps_the_star_body():
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        "WHEN MATCHED THEN UPDATE SET t.city = s.town "
+        "WHEN NOT MATCHED THEN INSERT (id, city) VALUES (s.id, s.city)"
+    )
+    assert _selects(sql) == ["*"]
+    (insert,) = [c for c in _caveats(merge_pass(_state((0, _stmt(sql))))) if "inserts only" in c]
+    assert "city is written from s.town in one place and from s.city in another" in insert

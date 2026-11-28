@@ -659,15 +659,25 @@ def test_the_prose_check_has_something_left_to_look_at(
 
 
 def test_every_question_screen_shows_the_engine_s_example_or_no_example_at_all(
-    walk: Walk, walk_sql: Path
+    walk: Walk, walk_sql: Path, sql_script
 ) -> None:
     """Section 11.2: every question needs a worked example, and where
-    `worked_example` refuses one -- this conversion's merge question is over
-    a `SELECT *`, whose columns are not knowable -- the screen says nothing in
-    its place. Both cases occur here, which is why this conversion is the one
-    the test runs over.
+    `worked_example` refuses one the screen says nothing in its place.
+
+    The walk fixture with one change: its MERGE also inserts every column
+    (`INSERT *`). That keeps the model body `SELECT *`, whose columns are not
+    knowable, so the merge question is refused while the append question is
+    illustrated. Both cases occur here, which is why this script is the one
+    the test runs over. (The unchanged fixture's MERGE writes named columns,
+    so its body selects them and its question is illustrated too.)
     """
-    app, client, session = walk(walk_sql)
+    original = walk_sql.read_text(encoding="utf-8")
+    star = original.replace(
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name;",
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name\nWHEN NOT MATCHED THEN INSERT *;",
+    )
+    assert star != original, "the walk fixture's MERGE changed; this test no longer edits it"
+    app, client, session = walk(sql_script(star))
     view = session.view()
     refused = 0
 
@@ -1167,21 +1177,21 @@ def test_the_engine_refuses_an_example_for_every_caveat_so_the_screen_shows_none
     `worked_example`'s first refusal is `not decision.question or
     decision.subject is None`, and every Decision that asks nothing carries
     both. **Dropping that refusal and handing every caveat a subject closes
-    none of the ten** -- measured, not reasoned about. Three further
-    blockers stand behind it, and they are independent of each other:
+    one of the nine** -- measured, not reasoned about: the MERGE's
+    missing-insert caveat, whose model body selects the columns the MERGE
+    writes. Two further blockers stand behind the other eight, and they are
+    independent of each other:
 
-    * seven of the ten are `assemble.*` Decisions whose keys carry no
+    * seven of the nine are `assemble.*` Decisions whose keys carry no
       statement index, so `statement_index(d) is None` and the pairing
       `worked_example` uses to find the model returns nothing. Pairing them
       needs a channel the `Decision` contract does not have;
     * one is a `truncate_insert` Decision over a model that is not
       incremental at all, and `worked_example` has two branches -- merge and
-      append -- neither of which describes a full rebuild;
-    * two are over a `SELECT *`, whose output columns are not knowable at
-      convert time, and those are never closable by anything.
+      append -- neither of which describes a full rebuild.
 
     And the shape is wrong for most of them regardless: `Example` models one
-    row before and after, while seven of the ten are not row-shaped. A
+    row before and after, while seven of the nine are not row-shaped. A
     rename's honest picture is two tables, not two rows.
 
     So this is not a two-line fix waiting to be scoped. It is a core change
@@ -1194,7 +1204,7 @@ def test_the_engine_refuses_an_example_for_every_caveat_so_the_screen_shows_none
     app, client, session = walk(walk_sql)
     view = session.view()
     silent = [d for d in view.change.decisions if not d.question]
-    assert len(silent) == 10, "this conversion records ten decisions it asks nothing about"
+    assert len(silent) == 9, "this conversion records nine decisions it asks nothing about"
 
     for decision in silent:
         assert decision.subject is None, f"{decision.key} now carries a subject"
