@@ -95,6 +95,7 @@ def _from_change(change: ProjectChange) -> Iterator[str]:
         if model.materialization:
             yield model.materialization
         yield from model.depends_on
+        yield from model.reads_from
         yield from model.leading_comments
         if model.incremental_strategy:
             yield model.incremental_strategy

@@ -103,3 +103,41 @@ def test_the_cross_project_answer_is_carried_into_the_written_files(walk_with_ot
 
     bodies = " ".join(m.body for m in session.view().change.models)
     assert "ref('core_platform', 'dim_customers')" in bodies
+
+
+def test_the_walk_tells_the_reader_what_the_cross_project_answer_needs(walk_with_other) -> None:
+    """The two-argument ref fails `dbt parse` until the reader declares the
+    other project as a dependency. The record that says so exists only
+    because of the answer, so it is shown beside the question it answers --
+    and on no other screen, so it is said once.
+    """
+    app, client, session = walk_with_other
+    cross = _cross_key(session)
+    cross_index = next(i for i, d in enumerate(session.view().questions) if d.key == cross)
+    before = client.get(f"/questions/{cross_index}").get_data(as_text=True)
+    assert "projects: [{name: core_platform}]" not in before
+
+    assert client.post("/answer", data={"key": cross, "kind": "cross_ref"}).status_code == 302
+
+    caveat = next(
+        d for d in session.view().change.decisions if d.key.startswith("assemble.cross_dependency.")
+    )
+    screen = client.get(f"/questions/{cross_index}").get_data(as_text=True)
+    assert "projects: [{name: core_platform}]" in screen
+    assert "access: public" in screen
+    assert caveat.plain_reason.split(".")[0] in screen
+    caveats = client.get("/caveats").get_data(as_text=True)
+    assert "projects: [{name: core_platform}]" not in caveats
+
+
+def test_the_describe_screen_lists_the_other_projects_model_it_is_built_from(
+    walk_with_other,
+) -> None:
+    app, client, session = walk_with_other
+    cross = _cross_key(session)
+    assert "core_platform.dim_customers" not in client.get("/describe").get_data(as_text=True)
+
+    assert client.post("/answer", data={"key": cross, "kind": "cross_ref"}).status_code == 302
+
+    page = client.get("/describe").get_data(as_text=True)
+    assert '<span data-item="depends" data-engine>core_platform.dim_customers</span>' in page

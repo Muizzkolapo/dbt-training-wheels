@@ -41,6 +41,12 @@ class AssembledModel:
     # a set somebody intends to run together, and no reading of SQL knows
     # what those sets are.
     tags: tuple[str, ...] = ()
+    # Models of other dbt projects this model reads with the two-argument
+    # ref, each as `project.model`. Not in `depends_on`: that field orders
+    # the models of this change against each other, and a model another
+    # project builds is not one of them. Empty unless a reader answered a
+    # cross-project question by reading the table from that project.
+    reads_from: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

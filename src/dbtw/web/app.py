@@ -1204,6 +1204,7 @@ def create_app(source: Source) -> Flask:
             (col.name for ask in asks for c in ask.choices for col in c.columns),
             (row.model.name for row in models),
             (name for row in models for name in row.model.depends_on),
+            (name for row in models for name in row.model.reads_from),
             (plain for _, plain in meanings),
             (screen.label for screen in _walk(view) if screen.engine),
         )
@@ -1301,6 +1302,7 @@ def create_app(source: Source) -> Flask:
         spoken = _spoken(
             (row.model.name for row in models),
             (name for row in models for name in row.model.depends_on),
+            (name for row in models for name in row.model.reads_from),
             (plain for _, plain in meanings),
             refusal,
             (screen.label for screen in _walk(view) if screen.engine),

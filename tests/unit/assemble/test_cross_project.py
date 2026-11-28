@@ -100,3 +100,101 @@ def test_a_reader_who_named_no_other_project_is_asked_nothing() -> None:
 
     assert not [d for d in change.decisions if d.key.startswith("assemble.cross_ref.")]
     assert ("analytics", "dim_customers") in {(s.source_name, s.table) for s in change.sources}
+
+
+# What the reader must add before dbt can resolve the two-argument ref. Block
+# YAML would be folded into one paragraph by the Markdown list the report
+# renders reasons in, so the engine gives the one-line form of the same YAML.
+DEPENDENCY_YAML = "projects: [{name: core_platform}]"
+
+
+def _cross_ref_taken():  # type: ignore[no-untyped-def]
+    question = _question(convert(SQL, elsewhere=_other()))
+    return convert(
+        SQL, elsewhere=_other(), answers={question.key: answer_for(question, "cross_ref")}
+    )
+
+
+def _dependency_caveats(change):  # type: ignore[no-untyped-def]
+    return [d for d in change.decisions if d.key.startswith("assemble.cross_dependency.")]
+
+
+def test_reading_another_projects_model_records_what_dbt_needs_to_resolve_it() -> None:
+    """`ref('core_platform', 'dim_customers')` fails `dbt parse` until the
+    reader declares core_platform as a dependency and that model is public.
+    This conversion does not write dependencies.yml -- delivery copies into
+    the reader's project root and would overwrite theirs -- so the record has
+    to say exactly what to add.
+    """
+    change = _cross_ref_taken()
+
+    caveats = _dependency_caveats(change)
+
+    assert [d.key for d in caveats] == [
+        "assemble.cross_dependency.stg_revenue_events.core_platform.dim_customers"
+    ]
+    caveat = caveats[0]
+    assert caveat.tier == 2
+    assert not caveat.question
+    assert "ref('core_platform', 'dim_customers')" in caveat.action
+    assert "dependencies.yml" in caveat.reason
+    assert DEPENDENCY_YAML in caveat.reason
+    assert "access: public" in caveat.reason
+    assert "core_platform" in caveat.plain_reason
+    assert "dim_customers" in caveat.plain_reason
+
+
+def test_the_dependency_caveat_speaks_plainly() -> None:
+    from tests.unit.passes.test_plain_register import JARGON
+
+    caveat = _dependency_caveats(_cross_ref_taken())[0]
+
+    lowered = caveat.plain_reason.lower()
+    assert caveat.plain_reason != caveat.reason
+    assert [term for term in JARGON if term in lowered] == []
+
+
+def test_declaring_the_table_here_records_no_dependency_caveat() -> None:
+    """The default answer reads the raw table with source(): nothing from the
+    other project is read, so nothing needs declaring."""
+    pristine = convert(SQL, elsewhere=_other())
+    question = _question(pristine)
+    declared = convert(
+        SQL, elsewhere=_other(), answers={question.key: answer_for(question, "source")}
+    )
+
+    assert _dependency_caveats(pristine) == []
+    assert _dependency_caveats(declared) == []
+
+
+def test_the_rewrite_record_counts_the_cross_project_ref() -> None:
+    change = _cross_ref_taken()
+
+    rewrite = next(d for d in change.decisions if d.key == "assemble.rewrite.stg_revenue_events")
+
+    assert "1 reference(s) rewritten to another project's ref()" in rewrite.action
+    assert "1 reference(s) rewritten to source()" in rewrite.action
+    assert "dim_customers: read from the core_platform project's own model" in rewrite.chosen
+
+
+def test_the_model_records_the_other_projects_model_it_reads() -> None:
+    taken = _cross_ref_taken()
+    declared = convert(SQL, elsewhere=_other())
+
+    assert taken.models[0].reads_from == ("core_platform.dim_customers",)
+    assert declared.models[0].reads_from == ()
+    # Not a model in this change, so it is not a dependency edge between them.
+    assert taken.models[0].depends_on == ()
+
+
+def test_the_report_names_the_cross_project_dependency_and_what_to_add() -> None:
+    from dbtw.core.emit.report import render_report
+
+    change = _cross_ref_taken()
+
+    report = render_report(change, read_project(FIXTURES / "jaffle_shop"))
+
+    row = next(line for line in report.splitlines() if line.startswith("| stg_revenue_events |"))
+    assert row.endswith("| core_platform.dim_customers |")
+    assert DEPENDENCY_YAML in report
+    assert "access: public" in report
