@@ -68,7 +68,7 @@ _LINE_BREAKS = ("\n", "\r")
 # Worded without reference to where it sits on a page, so a renderer that
 # puts it beside or after its rows rather than above them can still use it
 # verbatim.
-PLACEHOLDER_NOTICE = "The values are placeholders -- this conversion has not read your data."
+PLACEHOLDER_NOTICE = "The values are placeholders. This conversion did not read your data."
 
 # The labels an Example's two row blocks carry, owned here for the reason the
 # notice above them is. They read like captions; they are not. Each states an

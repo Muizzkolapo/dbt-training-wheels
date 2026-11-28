@@ -228,7 +228,7 @@ def test_the_placement_decision_says_both_files_stand(tmp_path):
     )
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "dbt reads both" in report
-    assert "if you would rather keep one file" in report
+    assert "If you prefer one file" in report
     assert "declared twice" not in report
     assert "dbt rejects" not in report
 
@@ -516,8 +516,8 @@ def test_the_moved_sources_file_says_why_it_moved(tmp_path):
     assert "holds the tests this conversion declares for sources" in moved.action
     # The project declares no sources at all here, so blaming it would describe
     # a conflict that did not happen.
-    assert "the target project already uses" not in moved.action
-    assert "replace their file" not in moved.reason
+    assert "already exists in the target project" not in moved.action
+    assert "replace the project's file" not in moved.reason
 
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert moved.action in report

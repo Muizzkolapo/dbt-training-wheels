@@ -47,7 +47,6 @@ PENDING = {
     "tier1",
     "tier2",
     "assemble",
-    "emit",
 }
 
 # Scripts that reach the Decisions the fixtures alone do not: a bare query, a
