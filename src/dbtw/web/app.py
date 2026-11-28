@@ -46,6 +46,7 @@ Two things this module deliberately does not do:
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import tempfile
 import webbrowser
@@ -167,6 +168,9 @@ class Screen:
     # each one is the name of the pass that asks, and none is a dbt word the
     # glossary defines.
     kind: str = ""
+    # A number beside the label when another question step has the same
+    # table and kind, so two steps never read the same. Empty otherwise.
+    nth: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -753,6 +757,27 @@ def _conversions(
     return tuple(conversions)
 
 
+def _number_repeats(screens: tuple[Screen, ...]) -> tuple[Screen, ...]:
+    """The same steps, with a number on each one whose label and kind repeat.
+
+    A question step is named by its table and a kind word. Two questions of
+    one kind about one table -- two appends into one table, for example --
+    would read the same in the rail, so each of those gets its position
+    among them, in rail order. A step whose label is unique keeps no number:
+    a "1" beside the only step of its name would suggest a second one.
+    """
+    names = [(screen.label, screen.kind) for screen in screens]
+    seen: dict[tuple[str, str], int] = {}
+    numbered: list[Screen] = []
+    for screen, name in zip(screens, names, strict=True):
+        if names.count(name) < 2:
+            numbered.append(screen)
+            continue
+        seen[name] = seen.get(name, 0) + 1
+        numbered.append(dataclasses.replace(screen, nth=str(seen[name])))
+    return tuple(numbered)
+
+
 def _screens(
     view: SessionView,
     answered: Container[str] = (),
@@ -771,16 +796,18 @@ def _screens(
     offers a blank box. Putting it after the files screen would ask them to
     describe models they had already read the finished text of.
     """
-    questions = [
-        Screen(
-            url=f"/questions/{index}",
-            label=decision.subject.table if decision.subject else decision.key,
-            engine=True,
-            state=_question_state(decision, answered),
-            kind=_kind(decision),
+    questions = _number_repeats(
+        tuple(
+            Screen(
+                url=f"/questions/{index}",
+                label=decision.subject.table if decision.subject else decision.key,
+                engine=True,
+                state=_question_state(decision, answered),
+                kind=_kind(decision),
+            )
+            for index, decision in enumerate(view.questions)
         )
-        for index, decision in enumerate(view.questions)
-    ]
+    )
     if direct:
         # One screen where the guided walk has a screen per question and a
         # screen for the models. The design calls it the workbench and

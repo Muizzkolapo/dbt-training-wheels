@@ -167,6 +167,7 @@
                 {%- if screen.engine %}<span data-engine>{{ screen.label }}</span>
                 {%- else %}{{ screen.label }}{% endif -%}
                 {%- if screen.kind %} <span class="kind" data-identifier>{{ screen.kind }}</span>{% endif -%}
+                {%- if screen.nth %} <span class="kind" data-identifier>{{ screen.nth }}</span>{% endif -%}
               </span>
               <span class="dot {{ screen.state }}"></span>
             </a>
