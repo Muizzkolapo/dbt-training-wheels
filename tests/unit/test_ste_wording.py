@@ -41,7 +41,9 @@ from dbtw.core.passes import Answer, Decision, answer_for, run_passes
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 PROJECTS = FIXTURES / "projects"
 
-PENDING: set[str] = set()
+PENDING = {
+    "refusals",
+}
 
 # Scripts that reach the Decisions the fixtures alone do not: a bare query, a
 # file with two queries, a MERGE, a read of another project's model, a GRANT,
@@ -74,7 +76,14 @@ SCRIPTS = {
 }
 
 _CODE = re.compile(r"`[^`]*`")
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9`\"'(*])")
+# A sentence ends at ".", "!" or "?" followed by a space, whatever comes
+# next. Requiring a capital letter next joined every sentence that starts
+# with "dbt" -- a name written in lower case -- to the sentence before it,
+# and writers bent their sentences to avoid starting one with the tool's own
+# name. A dotted name ("o.order_id") and a decimal ("1.5") have no space
+# after the point, and the Latin abbreviations that would split wrongly are
+# refused by this test.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _CONTRACTION = re.compile(
     r"\b(?:\w+n't|it's|that's|there's|what's|you're|we're|they're|you've|we've|"
     r"they've|I'm|you'll|we'll|it'll|they'll|let's|isn't|aren't)\b",
@@ -202,7 +211,95 @@ def _texts(tmp: Path) -> dict[str, set[str]]:
     for decision in _conversions(tmp):
         for text in _decision_texts(decision):
             add(_origin(decision), text)
+    for text in _refusals(tmp):
+        add("refusals", text)
     return by_origin
+
+
+def _refused(call) -> str:  # type: ignore[no-untyped-def]
+    """The message of the refusal `call` raises. A call that does not raise
+    is a broken trigger, not a passing text, so it fails the collection."""
+    try:
+        call()
+    except Exception as exc:  # noqa: BLE001 -- every refusal type is the point
+        return str(exc)
+    raise AssertionError(f"{call} did not refuse")
+
+
+def _refusals(tmp: Path) -> Iterator[str]:
+    """Refusals a reader can meet, triggered the way a reader meets them.
+
+    They appear only when something fails, so no conversion above reaches
+    them. Each is raised through the public function a front end calls.
+    """
+    import subprocess
+
+    from dbtw.core.deliver import deliver, push
+    from dbtw.core.emit import refuse_output_inside_project
+    from dbtw.core.progress import load_progress
+    from dbtw.web.state import Source, pasted_file_name
+
+    base = tmp / "refusals"
+    base.mkdir()
+    jaffle = read_project(PROJECTS / "jaffle_shop")
+    script = base / "weekly.sql"
+    script.write_text(SCRIPTS["nightly.sql"], encoding="utf-8")
+    ingested = ingest(script, None)
+    state = run_passes(classify_statements(ingested), ingested.dialect)
+    change = assemble(state, jaffle)
+    model = change.models[0].name
+    question = next(d for d in change.decisions if d.question and d.subject is not None)
+    prompted = next(o for o in question.options if o.columns_prompt)
+
+    yield _refused(lambda: read_project(base / "missing"))
+    yield _refused(lambda: read_project(base))
+    yield _refused(lambda: ingest(script, "no_such_dialect"))
+    yield _refused(lambda: refuse_output_inside_project(PROJECTS / "jaffle_shop", jaffle))
+    yield _refused(lambda: refuse_output_inside_project(PROJECTS / "jaffle_shop" / "out", jaffle))
+    yield _refused(lambda: assemble(state, jaffle, answers={"no.such.key": Answer(label="x")}))
+    yield _refused(lambda: answer_for(question, prompted.kind, ()))
+    yield _refused(lambda: assemble(state, jaffle, descriptions={model: "{{ var('x') }}"}))
+    yield _refused(lambda: assemble(state, jaffle, descriptions={"no_such_model": "text"}))
+    yield _refused(lambda: assemble(state, jaffle, materializations={model: "snapshot"}))
+    yield _refused(lambda: pasted_file_name("   "))
+    yield _refused(lambda: pasted_file_name("../escape"))
+    yield _refused(lambda: Source(out=base / "out").start(PROJECTS / "jaffle_shop", {}))
+
+    out = base / "written"
+    emit(change, jaffle, out)
+    not_a_repo = base / "plain_project"
+    not_a_repo.mkdir()
+    (not_a_repo / "dbt_project.yml").write_text("name: plain\n", encoding="utf-8")
+    yield _refused(lambda: deliver(out, read_project(not_a_repo), branch="b", message="m"))
+
+    repo = base / "repo"
+    repo.mkdir()
+    (repo / "dbt_project.yml").write_text("name: repo\n", encoding="utf-8")
+
+    def git(*arguments: str) -> None:
+        subprocess.run(["git", *arguments], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q")
+    git(
+        "-c",
+        "user.email=r@example.invalid",
+        "-c",
+        "user.name=R",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "init",
+    )
+    yield _refused(lambda: push(repo, branch="dbtw/x"))
+    (repo / "loose.txt").write_text("uncommitted\n", encoding="utf-8")
+    yield _refused(lambda: deliver(out, read_project(repo), branch="b", message="m"))
+
+    damaged = base / "learned.json"
+    damaged.write_text("not json", encoding="utf-8")
+    unreadable = load_progress(PROJECTS / "jaffle_shop", path=damaged).unreadable
+    assert unreadable, "a damaged record must report why"
+    yield unreadable
 
 
 @pytest.fixture(scope="module")
@@ -210,7 +307,7 @@ def texts(tmp_path_factory: pytest.TempPathFactory) -> dict[str, set[str]]:
     return _texts(tmp_path_factory.mktemp("ste"))
 
 
-ORIGINS = ("teach", "intro", "report", "tier1", "tier2", "assemble", "emit")
+ORIGINS = ("teach", "intro", "report", "tier1", "tier2", "assemble", "emit", "refusals")
 
 
 @pytest.mark.parametrize(
@@ -255,6 +352,9 @@ def test_the_check_catches_each_rule(text: str, rule: str) -> None:
         "The model reads `" + " ".join(["x"] * 40) + "` once.",
         "Write `a; b` in the file.",
         "The value is 1.5 and the name is o.order_id.",
+        # Two sentences of 20 words, the second starting with the tool's
+        # lower-case name. The old splitter read them as one of 41 words.
+        " ".join(["word"] * 19) + " end. dbt " + " ".join(["word"] * 19) + ".",
     ],
 )
 def test_the_check_passes_text_that_keeps_the_rules(text: str) -> None:
