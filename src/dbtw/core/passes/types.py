@@ -481,8 +481,8 @@ def answer_for(decision: Decision, kind: str, columns: tuple[str, ...] = ()) -> 
             )
         table = decision.subject.table
         raise ValueError(
-            f"{option.label!r} for {table} asks {option.columns_prompt!r} and got no "
-            "columns: tick one or type one, and press it again."
+            f"{option.label!r} for {table} asks {option.columns_prompt!r}. The answer "
+            "got no columns. Tick one or type one, and press it again."
         )
     return Answer(label=option.label, columns=columns)
 
