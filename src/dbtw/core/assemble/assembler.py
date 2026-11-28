@@ -13,15 +13,19 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble.layers import (
+    Placement,
     cross_ref_option,
+    fallback_plain,
     layer_options,
     layer_question,
     layer_roles,
-    role_for,
+    placement_for,
+    placement_plain,
+    placement_reason,
     source_option,
 )
-from dbtw.core.assemble.refs import references_in
-from dbtw.core.assemble.resolve import resolve_references
+from dbtw.core.assemble.refs import reads_in, references_in
+from dbtw.core.assemble.resolve import Resolution, resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
 from dbtw.core.assemble.variables import Variable, extract_variables
@@ -43,6 +47,7 @@ from dbtw.core.passes.types import (
     inline_option,
     merge_option,
     statement_index,
+    unique_key_config,
     var_option,
     verify_option,
 )
@@ -130,6 +135,30 @@ def _resolve_layer(
     return None, [_decision("layer_fallback", name, action, reason)]
 
 
+def _guessed_fallback(
+    dec: Decision, name: str, placement: Placement, role: str, layer: LayerInfo
+) -> Decision:
+    """The fallback record of a guessed placement, as the reader sees it.
+
+    A guessed placement with no question is one where the project has a
+    layer for at most one side of the fork. The model then lands in a layer
+    the rule did not propose: a model that combines tables can land in
+    staging, which the glossary says holds no joins. A tier-1 note collapses
+    into a count, so the reader never saw why. This record is tier 2, names
+    the rule, and says what to do. The fallback of a placement that is a fact
+    stays tier 1: the reader has nothing to decide there.
+    """
+    return dataclasses.replace(
+        dec,
+        tier=2,
+        reason=(
+            f"{placement_reason(name, placement)}. The target project has no {role} layer, "
+            f"so this conversion placed {name} in the {layer.name} layer"
+        ),
+        plain_reason=fallback_plain(name, placement, layer),
+    )
+
+
 def _cross_ref_questions(
     sources: Sequence[SourceEntry],
     elsewhere: Sequence[ProjectContext],
@@ -198,9 +227,18 @@ def _cross_ref_questions(
         answer = answers.get(decision.key)
         if answer is not None and answer.label == options[1].label:
             taken[entry.casefold()] = (other.project_name, model.name)
+            # The model there usually carries the table's own name, and
+            # "read dim_customers from the core_platform project's
+            # dim_customers" says one name twice. The other project's model
+            # is named only where its name differs.
+            read_from = (
+                f"the {other.project_name} project"
+                if model.name.casefold() == entry.casefold()
+                else f"{model.name} in the {other.project_name} project"
+            )
             decision = dataclasses.replace(
                 decision,
-                action=f"read {entry} from the {other.project_name} project's {model.name}",
+                action=f"read {entry} from {read_from}",
                 chosen=options[1].label,
             )
         questions.append(decision)
@@ -257,18 +295,20 @@ def _cross_dependency_caveat(model: str, project: str, target: str) -> Decision:
 
 def _layer_choice(
     name: str,
-    derived: str,
+    placement: Placement,
     options: tuple[Option, ...],
     answers: Mapping[str, Answer],
 ) -> tuple[str, Decision | None]:
     """Which layer this model goes in, and the question that asked.
 
-    The engine's reading of the dependency graph is the proposal -- a model
-    nothing else reads looks like a mart, one that others read looks like
-    intermediate -- and it is a reading, not a fact. A table nobody else
-    reads yet is still intermediate if the mart that will read it is next
-    week's work, and the only person who knows that is the reader. So the
-    derived role is `chosen` and the question is asked anyway.
+    Called only for a guessed placement (`Placement.asked`), and there are
+    two kinds. A model that reads our models and that nothing reads looks
+    like a mart, and it is a reading, not a fact: a table nobody reads yet is
+    still intermediate if the mart that will read it is next week's work. A
+    model that reads outside tables two or more times combines rows, so it is
+    not staging, and nothing in the SQL says whether it is a step or a
+    product. Only the reader knows either, so the derived role is `chosen`
+    and the question is asked anyway. See `layers.Rule` for the other rules.
 
     `None` when the project has fewer than two layers to choose between:
     there is no choice to offer, and a screen asking one would be teaching a
@@ -278,6 +318,7 @@ def _layer_choice(
     `layer_options` only builds options for roles with a real layer, and
     `answer_for` refuses a kind the question does not offer.
     """
+    derived = placement.role
     if len(options) < 2:
         return derived, None
     chosen = next((o for o in options if o.kind == derived), None)
@@ -285,22 +326,12 @@ def _layer_choice(
         key=f"assemble.layer.{name}",
         tier=2,
         action=f"placed {name} in the {derived} layer",
-        reason=(
-            "this conversion reads its own dependency graph. A model that no other "
-            "model in this conversion reads is a mart. A model that other models "
-            "read is intermediate. A model that reads no model of this conversion "
-            "is staging"
-        ),
-        plain_reason=(
-            "This tool found the place from what reads what. Nothing here reads "
-            "this table, or something here reads it, or it reads nothing that this "
-            "conversion builds. That place is a guess about how you will use the "
-            "table. You know that better than this tool does."
-        ),
+        reason=placement_reason(name, placement),
+        plain_reason=placement_plain(name, placement),
         source_file="",
         line_start=0,
         line_end=0,
-        question=layer_question(name, derived, options),
+        question=layer_question(name, options),
         plain_question=f"Where should {name} go?",
         options=options,
         chosen=chosen.label if chosen is not None else "",
@@ -807,8 +838,8 @@ def _source_entries(
                 name,
                 f"{name} is read but not schema-qualified",
                 f"a source declaration needs a schema, and {name} has none. To invent a "
-                f"schema would be a fabrication. So {name} stays as written until Tier 2 "
-                "resolves it",
+                f"schema would be a fabrication. So this conversion proposes no source for "
+                f"{name}",
             )
         )
 
@@ -1025,7 +1056,7 @@ def _upgrade_to_merge(
         dec,
         action=(
             f"INSERT INTO {draft_name} became an incremental model "
-            f"(incremental_strategy='merge', unique_key={list(keys)!r}) — upgraded "
+            f"(incremental_strategy='merge', {unique_key_config(keys)}) — upgraded "
             f"from append by {by}{also}"
         ),
         reason=". ".join(sentence for sentence in sentences if sentence),
@@ -1097,7 +1128,7 @@ def _confirm_with_check(
         dec,
         action=(
             f"MERGE INTO {draft_name} became an incremental model "
-            f"(incremental_strategy='merge', unique_key={list(keys)!r}), with dbt's "
+            f"(incremental_strategy='merge', {unique_key_config(keys)}), with dbt's "
             f"{test} test declared on {keys[0]}"
         ),
         reason=(
@@ -1183,7 +1214,7 @@ def _flag_overridden_decision(
         if after.unique_key:
             left_as = (
                 f"incremental_strategy={after.incremental_strategy!r}, "
-                f"unique_key={list(after.unique_key)!r}"
+                f"{unique_key_config(after.unique_key)}"
             )
         else:
             left_as = f"incremental_strategy={after.incremental_strategy!r}, no unique_key"
@@ -1692,10 +1723,16 @@ def _incremental_answers(
             # at all is the `columns_prompt` rule's, and the gate refuses it
             # with the prompt naming what is missing, which is the more useful
             # of the two messages for a caller who supplied nothing.
+            # Worded for the reader who ticked two boxes, like the refusal
+            # `answer_for` gives for none: the option and the table they
+            # recognise, what is allowed, and what to do. `dec.key` exists for
+            # the engine to match answers by and means nothing on a screen.
+            table = dec.subject.table if dec.subject is not None else model.name
             raise UnknownAnswerError(
-                f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}. That "
-                f"option declares dbt's {chosen_option.declares_test} test, which checks "
-                "one column. So an answer to that option can name only one column"
+                f"{chosen_option.label!r} for {table} got {_keys_str(keys)}. That option "
+                f"declares the {chosen_option.declares_test} test of dbt, and that test "
+                "checks one column. So an answer to that option can name only one column. "
+                "Tick one column, and press it again."
             )
         if chosen_option.columns_prompt:
             _refuse_unselected_key(dec, model, answer, keys, dialect)
@@ -1740,10 +1777,13 @@ def _refuse_unselected_key(
     # Once each, in the order of the SELECT: `SELECT order_id, amount AS
     # order_id` has two projections and one name to answer with.
     selected = _keys_str(tuple(dict.fromkeys(name for name, _ in projections)))
+    # Worded for the reader who typed the column, like the refusal
+    # `answer_for` gives for no column: the option and the table, what is
+    # allowed, and what to do. No `dec.key`, which means nothing on a screen.
     raise UnknownAnswerError(
-        f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}. The model "
-        f"{table} does not select {_keys_str(tuple(missing))}. The columns that {table} "
-        f"selects are {selected}. Answer with columns from that list"
+        f"{answer.label!r} for {table} got {_keys_str(keys)}. The model {table} does not "
+        f"select {_keys_str(tuple(missing))}. The columns that {table} selects are "
+        f"{selected}. Tick or type columns from that list, and press it again."
     )
 
 
@@ -2041,6 +2081,7 @@ def _follow_final_models(
     question_keys: Mapping[str, str],
     final_to_draft_name: Mapping[str, str],
     drafted_materialization: Mapping[str, str],
+    layers: Sequence[LayerInfo],
 ) -> tuple[Decision, ...]:
     """The Decisions, each made true of the model as this run writes it.
 
@@ -2068,6 +2109,9 @@ def _follow_final_models(
        draft (`DRAFT_MATERIALIZATION_RECORDS` in each pass module) stays. If
        the reader chose another materialization, its action, reason and
        plain reason then say that the choice replaced the drafted one.
+    5. The tier-1 record that attached grants to a model stays. If the model
+       is ephemeral, by a choice or by its layer default, it says that dbt
+       applies none of them, beside the ephemeral caveat that says why.
 
     `before` is the models as the answers left them, in the order that
     `final` has them: `_materialized` keeps the order.
@@ -2075,6 +2119,7 @@ def _follow_final_models(
     removed: set[str] = set()
     rewritten: dict[str, Decision] = {}
     by_key = {d.key: d for d in decisions}
+    defaults = {layer.name: layer.materialization for layer in layers}
     for prior, model in zip(before, final, strict=True):
         draft_name = final_to_draft_name[model.name]
         if model.incremental_strategy != "merge":
@@ -2105,7 +2150,63 @@ def _follow_final_models(
                 if _records_drafted_materialization(d)
                 and statement_index(d) in model.source_indices
             )
+        if _built_as(model, defaults) == "ephemeral":
+            rewritten.update(
+                (d.key, _grants_unapplied(d, model.name))
+                for d in decisions
+                if _attaches_grants(d) and statement_index(d) in model.folded_indices
+            )
     return tuple(rewritten.get(d.key, d) for d in decisions if d.key not in removed)
+
+
+def _built_as(model: AssembledModel, defaults: Mapping[str, str | None]) -> str | None:
+    """The materialization a model takes: its own config, or else the default
+    of its layer. One answer for the grants record and the ephemeral caveats,
+    so the two cannot disagree about whether a model is ephemeral."""
+    return model.materialization or defaults.get(model.layer)
+
+
+def _attaches_grants(dec: Decision) -> bool:
+    """Whether `dec` is the tier-1 record of a GRANT folded into a model.
+
+    The key is compared whole, as `_records_drafted_materialization` does.
+    The REVOKE and the unmatched GRANT records share the name, but neither is
+    folded into a model, so the caller's `folded_indices` test leaves them.
+    """
+    index = statement_index(dec)
+    return any(dec.key == f"tier1.{name}.{dec.source_file}:{index}" for name in tier1.GRANT_RECORDS)
+
+
+def _grants_unapplied(dec: Decision, model_name: str) -> Decision:
+    """The grants record of an ephemeral model.
+
+    The record of the GRANT stays, because the grants stay in the config and
+    apply again if the model is built as a view or a table. Its claim that
+    dbt applies them after each build is not true of a model that dbt never
+    builds, so both registers say that dbt applies none of them.
+    """
+    unapplied = (
+        f"{model_name} is ephemeral, so dbt builds no relation for it and applies none "
+        "of these grants"
+    )
+    return dataclasses.replace(
+        dec,
+        action=f"{dec.action}. {unapplied}",
+        reason=(
+            "GRANT statements become the grants config of the model. "
+            f"{unapplied}. The grants stay in the config. They apply again if "
+            f"{model_name} is built as a view or a table"
+        ),
+        plain_reason=" ".join(
+            text
+            for text in (
+                dec.plain_reason,
+                f"Nothing is built for {model_name}, so the access that your script gives "
+                f"does nothing while {model_name} is built this way.",
+            )
+            if text
+        ),
+    )
 
 
 def _records_drafted_materialization(dec: Decision) -> bool:
@@ -2174,7 +2275,7 @@ def _replaced_by_build_choice(
     """
     config = f"incremental_strategy={prior.incremental_strategy!r}"
     if prior.unique_key:
-        config += f", unique_key={list(prior.unique_key)!r}"
+        config += f", {unique_key_config(prior.unique_key)}"
     built = model.materialization
     return dataclasses.replace(
         dec,
@@ -2223,7 +2324,7 @@ def _ephemeral_caveats(
     read = {dep for model in models for dep in model.depends_on}
     caveats: list[Decision] = []
     for model in models:
-        if (model.materialization or defaults.get(model.layer)) != "ephemeral":
+        if _built_as(model, defaults) != "ephemeral":
             continue
         if model.grants:
             granted = " and ".join(
@@ -2363,6 +2464,98 @@ def _model_descriptions(
     return described
 
 
+def _counted(count: int, noun: str) -> str:
+    """`count` and `noun`, with the noun plural when the count is not one."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _rewrite_record(
+    model_name: str,
+    refs: Sequence[Resolution],
+    cross: Sequence[Resolution],
+    sources: Sequence[Resolution],
+    unresolved: Sequence[Resolution],
+) -> Decision:
+    """What the rewrite did to one model's body, true for the case it renders.
+
+    Four cases, and each is worded for itself. The first shape of this had
+    one reason for all of them -- "so the body runs as dbt Jinja" -- and
+    printed it beside a body with no table in it, and beside a body whose only
+    table the next record said was "left as written".
+
+    1. The body reads no table. Nothing was rewritten, and nothing needed to be.
+    2. Every reference resolved. The body reads only ref() and source().
+    3. Some resolved and some did not. The record counts both.
+    4. None resolved. The body is the script's SQL, table names and all.
+
+    The references left as written each have a record of their own, keyed
+    `assemble.rewrite_unresolved.<model>.<table>`, which says why.
+    """
+    resolved = (*refs, *cross, *sources)
+    total = len(resolved) + len(unresolved)
+    # What the resolved references now point at. A reference answered "read it
+    # from <project>" points at a model of another project, and a sentence
+    # that put it in this project would be false.
+    here = "a model or a source of this project"
+    there = "a model of another project"
+    if cross and (refs or sources):
+        targets = f"{here}, or {there}"
+    elif cross:
+        targets = there
+    else:
+        targets = here
+    parts = []
+    if refs:
+        parts.append(f"{_counted(len(refs), 'reference')} rewritten to ref()")
+    if cross:
+        parts.append(f"{_counted(len(cross), 'reference')} rewritten to another project's ref()")
+    if sources:
+        parts.append(f"{_counted(len(sources), 'reference')} rewritten to source()")
+    if unresolved:
+        parts.append(f"{_counted(len(unresolved), 'reference')} left as written")
+    chosen = "; ".join(f"{r.ref.name}: {r.reason}" for r in resolved)
+    if total == 0:
+        action = f"kept {model_name}'s body as written: it reads no table"
+        reason = (
+            f"the body of {model_name} reads no table, so this conversion had no table "
+            "reference to rewrite"
+        )
+    elif not unresolved:
+        action = f"rewrote {model_name}'s body: " + ", ".join(parts)
+        reason = (
+            f"this conversion rewrote each table reference in the body. Each one now names "
+            f"{targets}. So the body runs as dbt Jinja"
+        )
+    elif resolved:
+        action = f"rewrote {model_name}'s body: " + ", ".join(parts)
+        reason = (
+            f"this conversion mapped {len(resolved)} of {total} table references in the body "
+            f"to {targets}. dbt fills in the rewritten references. "
+            "Each reference left as written reaches the database exactly as the script "
+            "wrote it"
+        )
+    else:
+        action = (
+            f"kept {model_name}'s body as written: "
+            f"{_counted(len(unresolved), 'reference')} left as written"
+        )
+        reason = (
+            f"this conversion could not map any of the {_counted(total, 'table reference')} "
+            "in the body to a model or a source of this project. So the body has no ref() "
+            "or source() call, and each table name reaches the database as written"
+        )
+    return Decision(
+        key=f"assemble.rewrite.{model_name}",
+        tier=2,
+        action=action,
+        reason=reason,
+        source_file="",
+        line_start=0,
+        line_end=0,
+        chosen=chosen or "no rewrite applied",
+    )
+
+
 def assemble(
     state: PassState,
     ctx: ProjectContext,
@@ -2406,18 +2599,32 @@ def assemble(
     # catalog-only read of mydb..orders is not a dependency on a draft merely
     # named "orders" either). An unqualified reference keeps matching by bare
     # draft name, as before.
+    #
+    # The same walk counts the tables each draft reads that no draft builds,
+    # and how many times it reads them: `placement_for` needs both, because a
+    # model that reads such tables two or more times combines rows, so it is
+    # not a one-for-one staging model. A read of a draft's own target (an
+    # incremental model reading the table it appends to) is neither a
+    # dependency nor an outside read.
     qualified_to_draft_name = {d.qualified_name: d.name for d in drafts}
+
+    def draft_read_by(r: TableRef) -> str | None:
+        if is_qualified(r):
+            return qualified_to_draft_name.get(qualified_name(r))
+        return r.name if r.name in draft_names else None
+
     deps: dict[str, frozenset[str]] = {}
-    for name in refs:
-        dep_names: set[str] = set()
-        for r in refs[name]:
-            if is_qualified(r):
-                dep_draft_name = qualified_to_draft_name.get(qualified_name(r))
-                if dep_draft_name is not None and dep_draft_name != name:
-                    dep_names.add(dep_draft_name)
-            elif r.name in draft_names and r.name != name:
-                dep_names.add(r.name)
-        deps[name] = frozenset(dep_names)
+    outside_tables: dict[str, int] = {}
+    outside_reads: dict[str, int] = {}
+    for draft in drafts:
+        name = draft.name
+        deps[name] = frozenset(
+            dep for dep in (draft_read_by(r) for r in refs[name]) if dep not in (None, name)
+        )
+        outside_tables[name] = sum(1 for r in refs[name] if draft_read_by(r) is None)
+        outside_reads[name] = sum(
+            1 for r in reads_in(draft.body, state.dialect) if draft_read_by(r) is None
+        )
     dependents: dict[str, set[str]] = {name: set() for name in refs}
     for name, deps_for_name in deps.items():
         for dep in deps_for_name:
@@ -2473,14 +2680,40 @@ def assemble(
 
     for draft_index, draft in enumerate(drafts):
         local_decisions: list[Decision] = []
-        derived = role_for(draft.name, deps, dependents_frozen)
+        placement = placement_for(
+            draft.name,
+            deps,
+            dependents_frozen,
+            outside_tables[draft.name],
+            outside_reads[draft.name],
+        )
+        # The layer this conversion proposes, whose default the draft is
+        # measured against. None when the project has no layer for the role;
+        # the config check below then measures against the fallback layer.
+        proposed = roles.get(placement.role)
+        # A draft whose materialization is the default of the proposed layer
+        # takes that default, so its config omits the materialization (see
+        # below). Moved by an answer, it takes the default of the layer that
+        # it lands in, and the options say so. A draft with a materialization
+        # of its own -- an incremental one, or a table where the layer
+        # default is a view -- keeps it wherever it is put.
+        follows_default = (
+            draft.incremental_strategy is None
+            and proposed is not None
+            and draft.materialization == proposed.materialization
+        )
+        own = None if follows_default else draft.materialization
         role, layer_question_decision = _layer_choice(
             draft.name,
-            derived,
-            layer_options(roles, derived, draft.materialization),
+            placement,
+            layer_options(roles, placement, own),
             answers_map,
         )
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
+        if placement.asked and layer_question_decision is None and layer is not None:
+            layer_decisions = [
+                _guessed_fallback(d, draft.name, placement, role, layer) for d in layer_decisions
+            ]
 
         final_name, name_decisions = _final_name(draft.name, layer, detections_by_key)
         final_names[draft.name] = final_name
@@ -2493,7 +2726,7 @@ def assemble(
                 # choice. A label does not name a materialization, so the
                 # answer that chose one of these options still matches it.
                 layer_question_decision = dataclasses.replace(
-                    layer_question_decision, options=layer_options(roles, derived, asked)
+                    layer_question_decision, options=layer_options(roles, placement, asked)
                 )
             local_decisions.append(layer_question_decision)
             layer_questions.append(layer_question_decision)
@@ -2530,23 +2763,49 @@ def assemble(
 
         # A reader's choice is written into the config whatever its value
         # (`_materialized`), so a model with one omits nothing.
+        reference = proposed or layer
         if (
             layer is not None
+            and reference is not None
             and asked is None
-            and draft.materialization == layer.materialization
+            and draft.materialization == reference.materialization
             and draft.incremental_strategy is None
         ):
             materialization = None
-            local_decisions.append(
-                _decision(
-                    "materialization",
-                    draft.name,
-                    f"materialized config omitted for {final_name} "
-                    f"(matches the {layer.name} layer default of {layer.materialization!r})",
-                    "the materialization matches the detected default of the layer. This "
-                    "conversion omitted the config so that the project default applies",
+            if reference == layer:
+                local_decisions.append(
+                    _decision(
+                        "materialization",
+                        draft.name,
+                        f"materialized config omitted for {final_name} "
+                        f"(matches the {layer.name} layer default of {layer.materialization!r})",
+                        "the materialization matches the detected default of the layer. This "
+                        "conversion omitted the config so that the project default applies",
+                    )
                 )
-            )
+            else:
+                # Moved by an answer. The draft took the default of the layer
+                # that this conversion proposed, so it takes the default of
+                # the layer that the answer chose. Writing the old default
+                # into the config would make the model the one exception in
+                # its new folder, which nobody asked for.
+                default = (
+                    f"the {layer.name} layer default of {layer.materialization!r}"
+                    if layer.materialization is not None
+                    else "the project default"
+                )
+                local_decisions.append(
+                    _decision(
+                        "materialization",
+                        draft.name,
+                        f"materialized config omitted for {final_name} (takes {default})",
+                        f"the materialization of the script, {draft.materialization!r}, is "
+                        f"the default of the {reference.name} layer, where this conversion "
+                        f"proposed {final_name}. The answer to the layer question moved "
+                        f"{final_name} to the {layer.name} layer. So this conversion omitted "
+                        f"the config, and {default} applies",
+                    )
+                )
         else:
             materialization = draft.materialization
 
@@ -2948,35 +3207,13 @@ def assemble(
             )
         )
 
-        summary_parts = []
-        if ref_resolutions:
-            summary_parts.append(f"{len(ref_resolutions)} reference(s) rewritten to ref()")
-        if cross_resolutions:
-            summary_parts.append(
-                f"{len(cross_resolutions)} reference(s) rewritten to another project's ref()"
-            )
-        if source_resolutions:
-            summary_parts.append(f"{len(source_resolutions)} reference(s) rewritten to source()")
-        if not summary_parts:
-            summary_parts.append("no references needed rewriting")
-        chosen_parts = [
-            f"{r.ref.name}: {r.reason}"
-            for r in (*ref_resolutions, *cross_resolutions, *source_resolutions)
-        ]
-
         new_decisions.append(
-            Decision(
-                key=f"assemble.rewrite.{model.name}",
-                tier=2,
-                action=f"rewrote {model.name}'s body: " + ", ".join(summary_parts),
-                reason=(
-                    "this conversion mapped raw table references to the models and "
-                    "sources of this project, so the body runs as dbt Jinja"
-                ),
-                source_file="",
-                line_start=0,
-                line_end=0,
-                chosen="; ".join(chosen_parts) if chosen_parts else "no rewrite applied",
+            _rewrite_record(
+                model.name,
+                ref_resolutions,
+                cross_resolutions,
+                source_resolutions,
+                unresolved_resolutions,
             )
         )
 
@@ -3015,6 +3252,7 @@ def assemble(
         question_keys,
         final_to_draft_name,
         drafted_materialization,
+        ctx.layers,
     )
 
     # Validated last, once answerable_decisions is complete: an answer names

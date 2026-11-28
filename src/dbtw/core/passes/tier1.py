@@ -32,6 +32,12 @@ from dbtw.core.passes.types import Decision, ModelDraft, PassState
 # list, so a new Decision that names a materialization goes here too.
 DRAFT_MATERIALIZATION_RECORDS = ("build", "truncate_insert", "select")
 
+# The name of the Decision here that records a GRANT folded into a model's
+# grants config. Its reason says that dbt applies the grants after each
+# build, which is not true of an ephemeral model. `assemble` rewrites it for
+# such a model, and finds it by this name.
+GRANT_RECORDS = ("grants",)
+
 
 def _parse(stmt: ClassifiedStatement, dialect: str | None) -> exp.Expr:
     return sqlglot.parse_one(stmt.raw.text, read=dialect)
@@ -234,8 +240,9 @@ def truncate_insert_pass(state: PassState) -> PassState:
                         f"deferred: TRUNCATE+INSERT into {table.name} has an explicit column list"
                     ),
                     reason=(
-                        "a Tier 2 pass decides how each column maps to a column. Tier 1 "
-                        "leaves this statement for that pass"
+                        "a later step of this conversion maps each listed column to a "
+                        "column of the SELECT. This step leaves the statement for that "
+                        "later step"
                     ),
                     source_file=stmt.raw.source_file,
                     line_start=stmt.raw.line_start,

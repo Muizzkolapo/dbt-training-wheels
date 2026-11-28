@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from dbtw.core.assemble.layers import layer_roles, role_for
+from dbtw.core.assemble.layers import layer_roles, placement_for
 from dbtw.core.context import LayerInfo, ProjectContext, read_project
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
@@ -60,19 +60,47 @@ def test_empty_project_has_no_roles():
     assert roles == {"staging": None, "intermediate": None, "mart": None}
 
 
-def test_role_for_source_only_model_is_staging():
+def test_placement_for_a_model_reading_one_raw_table_is_staging_and_not_asked():
     deps = {"a": frozenset(), "b": frozenset({"a"})}
     dependents = {"a": frozenset({"b"}), "b": frozenset()}
-    assert role_for("a", deps, dependents) == "staging"
+    placement = placement_for("a", deps, dependents, tables=1, reads=1)
+    assert (placement.role, placement.asked) == ("staging", False)
 
 
-def test_role_for_consumed_middle_model_is_intermediate():
+def test_placement_for_consumed_middle_model_is_intermediate_and_not_asked():
     deps = {"a": frozenset(), "b": frozenset({"a"}), "c": frozenset({"b"})}
     dependents = {"a": frozenset({"b"}), "b": frozenset({"c"}), "c": frozenset()}
-    assert role_for("b", deps, dependents) == "intermediate"
+    placement = placement_for("b", deps, dependents, tables=0, reads=0)
+    assert (placement.role, placement.asked) == ("intermediate", False)
 
 
-def test_role_for_leaf_model_is_mart():
+def test_placement_for_leaf_model_is_mart_and_asked():
     deps = {"a": frozenset(), "b": frozenset({"a"})}
     dependents = {"a": frozenset({"b"}), "b": frozenset()}
-    assert role_for("b", deps, dependents) == "mart"
+    placement = placement_for("b", deps, dependents, tables=0, reads=0)
+    assert (placement.role, placement.asked) == ("mart", True)
+
+
+def test_placement_for_a_model_joining_two_raw_tables_is_not_staging():
+    """A staging model tidies one raw table and joins nothing, as the
+    glossary tells the reader. A model that combines two is the next layer:
+    intermediate when something reads it, mart when nothing does. Both are
+    guesses, so both are asked."""
+    deps = {"a": frozenset(), "b": frozenset({"a"})}
+    dependents = {"a": frozenset({"b"}), "b": frozenset()}
+    read = placement_for("a", deps, dependents, tables=2, reads=2)
+    alone = placement_for("a", {"a": frozenset()}, {"a": frozenset()}, tables=3, reads=3)
+    assert (read.role, read.asked, read.tables, read.reads) == ("intermediate", True, 2, 2)
+    assert (alone.role, alone.asked, alone.tables, alone.reads) == ("mart", True, 3, 3)
+
+
+def test_placement_for_a_model_reading_no_table_is_staging():
+    """`SELECT 1` reads nothing to combine, so the one-table rule holds."""
+    placement = placement_for("a", {"a": frozenset()}, {"a": frozenset()}, tables=0, reads=0)
+    assert (placement.role, placement.asked) == ("staging", False)
+
+
+def test_placement_for_a_self_join_of_one_raw_table_is_not_staging():
+    """One table read two times is a join. The rule decides on reads."""
+    placement = placement_for("a", {"a": frozenset()}, {"a": frozenset()}, tables=1, reads=2)
+    assert (placement.role, placement.asked) == ("mart", True)

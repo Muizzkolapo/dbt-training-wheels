@@ -28,6 +28,7 @@ from dbtw.core.passes.types import (
     Tier,
     append_option,
     merge_option,
+    unique_key_config,
     verify_option,
 )
 from dbtw.core.projections import known_projections
@@ -1560,14 +1561,14 @@ def merge_pass(state: PassState) -> PassState:
                 2,
                 action=(
                     f"MERGE INTO {table.name} became an incremental model "
-                    f"(incremental_strategy='merge', unique_key={list(keys)!r})"
+                    f"(incremental_strategy='merge', {unique_key_config(keys)})"
                 ),
                 reason=(
                     "dbt's merge incremental strategy updates a row that matches unique_key "
                     "with every column that the model selects, and inserts a row that "
                     f"matches none. This MERGE {performed}"
                 ),
-                question=f"does {key_list} uniquely identify a row in {table.name}?",
+                question=f"Does {key_list} uniquely identify a row in {table.name}?",
                 plain_question=(
                     f"In {table.name}, is there only ever one row for each {key_list}?"
                 ),

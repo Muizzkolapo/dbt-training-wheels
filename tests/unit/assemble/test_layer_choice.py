@@ -1,11 +1,13 @@
 """Which layer a model belongs in, and who decides.
 
-`role_for` reads this conversion's own dependency graph: a model that reads
-no model of ours is staging, one that other models read is intermediate.
-Neither is a guess. The third branch is -- it reads our models and nothing
-reads it, which is what the end of a pipeline looks like and equally what an
-intermediate model looks like the day before the mart that will read it is
-written. That one fork is the whole subject of this file.
+`placement_for` reads this conversion's own dependency graph: a model that reads
+no model of ours and at most one other table is staging, one that other models
+read is intermediate. Neither is a guess. The third branch is -- it reads our
+models and nothing reads it, which is what the end of a pipeline looks like and
+equally what an intermediate model looks like the day before the mart that
+will read it is written. That fork is the subject of this file. The other
+guessed placement, a model that combines raw tables, is in
+test_engine_truth.py.
 """
 
 from __future__ import annotations

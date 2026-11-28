@@ -37,14 +37,26 @@ from dbtw.core.assemble.types import TableRef
 from dbtw.core.naming import is_external_read
 
 
-def references_in(body: str, dialect: str | None) -> tuple[TableRef, ...]:
+def reads_in(body: str, dialect: str | None) -> tuple[TableRef, ...]:
+    """Every read of a table in `body`, once per place it is read.
+
+    A self-join reads one table twice, and that is two entries here. The
+    layer rule needs the count: a model that reads tables two or more times
+    combines rows, so it is not a one-for-one staging model, even when both
+    reads are of one table.
+    """
     try:
         node = sqlglot.parse_one(body, read=dialect)
     except SqlglotError:
         return ()
-    refs = {
+    reads = [
         TableRef(catalog=table.catalog, db=table.db, name=table.name)
         for table in node.find_all(exp.Table)
         if is_external_read(table)
-    }
-    return tuple(sorted(refs, key=lambda r: (r.catalog, r.db, r.name)))
+    ]
+    return tuple(sorted(reads, key=lambda r: (r.catalog, r.db, r.name)))
+
+
+def references_in(body: str, dialect: str | None) -> tuple[TableRef, ...]:
+    """Each table `body` reads, once, however many times it is read."""
+    return tuple(dict.fromkeys(reads_in(body, dialect)))

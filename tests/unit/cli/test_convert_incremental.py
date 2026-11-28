@@ -439,7 +439,7 @@ def test_the_report_asks_the_append_and_the_merge_question(tmp_path):
     report = _run_fixture(tmp_path)
     assert "Should each run append every row, or deduplicate the rows on a unique key?" in report
     assert "Chose: append every row" in report
-    assert "does customer_id uniquely identify a row in dim_customers?" in report
+    assert "Does customer_id uniquely identify a row in dim_customers?" in report
     assert "Chose: merge on customer_id" in report
 
 

@@ -22,12 +22,14 @@ OptionKind = Literal[
     "merge_checked",
     "inline",
     "var",
-    # The two sides of the one placement this engine guesses at: a model that
+    # The two sides of each placement this engine guesses at. A model that
     # reads our models and is read by none of them is either the end of the
-    # pipeline or the step before a mart that does not exist yet, and only
-    # the reader knows which. Staging is not here because it is never
-    # offered: a model that reads no model of ours is staging by what it
-    # reads, which is a fact rather than a reading of one.
+    # pipeline or the step before a mart that does not exist yet. A model
+    # that reads outside tables two or more times combines rows, and is
+    # either a step or a product. Only the reader knows which. Staging is not
+    # here because it is never offered: a model that reads no model of ours
+    # and reads one outside table one time is staging by what it reads, which
+    # is a fact rather than a reading of one. See `layers.Rule`.
     #
     # The *roles*, not the project's layer names: a project calls its mart
     # layer `marts` or `core` or `facts`, and `layer_roles` maps its own
@@ -408,6 +410,20 @@ class Answer:
 
     label: str
     columns: tuple[str, ...] = ()
+
+
+def unique_key_config(keys: tuple[str, ...]) -> str:
+    """`unique_key=...` as the config of a model file writes it.
+
+    One key is written as a string and several as a list, which is how
+    `emit.render` writes the config and how dbt's own docs spell it. A
+    Decision that quotes the config spells it this way too, so the text on the
+    screen and the line in the file are the same characters. The first shape
+    of the Decisions wrote every key as a list, and `unique_key=['order_id']`
+    sat beside a file that said `unique_key='order_id'`.
+    """
+    key: str | list[str] = keys[0] if len(keys) == 1 else list(keys)
+    return f"unique_key={key!r}"
 
 
 def answer_for(decision: Decision, kind: str, columns: tuple[str, ...] = ()) -> Answer:
