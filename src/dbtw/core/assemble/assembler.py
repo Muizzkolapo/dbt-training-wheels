@@ -200,6 +200,53 @@ def _cross_ref_questions(
     return questions, taken
 
 
+def _cross_dependency_caveat(model: str, project: str, target: str) -> Decision:
+    """What the reader must add before `ref(project, target)` resolves.
+
+    dbt resolves a two-argument ref only when the other project is declared
+    in this project's `dependencies.yml` and the model it names allows access
+    from other projects. Without both, the ref does not resolve. Project
+    dependencies are a dbt Mesh feature that dbt Cloud resolves; dbt-core alone
+    may not, and the record says so rather than promise a fix it cannot. This
+    conversion does not write `dependencies.yml` itself: delivery copies its
+    output into the reader's project root, and a file of that name there
+    would be overwritten. So the record says exactly what to add.
+
+    The YAML is given in its one-line form. The report renders a reason
+    inside a Markdown list item, which folds block YAML into one paragraph.
+    """
+    entry = f"projects: [{{name: {project}}}]"
+    return _decision(
+        "cross_dependency",
+        f"{model}.{project}.{target}",
+        (
+            f"{model} reads ref('{project}', '{target}'). Declare {project} as a "
+            "dependency before dbt can resolve it"
+        ),
+        (
+            f"a two-argument ref resolves only when {project} is declared as a "
+            f"dependency of this project and {target} allows access from other "
+            f"projects. Add `{entry}` to dependencies.yml at this project's root, or "
+            f"add `- name: {project}` to its existing projects: list. Set "
+            f"`access: public` on {target} in {project}. Project dependencies are a "
+            "dbt Mesh feature. dbt Cloud resolves them, and dbt-core alone may not. "
+            "Without the dependency, dbt parse cannot find the ref. Without public "
+            "access, dbt refuses the ref with an access error. This conversion does "
+            "not write dependencies.yml, because delivery would overwrite one already there"
+        ),
+        plain_reason=(
+            f"Your model now reads {target} from the {project} project. That only "
+            f"works after your project lists {project} as a project it relies on, "
+            f"and {project} agrees to share {target} with other projects. Until "
+            "then your model will not run. The exact lines to add are given above. "
+            "The paid, hosted version of the tool supports this, and the free "
+            "version on its own may not. "
+            "This tool does not add the lines, so it cannot overwrite a file you already have."
+        ),
+        tier=2,
+    )
+
+
 def _layer_choice(
     name: str,
     derived: str,
@@ -2443,21 +2490,36 @@ def assemble(
             # decision, never a blanket flag.
             effective_variable_defaults,
         )
-        rewritten_models.append(dataclasses.replace(model, body=rewritten_body))
-
         ref_resolutions = [r for r in resolutions if r.kind == "ref"]
+        cross_resolutions = [r for r in resolutions if r.kind == "cross_ref"]
         source_resolutions = [r for r in resolutions if r.kind == "source"]
         unresolved_resolutions = [r for r in resolutions if r.kind == "unresolved"]
+
+        # Read off the same resolutions the body was rewritten from, so the
+        # model's record of what it reads and the body cannot disagree.
+        cross_targets = sorted({(r.project, r.target) for r in cross_resolutions})
+        rewritten_models.append(
+            dataclasses.replace(
+                model,
+                body=rewritten_body,
+                reads_from=tuple(f"{project}.{target}" for project, target in cross_targets),
+            )
+        )
 
         summary_parts = []
         if ref_resolutions:
             summary_parts.append(f"{len(ref_resolutions)} reference(s) rewritten to ref()")
+        if cross_resolutions:
+            summary_parts.append(
+                f"{len(cross_resolutions)} reference(s) rewritten to another project's ref()"
+            )
         if source_resolutions:
             summary_parts.append(f"{len(source_resolutions)} reference(s) rewritten to source()")
         if not summary_parts:
             summary_parts.append("no references needed rewriting")
         chosen_parts = [
-            f"{r.ref.name}: {r.reason}" for r in (*ref_resolutions, *source_resolutions)
+            f"{r.ref.name}: {r.reason}"
+            for r in (*ref_resolutions, *cross_resolutions, *source_resolutions)
         ]
 
         new_decisions.append(
@@ -2474,6 +2536,11 @@ def assemble(
                 line_end=0,
                 chosen="; ".join(chosen_parts) if chosen_parts else "no rewrite applied",
             )
+        )
+
+        new_decisions.extend(
+            _cross_dependency_caveat(model.name, project, target)
+            for project, target in cross_targets
         )
 
         for r in unresolved_resolutions:

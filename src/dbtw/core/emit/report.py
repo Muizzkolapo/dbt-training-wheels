@@ -327,7 +327,9 @@ def _render_models(change: ProjectChange) -> str:
     lines.append("| --- | --- | --- | --- |")
     for m in change.models:
         mat = m.materialization if m.materialization is not None else "(layer default)"
-        deps = ", ".join(m.depends_on) if m.depends_on else "—"
+        # The models of this change it reads, then the other projects' models.
+        read = (*m.depends_on, *m.reads_from)
+        deps = ", ".join(read) if read else "—"
         lines.append(f"| {m.name} | {m.layer} | {mat} | {deps} |")
     return "\n".join(lines)
 

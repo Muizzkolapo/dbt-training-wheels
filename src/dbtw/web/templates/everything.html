@@ -89,9 +89,9 @@
       {%- else %}
       <span class="mark blank">Still blank</span>
       {%- endif %}</h3>
-    {%- if row.model.depends_on %}
+    {%- if row.model.depends_on or row.model.reads_from %}
     <p class="depends">Built from
-      {%- for name in row.model.depends_on %}
+      {%- for name in row.model.depends_on + row.model.reads_from %}
       <span data-item="depends" data-engine>{{ name }}</span>
       {%- endfor %}</p>
     {%- endif %}
