@@ -169,10 +169,13 @@ def test_the_asking_screens_send_a_direct_reader_to_the_one_place_to_answer(
     app, client, session = walk(walk_sql)
     _direct(client)
 
-    for url in ("/questions/0", "/describe"):
-        sent = client.get(url)
-        assert sent.status_code == 302, url
-        assert sent.headers["Location"].endswith("/everything"), url
+    sent = client.get("/describe")
+    assert sent.status_code == 302
+    assert sent.headers["Location"].endswith("/everything")
+    # A question's address lands on that question on the one screen.
+    sent = client.get("/questions/0")
+    assert sent.status_code == 302
+    assert sent.headers["Location"].endswith("/everything#question-0")
 
 
 def test_the_workbench_is_not_a_screen_of_the_guided_walk(walk: Walk, walk_sql: Path) -> None:

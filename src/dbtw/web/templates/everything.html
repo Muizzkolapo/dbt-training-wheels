@@ -9,16 +9,26 @@
   "Decided for you", "What changed" and "Files" say the same things in both
   modes because they are the same conversion.
 
-  Each question keeps a link to its own screen. The worked example lives
-  there and is the single most effective element the walkthroughs measured --
-  five of five named it unprompted -- so a reader who collapses the walk
-  gives up the table, not access to it.
+  Each question that has a worked example shows it here, folded shut under
+  "See the example". The example is the single most effective element the
+  walkthroughs measured -- five of five named it unprompted. A link to the
+  question's own screen was here before, and it never showed the example:
+  in direct mode that screen sends the reader back to this one. Folded,
+  because eight tables open on one screen is the wall this screen exists to
+  avoid. A question the engine draws no example for offers none, and no link
+  to one.
 
-  No example here, and that is the honest omission rather than a shrunken
-  one: a worked example is a table of rows per question, and eight of them
-  stacked on one screen is the wall this screen exists to avoid.
+  Every question and every model carries an id, and a save comes back to it:
+  `/everything#question-<n>` after an answer, `/everything#model-<name>`
+  after a save. A redirect to the top made the reader scroll back down after
+  every press.
+
+  A refused save comes back here too, beside its model, with what the reader
+  typed in the boxes. Those values are the reader's own text, held for one
+  render, and are an identifier for the reason a saved description is.
 #}
 {% extends "base.html" %}
+{% from "example.html" import example_table %}
 {% block main %}
 <h1>Everything</h1>
 <p class="tally"><span data-count="ask">{{ asks | length }}</span> {{ (asks | length) | noun("question") }},
@@ -29,7 +39,7 @@
 <h2>Questions</h2>
 <ul class="asks">
   {%- for ask in asks %}
-  <li data-item="ask">
+  <li data-item="ask" id="question-{{ ask.index }}">
     <h3><span data-engine>{{ ask.decision.plain_question }}</span></h3>
     <p class="action"><span data-engine>{{ ask.decision.action }}</span></p>
     <ul class="answers">
@@ -63,7 +73,12 @@
       </li>
       {%- endfor %}
     </ul>
-    <p class="onward"><a data-link="one" href="/questions/{{ ask.index }}">See the example</a></p>
+    {%- if ask.example %}
+    <details class="example" data-item="example">
+      <summary>See the example</summary>
+      {{- example_table(ask.example) }}
+    </details>
+    {%- endif %}
   </li>
   {%- endfor %}
 </ul>
@@ -80,9 +95,15 @@
 </ul>
 
 <h2>Models</h2>
+{%- if refusal %}
+<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+{%- endif %}
 <ul class="describe">
   {%- for row in models %}
-  <li data-item="model">
+  {%- set text = row.draft.text if row.draft else row.description %}
+  {%- set tags = row.draft.tags if row.draft else row.tags %}
+  {%- set built = row.draft.materialization if row.draft else row.materialization %}
+  <li data-item="model" id="model-{{ row.model.name }}">
     <h3><span data-engine>{{ row.model.name }}</span>
       {%- if row.description %}
       <span class="mark" data-item="described">Described</span>
@@ -95,13 +116,16 @@
       <span data-item="depends" data-engine>{{ name }}</span>
       {%- endfor %}</p>
     {%- endif %}
+    {%- if row.draft %}
+    <p class="refusal"><span data-engine>{{ row.draft.message }}</span></p>
+    {%- endif %}
     <form method="post" action="/describe">
       <input type="hidden" name="model" value="{{ row.model.name }}">
       <label class="field-block">
         <span class="key">Description</span>
-        {%- if row.description %}
+        {%- if text %}
         <textarea name="text" rows="2"
-                  data-engine data-identifier>{{ row.description }}</textarea>
+                  data-engine data-identifier>{{ text }}</textarea>
         {%- else %}
         <textarea name="text" rows="2"></textarea>
         {%- endif %}
@@ -110,19 +134,19 @@
         <label class="field-block">
           <span class="key">Built as</span>
           <select name="materialization">
-            <option value=""{% if row.materialization not in row.choosable %} selected{% endif %}>
+            <option value=""{% if built not in row.choosable %} selected{% endif %}>
               as converted</option>
             {%- for choice in row.choosable %}
-            <option value="{{ choice }}"{% if row.materialization == choice %} selected{% endif %}>
+            <option value="{{ choice }}"{% if built == choice %} selected{% endif %}>
               {{ choice }}</option>
             {%- endfor %}
           </select>
         </label>
         <label class="field-block">
           <span class="key">Tags</span>
-          {%- if row.tags %}
+          {%- if tags %}
           <textarea name="tags" rows="1" spellcheck="false"
-                    data-engine data-identifier>{{ row.tags }}</textarea>
+                    data-engine data-identifier>{{ tags }}</textarea>
           {%- else %}
           <textarea name="tags" rows="1" spellcheck="false"></textarea>
           {%- endif %}

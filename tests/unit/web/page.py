@@ -115,6 +115,18 @@ def words(text: str) -> list[str]:
     return _WORD.findall(text)
 
 
+def as_shown(text: str) -> str:
+    """`text` as a reader reads it once its code spans are rendered.
+
+    A glossary definition marks a value a reader types with backticks
+    (`staging`), and a screen renders each span as `<code>`. The backticks
+    are markup, not text, so the run a page holds is the definition without
+    them. Comparing against the raw definition would make the check demand
+    the literal backticks a tester found on screen.
+    """
+    return text.replace("`", "")
+
+
 def normalised(text: str) -> str:
     """`text` with every run of whitespace collapsed to one space.
 

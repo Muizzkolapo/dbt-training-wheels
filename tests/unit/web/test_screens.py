@@ -24,7 +24,7 @@ from tests.unit.web.helpers import (
     ONE_MERGE,
     STAR_PROJECTION,
 )
-from tests.unit.web.page import Page, normalised, read, words
+from tests.unit.web.page import Page, as_shown, normalised, read, words
 
 import dbtw.web
 from dbtw.core.context import read_project
@@ -73,6 +73,13 @@ _WORKBENCH = "/everything"
 # it by following their redirect, so every check reads it as it renders.
 _RESULT = "/written"
 
+# The refusal of an answer, at its own address so a reload re-renders it
+# rather than sending the answer again. Not a screen of the walk: the rail
+# does not list it, and with nothing refused it sends a reader on. Its
+# contents are still guarded -- `_guarded_pages` presses the misstep that
+# produces it and reads the page the redirect lands on.
+_REFUSED = "/refused"
+
 
 def _screen_urls(app, session: Session) -> tuple[str, ...]:
     """Every screen of the walk, derived from the app's own routing table.
@@ -84,8 +91,9 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
     A rule taking any other argument stops the test rather than being skipped
     -- a screen this cannot address is a screen nothing here checks.
 
-    Three exclusions, and all are pages that belong to something other than
-    this walk. `/written` is the write's result; see `_RESULT`. `/source`
+    Four exclusions, and all are pages that belong to something other than
+    this walk. `/written` is the write's result; see `_RESULT`. `/refused`
+    is a refused answer's; see `_REFUSED`. `/source`
     is the screen a reader is on *before* the walk exists, so it has no
     conversation to render; it is still guarded, see `_ENTRY`. `/everything`
     is the screen the *other mode* has, and in this one it redirects; see
@@ -97,7 +105,7 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
         methods = rule.methods or set()
         if rule.endpoint == "static" or "GET" not in methods:
             continue
-        if rule.rule in (_ENTRY, _WORKBENCH, _RESULT):
+        if rule.rule in (_ENTRY, _WORKBENCH, _RESULT, _REFUSED):
             continue
         if not rule.arguments:
             urls.append(rule.rule)
@@ -547,10 +555,16 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
         }
 
     pages = _pages(app, client, session)
-    refusal = client.post("/answer", data={"key": _append_key(session), "kind": "merge"})
+    # Both refusals redirect, so each has an address a reload can ask for.
+    # The page the redirect lands on is the page a reader reads.
+    refusal = client.post(
+        "/answer", data={"key": _append_key(session), "kind": "merge"}, follow_redirects=True
+    )
     assert refusal.status_code == 400
     pages["/answer (refused)"] = read(refusal.get_data(as_text=True))
-    described = client.post("/describe", data={"model": _NOT_A_MODEL, "text": "words"})
+    described = client.post(
+        "/describe", data={"model": _NOT_A_MODEL, "text": "words"}, follow_redirects=True
+    )
     assert described.status_code == 400
     pages["/describe (refused)"] = read(described.get_data(as_text=True))
     result = client.post("/write", follow_redirects=True)
@@ -1068,7 +1082,7 @@ def test_the_last_screen_names_the_commands_the_glossary_defines(
     for command in ("dbt compile", "dbt run", "dbt test", "dbt build"):
         assert command in rendered, f"{command} is not named"
         (term,) = terms_in(command)
-        assert normalised(term.plain) in defined_open, (
+        assert normalised(as_shown(term.plain)) in defined_open, (
             f"{command} is named with no meaning beside it"
         )
     assert "<details" not in client.get("/done").get_data(as_text=True), (
@@ -1109,7 +1123,7 @@ def test_each_screen_defines_the_dbt_words_it_uses_and_no_others(
         rendered = _engine(page)
         for term in used:
             assert term.name in rendered, f"{state} {url} uses {term.name} and does not define it"
-            assert normalised(term.plain) in rendered
+            assert normalised(as_shown(term.plain)) in rendered
 
 
 def test_the_double_bracket_is_defined_on_the_screen_that_first_shows_it(
@@ -1268,6 +1282,7 @@ def test_every_template_the_walk_renders_ships_inside_the_package(
         "stale_tags.html",
         "stale_materializations.html",
         "refused.html",
+        "example.html",
         "missing.html",
         "written.html",
         "write_failed.html",
@@ -1368,7 +1383,11 @@ def test_a_key_a_fully_known_model_does_not_select_is_refused_and_not_held(
     app, client, session = walk(walk_sql)
     key = _append_key(session)
 
-    refused = client.post("/answer", data={"key": key, "kind": "merge", "typed": "evnt_id"})
+    sent = client.post("/answer", data={"key": key, "kind": "merge", "typed": "evnt_id"})
+    # A refused answer redirects to GET /refused, which shows it once with
+    # a 400, so a reload does not send the form again.
+    assert sent.status_code == 302
+    refused = client.get(sent.headers["Location"])
 
     assert refused.status_code == 400
     page = normalised(refused.get_data(as_text=True))
@@ -1434,7 +1453,7 @@ def test_the_refusal_page_goes_back_to_the_question_it_refused(walk: Walk, walk_
     key = _append_key(session)
     index = [d.key for d in session.view().questions].index(key)
 
-    refused = client.post("/answer", data={"key": key, "kind": "merge"})
+    refused = client.post("/answer", data={"key": key, "kind": "merge"}, follow_redirects=True)
     assert refused.status_code == 400
     page = read(refused.get_data(as_text=True))
 
@@ -1454,7 +1473,11 @@ def test_a_refusal_about_a_key_this_conversion_does_not_ask_goes_to_the_start(
     not a guess at which question was meant.
     """
     _app, client, _session = walk(walk_sql)
-    refused = client.post("/answer", data={"key": "tier2.append.nowhere.sql:0", "kind": "append"})
+    refused = client.post(
+        "/answer",
+        data={"key": "tier2.append.nowhere.sql:0", "kind": "append"},
+        follow_redirects=True,
+    )
     assert refused.status_code == 400
     assert read(refused.get_data(as_text=True)).named_links["back"] == "/"
 
@@ -1478,7 +1501,9 @@ def test_the_glossary_is_set_aside_from_the_screen_it_defines_words_for(
 
     inside = {normalised(run.text) for run in page.runs if run.aside}
     for term in defined:
-        assert normalised(term.plain) in inside, f"{term.name} is defined outside the aside"
+        assert normalised(as_shown(term.plain)) in inside, (
+            f"{term.name} is defined outside the aside"
+        )
 
 
 @pytest.mark.parametrize("state", _STATES)
@@ -1703,8 +1728,10 @@ def test_the_picker_ticks_the_key_the_reader_already_gave(walk: Walk, walk_sql: 
     html = client.get(f"/questions/{index}").get_data(as_text=True)
 
     assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}
-    # The other option asks for columns too, and nobody gave it any.
-    assert _boxes(html, "merge_checked", key) == {"event_id": False, "occurred_at": False}
+    # The other option asks for columns too. The engine spells it with the
+    # key now -- "merge on event_id, checked on every run" -- so its picker
+    # holds that key as well, and pressing it sends the answer it names.
+    assert _boxes(html, "merge_checked", key) == {"event_id": True, "occurred_at": False}
     # And what the screen now holds is an answer the engine takes.
     again = client.post("/answer", data={"key": key, "kind": "merge", "columns": ["event_id"]})
     assert again.status_code == 302
@@ -1738,3 +1765,33 @@ def test_the_one_screen_walk_ticks_the_key_the_reader_already_gave(
     html = client.get("/everything").get_data(as_text=True)
 
     assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}
+
+
+@pytest.mark.parametrize("url", ["/questions/0", "/everything"])
+def test_every_option_named_with_the_key_has_the_key_ticked(
+    walk: Walk, walk_sql: Path, url: str
+) -> None:
+    """Found by pressing it. After "merge on event_id, checked on every run"
+    was answered, the plain merge option was labelled "merge on event_id" too
+    -- the engine spells both with the key -- and its boxes were empty, so
+    pressing it was refused "got no columns".
+    """
+    app, client, session = walk(walk_sql)
+    key = _append_key(session)
+    index = [d.key for d in session.view().questions].index(key)
+    answer = {"key": key, "kind": "merge_checked", "columns": ["event_id"]}
+    assert client.post("/answer", data=answer).status_code == 302
+    labels = {
+        option.kind: option.label
+        for option in next(d for d in session.view().questions if d.key == key).options
+    }
+    assert "event_id" in labels["merge"], "the engine should spell the merge option with the key"
+    if url == "/everything":
+        client.post("/mode", data={"mode": "direct"})
+
+    html = client.get(url if url == "/everything" else f"/questions/{index}").get_data(as_text=True)
+
+    assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}
+    assert _boxes(html, "merge_checked", key) == {"event_id": True, "occurred_at": False}
+    pressed = client.post("/answer", data={"key": key, "kind": "merge", "columns": ["event_id"]})
+    assert pressed.status_code == 302

@@ -47,7 +47,13 @@
 </div>
 
 {%- if refusal %}
-<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+{# The box the refusal is about, by that box's own label. A mistyped "Also
+   reading" path and a mistyped project path were refused in the same words,
+   and the reader looked in the wrong box. #}
+<p class="refusal">
+  {%- if box == "project" %}<span class="tag">Converting against:</span> {% endif %}
+  {%- if box == "elsewhere" %}<span class="tag">Also reading:</span> {% endif %}
+  <span data-engine>{{ refusal }}</span></p>
 {%- endif %}
 
 <form method="post" action="/source" enctype="multipart/form-data">
@@ -60,8 +66,16 @@
       </label>
       <label class="field">
         <span class="key">Also reading</span>
-        <input type="text" name="elsewhere" value="{{ elsewhere }}" spellcheck="false"
-               placeholder="one path per line">
+        {# A box of lines, not a one-line input: an input joined two typed
+           paths with a space, and the route reads one path per line. The
+           paths are the reader's own, so they are an identifier here. #}
+        {%- if elsewhere %}
+        <textarea name="elsewhere" rows="2" spellcheck="false"
+                  placeholder="one path per line" data-identifier>{{ elsewhere }}</textarea>
+        {%- else %}
+        <textarea name="elsewhere" rows="2" spellcheck="false"
+                  placeholder="one path per line"></textarea>
+        {%- endif %}
       </label>
     </div>
 

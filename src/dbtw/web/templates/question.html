@@ -24,6 +24,7 @@
   its place. The refusal is documented and is not a hole to fill with prose.
 #}
 {% extends "base.html" %}
+{% from "example.html" import example_table %}
 {% block main %}
 <h1><span data-engine>{{ decision.plain_question }}</span></h1>
 <p><span data-engine>{{ decision.question }}</span></p>
@@ -87,39 +88,6 @@
 
 {%- if example %}
 <h2>Worked example</h2>
-<p><span data-engine>{{ example_notice }}</span></p>
-{%- if example.key %}
-<p class="matched"><span data-engine>{{ example.key }}</span></p>
-{%- endif %}
-<div class="scroll">
-<table>
-  <thead>
-    <tr>
-      <th></th>
-      {%- for column in example.columns %}
-      <th><span data-engine>{{ column }}</span></th>
-      {%- endfor %}
-    </tr>
-  </thead>
-  <tbody>
-    {%- for row in example.before %}
-    <tr>
-      <th>{% if loop.first %}<span data-engine>{{ supposed_label }}</span>{% endif %}</th>
-      {%- for cell in row %}
-      <td><span data-engine>{{ cell }}</span></td>
-      {%- endfor %}
-    </tr>
-    {%- endfor %}
-    {%- for row in example.model_after %}
-    <tr>
-      <th>{% if loop.first %}<span data-engine>{{ after_label }}</span>{% endif %}</th>
-      {%- for cell in row %}
-      <td><span data-engine>{{ cell }}</span></td>
-      {%- endfor %}
-    </tr>
-    {%- endfor %}
-  </tbody>
-</table>
-</div>
+{{- example_table(example) }}
 {%- endif %}
 {% endblock %}

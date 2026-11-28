@@ -52,6 +52,15 @@
   each meaning. `<details>` and not script, because
   `test_no_screen_gates_the_write_action` asserts these pages carry none.
 
+  A question step carries the kind of question beside its table name. Two
+  questions about one model -- its append question and its layer question --
+  were two steps with one name. The kind is the name of the pass that asks,
+  an identifier like the table name, and never a sentence.
+
+  A glossary definition marks a value a reader types with backticks, as the
+  report does in Markdown. The `code` filter renders each one as <code>, so a
+  screen shows `staging` as code rather than with its backticks.
+
   The typeface is the design's, fetched from Google Fonts with a system stack
   behind it. It is the one thing on this page that leaves the machine, it
   carries nothing about the reader's SQL, and the walk reads correctly in the
@@ -84,7 +93,7 @@
     <li data-item="term">
       <details>
         <summary><span data-engine>{{ term.name }}</span></summary>
-        <p><span data-engine>{{ term.plain }}</span></p>
+        <p><span data-engine>{{ term.plain | code }}</span></p>
       </details>
     </li>
     {%- endfor %}
@@ -99,7 +108,7 @@
     <li data-item="met">
       <details>
         <summary><span data-engine>{{ term.name }}</span></summary>
-        <p><span data-engine>{{ term.plain }}</span></p>
+        <p><span data-engine>{{ term.plain | code }}</span></p>
       </details>
     </li>
     {%- endfor %}
@@ -157,6 +166,7 @@
               <span class="label">
                 {%- if screen.engine %}<span data-engine>{{ screen.label }}</span>
                 {%- else %}{{ screen.label }}{% endif -%}
+                {%- if screen.kind %} <span class="kind" data-identifier>{{ screen.kind }}</span>{% endif -%}
               </span>
               <span class="dot {{ screen.state }}"></span>
             </a>
