@@ -1657,16 +1657,24 @@ class JinjaInDescriptionError(ValueError):
     `{{ var('x') }}` is perfectly balanced and still stops `dbt parse` when
     `x` is not set, and any balanced expression runs whatever it says.
 
-    So the rule is an allow-list of one, the form dbt documents for the
-    field: `{{ doc('name') }}` or `{{ doc("name") }}`, a plain identifier,
-    with whitespace allowed just inside the braces. Everything else is
-    refused -- any other `{{ ... }}`, any `{% ... %}` (an `{% if %}` with its
-    `{% endif %}` would render, and a sentence saying what a model is for
-    still has no use for one), any `{# ... #}` (dbt deletes a comment, so the
-    words would never reach the docs the reader wrote them for), and any of
-    those marks left open or standing alone. Telling safe Jinja from unsafe
-    by running Jinja's parser would make this package depend on Jinja to
-    convert a file; an allow-list needs no parser and cannot be talked round.
+    So the rule is an allow-list of one call, the one dbt documents for the
+    field: `doc()` with a docs-block name, or a package name and a docs-block
+    name -- each a plain identifier in single or double quotes. Whitespace is
+    allowed inside the braces and the parentheses, and so is Jinja's `-`
+    whitespace trim (`{{- doc('a') -}}`), which changes spacing and nothing
+    else. Everything else that opens a tag is refused -- any other `{{ ... }}`,
+    any `{% ... %}` (an `{% if %}` with its `{% endif %}` would render, and a
+    sentence saying what a model is for still has no use for one), any
+    `{# ... #}` (dbt deletes a comment, so the words would never reach the
+    docs the reader wrote them for), and any `{{`, `{%` or `{#` left open.
+    Telling safe Jinja from unsafe by running Jinja's parser would make this
+    package depend on Jinja to convert a file; an allow-list needs no parser
+    and cannot be talked round.
+
+    A closing mark standing alone -- `}}`, `%}`, `#}` -- is accepted. Outside
+    a tag Jinja reads it as plain text and renders it unchanged, so
+    `Payload: {"a": {"b": 1}}` is prose dbt shows exactly as typed, and
+    refusing it would reject a description that works.
 
     Nothing is stripped or escaped on the reader's behalf. A description is
     theirs, and quietly rewriting it would put words in the .yml they did not
@@ -1676,48 +1684,57 @@ class JinjaInDescriptionError(ValueError):
 
 # The one Jinja a description may carry: dbt's own docs-block reference.
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
-_DOC_REFERENCE = r"\{\{\s*doc\((?:'" + _IDENTIFIER + r"'|\"" + _IDENTIFIER + r"\")\)\s*\}\}"
+_QUOTED_NAME = r"(?:'" + _IDENTIFIER + r"'|\"" + _IDENTIFIER + r"\")"
+_DOC_REFERENCE = (
+    r"\{\{-?\s*doc\(\s*" + _QUOTED_NAME + r"(?:\s*,\s*" + _QUOTED_NAME + r")?\s*\)\s*-?\}\}"
+)
 
 # Scanned left to right, the docs-block reference first so it is consumed
 # whole before the general `{{ ... }}` can claim it. The closed forms come
-# before the bare marks so a refusal can quote the whole tag it found.
+# before the bare openers so a refusal can quote the whole tag it found. A
+# closer standing alone is not here: outside a tag Jinja reads it as text.
 _JINJA_MARKS = re.compile(
     r"(?P<doc>" + _DOC_REFERENCE + r")"
     r"|\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}"
-    r"|\{\{|\}\}|\{%|%\}|\{#|#\}",
+    r"|\{\{|\{%|\{#",
     re.DOTALL,
 )
 
-_OPENING_OF = {"}}": "{{", "%}": "{%", "#}": "{#"}
-_CLOSING_OF = {opening: closing for closing, opening in _OPENING_OF.items()}
+_CLOSING_OF = {"{{": "}}", "{%": "%}", "{#": "#}"}
 
+# The refusal is read on the describe screen by someone who may not know dbt,
+# so it is written in ASD-STE100 style: short sentences, active voice, one
+# idea in each. The reader's own text is quoted in “ ” and the fixed parts
+# never use those marks, so a test can find the quote and nothing else.
 _WHY = {
     "{{": (
-        "dbt treats the text between {{ and }} as code and runs it when it reads the "
-        "project, so code it cannot run -- a var() that is not set, a name it does not "
-        "know -- stops dbt reading the whole project, not just this model."
+        "dbt reads the text between {{ and }} as code. "
+        "dbt runs this code when it reads the project. "
+        "Code that dbt cannot run stops dbt for the whole project, not only for this model. "
+        "Two examples are a var() that has no value and a name that dbt does not know."
     ),
     "{%": (
-        "dbt treats the text between {% and %} as an instruction, such as an if or a "
-        "loop, and runs it when it reads the project, so one it cannot run stops dbt "
-        "reading the whole project, not just this model."
+        "dbt reads the text between {% and %} as an instruction, for example an if or a "
+        "loop. dbt runs the instruction when it reads the project. "
+        "An instruction that dbt cannot run stops dbt for the whole project, not only "
+        "for this model."
     ),
     "{#": (
-        "dbt treats the text between {# and #} as a hidden note and deletes it, so "
-        "those words would never show in the documentation, and one left open stops "
-        "dbt reading the whole project."
+        "dbt reads the text between {# and #} as a hidden note. "
+        "dbt deletes the note, so the words do not show in the documentation. "
+        "A note that is not closed stops dbt for the whole project."
     ),
 }
 
 _INSTEAD = (
-    " Write it as plain text, without the braces. To show a docs block (a longer "
-    "description kept in a .md file in the project), write {{ doc('block_name') }} "
-    "with nothing else between the braces."
+    " Write the description as plain text, without the braces. "
+    "To show a docs block, write {{ doc('block_name') }} with no other text between "
+    "the braces. A docs block is a longer description in a .md file in the project."
 )
 
 
 def _refuse_unsafe_jinja(model: str, text: str) -> None:
-    """Refuse a description holding Jinja other than `{{ doc('name') }}`,
+    """Refuse a description holding Jinja other than a `doc()` reference,
     quoting the first thing refused."""
     for mark in _JINJA_MARKS.finditer(text):
         if mark.group("doc") is not None:
@@ -1725,17 +1742,11 @@ def _refuse_unsafe_jinja(model: str, text: str) -> None:
         found = mark.group()
         if found in _CLOSING_OF:
             raise JinjaInDescriptionError(
-                f"the description of {model} opens {found} and never closes it with "
-                f"{_CLOSING_OF[found]}. " + _WHY[found] + _INSTEAD
-            )
-        if found in _OPENING_OF:
-            raise JinjaInDescriptionError(
-                f"the description of {model} has {found} with no {_OPENING_OF[found]} "
-                "before it. That is the closing half of a piece of dbt code, so its "
-                "opening half is missing." + _INSTEAD
+                f"The description of {model} has “{found}”, and no “{_CLOSING_OF[found]}” "
+                "closes it. " + _WHY[found] + _INSTEAD
             )
         raise JinjaInDescriptionError(
-            f"the description of {model} contains {found}. " + _WHY[found[:2]] + _INSTEAD
+            f"The description of {model} has “{found}”. " + _WHY[found[:2]] + _INSTEAD
         )
 
 
