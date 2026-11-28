@@ -245,7 +245,9 @@ def test_the_describe_screen_refuses_a_model_this_conversion_does_not_build(
     """
     app, client, session = walk(walk_sql)
 
-    refused = client.post("/describe", data={"model": "not_a_model_here", "text": "words"})
+    refused = client.post(
+        "/describe", data={"model": "not_a_model_here", "text": "words"}, follow_redirects=True
+    )
 
     assert refused.status_code == 400
     assert session.descriptions == {}
@@ -408,7 +410,9 @@ def test_the_screen_refuses_a_description_dbt_could_not_render(walk: Walk, walk_
     name = session.view().change.models[0].name
 
     refused = client.post(
-        "/describe", data={"model": name, "text": "Events {% if fresh %} as of today"}
+        "/describe",
+        data={"model": name, "text": "Events {% if fresh %} as of today"},
+        follow_redirects=True,
     )
 
     assert refused.status_code == 400
@@ -433,7 +437,9 @@ def test_the_screen_refuses_balanced_jinja_that_is_not_a_doc_reference(
     name = session.view().change.models[0].name
 
     refused = client.post(
-        "/describe", data={"model": name, "text": "Daily totals {{ var('x') }} here"}
+        "/describe",
+        data={"model": name, "text": "Daily totals {{ var('x') }} here"},
+        follow_redirects=True,
     )
 
     assert refused.status_code == 400
@@ -641,7 +647,11 @@ def test_a_materialization_the_walk_does_not_offer_is_refused_on_the_screen(
     app, client, session = walk(walk_sql)
     name = session.view().change.models[0].name
 
-    refused = client.post("/describe", data={"model": name, "materialization": "incremental"})
+    refused = client.post(
+        "/describe",
+        data={"model": name, "materialization": "incremental"},
+        follow_redirects=True,
+    )
 
     assert refused.status_code == 400
     assert session.materializations == {}

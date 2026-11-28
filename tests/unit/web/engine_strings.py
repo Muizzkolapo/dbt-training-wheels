@@ -37,7 +37,7 @@ import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
-from tests.unit.web.page import normalised
+from tests.unit.web.page import as_shown, normalised
 
 from dbtw.core.assemble import (
     CHOOSABLE,
@@ -258,6 +258,6 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
 
     for term in GLOSSARY:
         produced.append(term.name)
-        produced.append(term.plain)
+        produced.append(as_shown(term.plain))
         produced.extend(term.seen_as)
     return frozenset(normalised(text) for text in produced if text.strip())

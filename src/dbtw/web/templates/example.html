@@ -1,0 +1,46 @@
+{#
+  The worked example, as two screens show it: a question's own screen, and
+  the one screen of direct mode. One macro, so the two cannot draw the same
+  example two ways.
+
+  Every cell, every column name and all three labels are the engine's.
+  `worked_example` refuses an example it cannot draw truthfully, and a
+  caller that gets None renders nothing in its place -- not this macro with
+  an empty table.
+#}
+{%- macro example_table(example) %}
+<p><span data-engine>{{ example_notice }}</span></p>
+{%- if example.key %}
+<p class="matched"><span data-engine>{{ example.key }}</span></p>
+{%- endif %}
+<div class="scroll">
+<table>
+  <thead>
+    <tr>
+      <th></th>
+      {%- for column in example.columns %}
+      <th><span data-engine>{{ column }}</span></th>
+      {%- endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {%- for row in example.before %}
+    <tr>
+      <th>{% if loop.first %}<span data-engine>{{ supposed_label }}</span>{% endif %}</th>
+      {%- for cell in row %}
+      <td><span data-engine>{{ cell }}</span></td>
+      {%- endfor %}
+    </tr>
+    {%- endfor %}
+    {%- for row in example.model_after %}
+    <tr>
+      <th>{% if loop.first %}<span data-engine>{{ after_label }}</span>{% endif %}</th>
+      {%- for cell in row %}
+      <td><span data-engine>{{ cell }}</span></td>
+      {%- endfor %}
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+</div>
+{%- endmacro %}

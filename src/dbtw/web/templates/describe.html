@@ -51,6 +51,12 @@
   checked by exact match like any engine string, and it is the reader's own,
   so the glossary on this screen is not built out of their sentences. An
   empty box claims nothing, because there is no string to claim.
+
+  A refused save comes back to this screen at its row, `#model-<name>`, with
+  the refusal beside the row and what the reader typed still in the boxes.
+  The typed values are the reader's text, held for one render. A refusal
+  about a model this conversion does not build has no row, so it shows above
+  the rows.
 #}
 {% extends "base.html" %}
 {% block main %}
@@ -80,7 +86,10 @@
 <h2>Models</h2>
 <ul class="describe">
   {%- for row in models %}
-  <li data-item="model">
+  {%- set text = row.draft.text if row.draft else row.description %}
+  {%- set tags = row.draft.tags if row.draft else row.tags %}
+  {%- set built = row.draft.materialization if row.draft else row.materialization %}
+  <li data-item="model" id="model-{{ row.model.name }}">
     <h2><span data-engine>{{ row.model.name }}</span>
       {%- if row.description %}
       <span class="mark" data-item="described">Described</span>
@@ -93,13 +102,16 @@
       <span data-item="depends" data-engine>{{ name }}</span>
       {%- endfor %}</p>
     {%- endif %}
+    {%- if row.draft %}
+    <p class="refusal"><span data-engine>{{ row.draft.message }}</span></p>
+    {%- endif %}
     <form method="post" action="/describe">
       <input type="hidden" name="model" value="{{ row.model.name }}">
       <label class="field-block">
         <span class="key">Description</span>
-        {%- if row.description %}
+        {%- if text %}
         <textarea name="text" rows="3"
-                  data-engine data-identifier>{{ row.description }}</textarea>
+                  data-engine data-identifier>{{ text }}</textarea>
         {%- else %}
         <textarea name="text" rows="3"></textarea>
         {%- endif %}
@@ -108,19 +120,19 @@
         <label class="field-block">
           <span class="key">Built as</span>
           <select name="materialization">
-            <option value=""{% if row.materialization not in row.choosable %} selected{% endif %}>
+            <option value=""{% if built not in row.choosable %} selected{% endif %}>
               as converted</option>
             {%- for choice in row.choosable %}
-            <option value="{{ choice }}"{% if row.materialization == choice %} selected{% endif %}>
+            <option value="{{ choice }}"{% if built == choice %} selected{% endif %}>
               {{ choice }}</option>
             {%- endfor %}
           </select>
         </label>
         <label class="field-block">
           <span class="key">Tags</span>
-          {%- if row.tags %}
+          {%- if tags %}
           <textarea name="tags" rows="1" spellcheck="false"
-                    data-engine data-identifier>{{ row.tags }}</textarea>
+                    data-engine data-identifier>{{ tags }}</textarea>
           {%- else %}
           <textarea name="tags" rows="1" spellcheck="false"></textarea>
           {%- endif %}

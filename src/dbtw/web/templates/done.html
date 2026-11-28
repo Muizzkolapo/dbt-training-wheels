@@ -10,6 +10,10 @@
   afterwards would be telling them where their files went rather than asking
   whether that is where they want them.
 
+  The destination breaks only after a "/": the `path` filter puts a <wbr>
+  after each separator, so a long path wraps between folders and not in the
+  middle of a folder name.
+
   The commands are named here and defined once, in the block above, which is
   where every word on every screen is defined. Five of five asked for the set
   related to one another rather than introduced one at a time; the glossary
@@ -18,7 +22,7 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Done</h1>
-<p class="destination"><span data-engine>{{ out }}</span></p>
+<p class="destination"><span data-engine>{{ out | path }}</span></p>
 <form method="post" action="/write">
   <button type="submit">Write these files</button>
 </form>
@@ -36,7 +40,7 @@
   {%- for name, plain in commands %}
   <li>
     <code><span data-engine>{{ name }}</span></code>
-    <span class="means" data-aside data-item="term"><span data-engine>{{ plain }}</span></span>
+    <span class="means" data-aside data-item="term"><span data-engine>{{ plain | code }}</span></span>
   </li>
   {%- endfor %}
 </ol>

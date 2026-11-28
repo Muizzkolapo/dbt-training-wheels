@@ -44,9 +44,9 @@ def test_a_refused_answer_names_the_table_and_not_the_engine_key(
     question = next(d for d in session.view().questions if ".append." in d.key)
     assert question.subject is not None
 
-    body = client.post("/answer", data={"key": question.key, "kind": "merge"}).get_data(
-        as_text=True
-    )
+    body = client.post(
+        "/answer", data={"key": question.key, "kind": "merge"}, follow_redirects=True
+    ).get_data(as_text=True)
 
     assert question.key not in body
     assert question.subject.table in body

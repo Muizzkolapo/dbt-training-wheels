@@ -9,8 +9,10 @@ statement that failed to parse renders its classification in place while the
 rest of the page renders around it.
 
 Every refusal is asserted three ways: the status, the answers dict, and the
-next `GET /`. A 400 that recorded the answer anyway, or that left the session
-raising on every later render, is the failure this list exists to catch --
+next `GET /`. A refusal redirects to `/refused`, so each one is followed to
+the page that shows it, and the 400 is that page's. A 400 that recorded the
+answer anyway, or that left the session raising on every later render, is
+the failure this list exists to catch --
 "none crashing the session" is the requirement, not "none returning 200".
 """
 
@@ -75,7 +77,11 @@ def test_an_answer_is_recorded_and_redirects_to_the_question_it_answered(
 def test_an_unknown_key_is_refused_and_the_walk_still_renders(walk: Walk, walk_sql: Path) -> None:
     _app, client, session = walk(walk_sql)
 
-    response = client.post("/answer", data={"key": "tier2.append.nowhere.sql:0", "kind": "append"})
+    response = client.post(
+        "/answer",
+        data={"key": "tier2.append.nowhere.sql:0", "kind": "append"},
+        follow_redirects=True,
+    )
 
     assert response.status_code == 400
     assert "tier2.append.nowhere.sql:0" in response.get_data(as_text=True)
@@ -94,7 +100,7 @@ def test_a_kind_the_question_does_not_offer_is_refused_and_the_walk_still_render
     _app, client, session = walk(walk_sql)
     key = _first_question_key(session)
 
-    response = client.post("/answer", data={"key": key, "kind": "var"})
+    response = client.post("/answer", data={"key": key, "kind": "var"}, follow_redirects=True)
 
     assert response.status_code == 400
     assert "var" in response.get_data(as_text=True)
@@ -108,7 +114,7 @@ def test_a_key_whose_decision_asks_nothing_is_refused_and_the_walk_still_renders
     _app, client, session = walk(walk_sql)
     key = _silent_decision_key(session)
 
-    response = client.post("/answer", data={"key": key, "kind": "append"})
+    response = client.post("/answer", data={"key": key, "kind": "append"}, follow_redirects=True)
 
     assert response.status_code == 400
     assert "asks no question" in response.get_data(as_text=True)
@@ -125,11 +131,11 @@ def test_an_answer_missing_its_key_or_its_kind_is_refused(walk: Walk, walk_sql: 
     _app, client, session = walk(walk_sql)
     key = _first_question_key(session)
 
-    no_key = client.post("/answer", data={"kind": "append"})
+    no_key = client.post("/answer", data={"kind": "append"}, follow_redirects=True)
     assert no_key.status_code == 400
     assert "no question with key ''" in read(no_key.get_data(as_text=True)).text
 
-    no_kind = client.post("/answer", data={"key": key})
+    no_kind = client.post("/answer", data={"key": key}, follow_redirects=True)
     assert no_kind.status_code == 400
     assert "offers no '' option" in read(no_kind.get_data(as_text=True)).text
 
@@ -147,7 +153,7 @@ def test_a_merge_answer_with_no_columns_is_refused_and_the_walk_still_renders(
     _app, client, session = walk(walk_sql)
     key = next(d.key for d in session.view().questions if ".append." in d.key)
 
-    response = client.post("/answer", data={"key": key, "kind": "merge"})
+    response = client.post("/answer", data={"key": key, "kind": "merge"}, follow_redirects=True)
 
     assert response.status_code == 400
     assert "got no columns" in response.get_data(as_text=True)

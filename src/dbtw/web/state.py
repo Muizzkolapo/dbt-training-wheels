@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble, clean_tags
-from dbtw.core.context import read_project
+from dbtw.core.context import NotADbtProjectError, read_project
 from dbtw.core.deliver import Push
 from dbtw.core.ingest import classify_statements, ingest
 from dbtw.core.ingest.types import ClassifiedStatement
@@ -339,19 +339,7 @@ class Session:
         description is not held -- the next render would otherwise raise
         `UnknownModelError` for every screen, with no way back.
         """
-        previous = dict(self.descriptions)
-        # Mutated in place rather than rebound, restored the same way, for the
-        # reason `answer` gives: a caller watching its own dict must see what
-        # the session recorded and nothing it refused.
-        self.descriptions[model] = text
-        try:
-            self._run(
-                self._resolve(self._pristine()), self.descriptions, self.tags, self.materializations
-            )
-        except Exception:
-            self.descriptions.clear()
-            self.descriptions.update(previous)
-            raise
+        self._keep({**self.descriptions, model: text}, self.tags, self.materializations)
 
     def tag(self, model: str, tags: Sequence[str]) -> None:
         """Record the tags for `model`, or refuse.
@@ -364,30 +352,25 @@ class Session:
         Applied before it is kept, like every other answer here, so a refused
         list is not held and the next render does not raise for it.
         """
-        cleaned = clean_tags(tags)
-        previous = dict(self.tags)
-        if cleaned:
-            self.tags[model] = cleaned
-        else:
-            # No tags is no entry, not an empty one. The describe screen
-            # saves a model's description and its tags in one press, so
-            # holding `{model: ()}` would put every described model in this
-            # dict -- and an edit to the SQL would then strand a tag list
-            # nobody wrote, on a screen telling a reader they are about to
-            # lose tags they never had.
-            #
-            # What that costs: an empty list against a model this conversion
-            # does not build removes nothing and is not refused. There is
-            # nothing there to lose, so there is nothing to be told about.
-            self.tags.pop(model, None)
-        try:
-            self._run(
-                self._resolve(self._pristine()), self.descriptions, self.tags, self.materializations
-            )
-        except Exception:
-            self.tags.clear()
-            self.tags.update(previous)
-            raise
+        self._keep(self.descriptions, _with_tags(self.tags, model, tags), self.materializations)
+
+    def configure(
+        self, model: str, description: str, tags: Sequence[str], materialization: str
+    ) -> None:
+        """Record the description, the tags and the materialization of
+        `model` together, or refuse all three.
+
+        One row of the describe screen is one press, and the reader reads it
+        as one save. Three calls in turn kept the fields that came before a
+        refusal: a refused materialization left the description and the tags
+        recorded, under a screen that said nothing was. So the three go into
+        one run, and the session keeps them only when that run accepts them.
+        """
+        self._keep(
+            {**self.descriptions, model: description},
+            _with_tags(self.tags, model, tags),
+            _with_materialization(self.materializations, model, materialization),
+        )
 
     def stale_descriptions(self) -> tuple[str, ...]:
         """The descriptions held for models this conversion no longer builds,
@@ -424,22 +407,40 @@ class Session:
         refuses a materialization this walk does not offer and a model this
         conversion does not build, and neither is held.
         """
-        previous = dict(self.materializations)
-        if materialization.strip():
-            self.materializations[model] = materialization.strip()
-        else:
-            self.materializations.pop(model, None)
-        try:
-            self._run(
-                self._resolve(self._pristine()),
-                self.descriptions,
-                self.tags,
-                self.materializations,
-            )
-        except Exception:
-            self.materializations.clear()
-            self.materializations.update(previous)
-            raise
+        self._keep(
+            self.descriptions,
+            self.tags,
+            _with_materialization(self.materializations, model, materialization),
+        )
+
+    def _keep(
+        self,
+        descriptions: Mapping[str, str],
+        tags: Mapping[str, tuple[str, ...]],
+        materializations: Mapping[str, str],
+    ) -> None:
+        """Run the conversion with these three, and hold them only if it runs.
+
+        Applied before it is kept, so a refused value is not held -- the next
+        render would otherwise raise for every screen, with no way back. Two
+        pipeline runs, the same two `answer` makes and for the same reason:
+        the model names are validated against the run that applies the held
+        answers, and the answers are resolved against the pristine one.
+
+        Copied in place rather than rebound, for the reason `answer` gives: a
+        caller watching its own dict must see what the session recorded and
+        nothing it refused.
+        """
+        self._run(self._resolve(self._pristine()), descriptions, tags, materializations)
+        # Copied before any is cleared: a caller passes the held dict itself
+        # for the fields it does not change.
+        kept = (dict(descriptions), dict(tags), dict(materializations))
+        self.descriptions.clear()
+        self.descriptions.update(kept[0])
+        self.tags.clear()
+        self.tags.update(kept[1])
+        self.materializations.clear()
+        self.materializations.update(kept[2])
 
     def stale_materializations(self) -> tuple[str, ...]:
         """The materializations held for models this conversion no longer
@@ -580,6 +581,44 @@ class Session:
         }
 
 
+def _with_tags(
+    held: Mapping[str, tuple[str, ...]], model: str, tags: Sequence[str]
+) -> dict[str, tuple[str, ...]]:
+    """`held` with `model`'s tags replaced by `tags`, cleaned.
+
+    No tags is no entry, not an empty one. The describe screen saves a
+    model's description and its tags in one press, so holding `{model: ()}`
+    would put every described model in this dict -- and an edit to the SQL
+    would then strand a tag list nobody wrote, on a screen telling a reader
+    they are about to lose tags they never had.
+
+    What that costs: an empty list against a model this conversion does not
+    build removes nothing and is not refused. There is nothing there to lose,
+    so there is nothing to be told about.
+    """
+    cleaned = clean_tags(tags)
+    wanted = dict(held)
+    if cleaned:
+        wanted[model] = cleaned
+    else:
+        wanted.pop(model, None)
+    return wanted
+
+
+def _with_materialization(held: Mapping[str, str], model: str, chosen: str) -> dict[str, str]:
+    """`held` with `model`'s materialization replaced by `chosen`.
+
+    Blank is "leave it as the conversion decided", which is no entry, for the
+    reason `_with_tags` drops an empty list.
+    """
+    wanted = dict(held)
+    if chosen.strip():
+        wanted[model] = chosen.strip()
+    else:
+        wanted.pop(model, None)
+    return wanted
+
+
 def _question(change: ProjectChange, key: str) -> Decision:
     """The Decision `key` names, if it is one this conversion asks."""
     decision = next((d for d in change.decisions if d.key == key), None)
@@ -596,6 +635,32 @@ def _question(change: ProjectChange, key: str) -> Decision:
             "what this conversion did, so there is no answer to give it"
         )
     return decision
+
+
+class ProjectPathError(NotADbtProjectError):
+    """A path on the entry screen that names no dbt project, and its box.
+
+    `box` is "project" for the project the walk converts against, and
+    "elsewhere" for one of the other projects it reads. The two refusals from
+    `read_project` read the same, so a reader who mistyped an "Also reading"
+    path was told about a bad project path and looked in the wrong box. The
+    screen puts the box's own label in front of the refusal.
+
+    A `NotADbtProjectError`, because that is what it is: every caller that
+    catches the engine's refusal still catches this one.
+    """
+
+    def __init__(self, box: str, message: str) -> None:
+        super().__init__(message)
+        self.box = box
+
+
+def _read_from(root: Path, box: str) -> None:
+    """Read the dbt project at `root`, or refuse with the box it came from."""
+    try:
+        read_project(root)
+    except NotADbtProjectError as refusal:
+        raise ProjectPathError(box, str(refusal)) from refusal
 
 
 class EmptySourceError(ValueError):
@@ -739,18 +804,28 @@ class Source:
         than joining it -- so a project refused *after* that clearing would
         take their previous source with it and leave them with neither.
         """
-        root = Path(project).expanduser()
+        typed = str(project).strip()
+        if not typed:
+            # Its own refusal. Read as a path, a blank box gave "there is no
+            # dbt_project.yml at" with nothing after "at".
+            raise ProjectPathError(
+                "project",
+                "the project path is blank. Type the path of the folder that "
+                "contains your dbt_project.yml",
+            )
+        root = Path(typed).expanduser()
         # Read, not merely existence-checked: the conventions this walk
         # proposes come out of this file, and `read_project` is what knows
         # whether it can be read. Its refusals name the path and say what is
-        # wrong with it, which is what the screen renders.
-        read_project(root)
+        # wrong with it, which is what the screen renders -- with the box it
+        # came from, because a refusal from either box reads the same.
+        _read_from(root, "project")
         # Every other project too, and before anything is staged. A reader
         # who mistyped the third of three paths should be told which one,
         # with their SQL still where they left it.
         others = tuple(Path(other).expanduser() for other in elsewhere if str(other).strip())
         for other in others:
-            read_project(other)
+            _read_from(other, "elsewhere")
         if not files or not any(text.strip() for text in files.values()):
             raise EmptySourceError(
                 "nothing to convert. Paste a query or choose a .sql file. Then press Convert"
