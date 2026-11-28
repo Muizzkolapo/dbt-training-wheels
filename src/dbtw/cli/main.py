@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
-from dbtw.core.assemble import assemble
+from dbtw.core.assemble import ProjectChange, assemble
 from dbtw.core.context import NotADbtProjectError, read_project
 from dbtw.core.emit import (
     REPORT_NAME,
@@ -29,8 +30,10 @@ from dbtw.core.emit import (
     UnsafeOutputPathError,
     emit,
     refuse_output_inside_project,
+    shown_path,
+    sql_root,
 )
-from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest
+from dbtw.core.ingest import UnknownDialectError, classify_statements, ingest, known_dialects
 from dbtw.core.passes import run_passes
 from dbtw.core.progress import (
     NOTHING_EXPLAINED,
@@ -53,13 +56,38 @@ _HOST = "127.0.0.1"
 # already in use raises OSError from the bind, which is already a usage
 # error here — the refusal names the port and --port is the answer to it.
 _NO_REMEMBER_HELP = (
-    "explain every dbt word in full, and record nothing. By default, this tool "
+    "Explain every dbt word in full, and record nothing. By default, this tool "
     "records which words it already explained to you for this project. The record "
     "is a plain JSON file under your state directory. After the third time, this "
     "tool stops repeating the meaning of a word in full. This tool moves the "
     "meaning to the end of the report, and does not remove it. The file contains "
     "no SQL"
 )
+
+# Help text, in one place for the two commands that share an option. Each
+# string starts with a capital letter and follows the wording rules of the
+# report, because a reader who has never used dbt reads it first.
+_DESCRIPTION = (
+    "Convert raw SQL scripts into dbt models for a dbt project that you already have. "
+    "This tool writes a copy for you to read, and a report that explains each "
+    "decision. This tool does not change your project."
+)
+_EXAMPLES = """\
+Examples:
+  dbtw convert nightly.sql --project ~/analytics --out ./dbtw-out
+  dbtw web nightly.sql --project ~/analytics
+  dbtw web
+"""
+_PROJECT_HELP = (
+    "The root directory of the dbt project to convert for. This directory contains dbt_project.yml"
+)
+_DIALECT_HELP = (
+    "The database whose SQL syntax the script uses. Accepted values: "
+    f"{', '.join(known_dialects())}. If you give no value, this tool reads the SQL "
+    "with general SQL rules"
+)
+_SQL_PATH_HELP = "A .sql file, or a directory of .sql files"
+_HELP_HELP = "Show this help, and stop"
 
 _DEFAULT_PORT = 5000
 
@@ -103,31 +131,49 @@ _USAGE_ERRORS = (
 )
 
 
+def _parser(
+    make: Callable[..., argparse.ArgumentParser], *args: str, **kw: Any
+) -> argparse.ArgumentParser:
+    """A parser whose own -h option has help in the same case as the rest.
+
+    argparse adds -h with "show this help message and exit", in lower case.
+    """
+    parser = make(*args, add_help=False, **kw)
+    parser.add_argument("-h", "--help", action="help", help=_HELP_HELP)
+    return parser
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="dbtw")
+    parser = _parser(
+        argparse.ArgumentParser,
+        prog="dbtw",
+        description=_DESCRIPTION,
+        epilog=_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    convert = subparsers.add_parser(
-        "convert", help="Convert raw SQL into models for a target dbt project"
+    convert = _parser(
+        subparsers.add_parser,
+        "convert",
+        help="Convert raw SQL into dbt models, and write a report",
+        description=(
+            "Convert raw SQL into dbt models. This tool writes the models and a report "
+            "into OUT_DIR. OUT_DIR must be outside the project."
+        ),
     )
-    convert.add_argument(
-        "sql_path", metavar="SQL_PATH", help="A .sql file, or a directory of .sql files"
-    )
-    convert.add_argument(
-        "--project",
-        metavar="PROJECT_PATH",
-        required=True,
-        help="The root directory of the target dbt project",
-    )
+    convert.add_argument("sql_path", metavar="SQL_PATH", help=_SQL_PATH_HELP)
+    convert.add_argument("--project", metavar="PROJECT_PATH", required=True, help=_PROJECT_HELP)
     convert.add_argument(
         "--out",
         metavar="OUT_DIR",
         default="./dbtw-out",
-        help="Output directory (default: ./dbtw-out)",
+        help=(
+            "The directory for the models and the report. This directory must be outside "
+            "the project (default: ./dbtw-out)"
+        ),
     )
-    convert.add_argument(
-        "--dialect", metavar="DIALECT", default=None, help="The source SQL dialect"
-    )
+    convert.add_argument("--dialect", metavar="DIALECT", default=None, help=_DIALECT_HELP)
     convert.add_argument(
         "--no-remember",
         dest="remember",
@@ -139,39 +185,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "--inline-vars",
         action="store_true",
         default=False,
-        help="replace script variables with their literal values instead of dbt var() calls",
+        help="Replace each script variable with its literal value, not with a dbt var() call",
     )
     convert.add_argument(
         "--unique-key",
         metavar="COLUMNS",
         default=None,
         help=(
-            "comma-separated column(s) that answer the append-or-merge question for "
-            "models converted from a bare INSERT...SELECT. This option upgrades every "
-            "append incremental to a merge incremental, keyed on these columns"
+            "One or more columns, separated by commas, that identify one row. Each model "
+            "from a bare INSERT ... SELECT then updates the rows that match on these "
+            "columns, and adds the other rows. Without this option, such a model adds "
+            "every row on each run"
         ),
     )
 
-    web = subparsers.add_parser(
-        "web", help="Answer this conversion's questions one at a time, in a browser"
+    web = _parser(
+        subparsers.add_parser,
+        "web",
+        help="Convert raw SQL in a browser, one question at a time",
+        description=(
+            "Convert raw SQL in a browser. Where this tool cannot decide alone, the "
+            "browser asks you, one question at a time. This tool writes nothing until "
+            "you press Write these files."
+        ),
     )
     web.add_argument(
         "sql_path",
         metavar="SQL_PATH",
         nargs="?",
         default=None,
-        help=(
-            "A .sql file, or a directory of .sql files. Omit it to paste or upload the "
-            "SQL in the browser"
-        ),
+        help=f"{_SQL_PATH_HELP}. If you omit it, paste or upload the SQL in the browser",
     )
     web.add_argument(
         "--project",
         metavar="PROJECT_PATH",
         default=None,
-        help="The root directory of the target dbt project. You can also give it in the browser",
+        help=f"{_PROJECT_HELP}. You can also type this directory in the browser",
     )
-    web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
+    web.add_argument("--dialect", metavar="DIALECT", default=None, help=_DIALECT_HELP)
     web.add_argument(
         "--no-remember",
         dest="remember",
@@ -183,7 +234,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="OUT_DIR",
         default="./dbtw-out",
-        help="The directory that the write action of the walk writes to (default: ./dbtw-out)",
+        help=(
+            "The directory that the Write these files button writes to. This directory "
+            "must be outside the project (default: ./dbtw-out)"
+        ),
     )
     web.add_argument(
         "--port",
@@ -235,19 +289,25 @@ def _convert(
     project_root = _expanded(project, "--project")
     out_dir = _expanded(out, "--out")
 
+    # The project and --out are checked before a statement is read. A refusal
+    # about --out is the one thing the reader must fix, and a warning about
+    # the SQL printed above it is about a run that does not occur. `emit`
+    # asks the same question again, so no caller is left unguarded.
+    ctx = read_project(project_root)
+    refuse_output_inside_project(out_dir, ctx)
+
     ingest_result = ingest(sql_path, dialect)
     for warning in ingest_result.warnings:
         print(f"warning: {warning}", file=sys.stderr)
     classified = classify_statements(ingest_result)
     state = run_passes(classified, ingest_result.dialect)
-    ctx = read_project(project_root)
     change = assemble(state, ctx, inline_vars=inline_vars, unique_key=unique_key)
 
     # Looked up before the report is written and recorded after, so a
     # conversion that fails part way through never claims to have explained a
     # word the reader never saw.
     learned = load_progress(project_root) if remember else NOTHING_EXPLAINED
-    result = emit(change, ctx, out_dir, learned)
+    result = emit(change, ctx, out_dir, learned, sql_path=Path(sql_path), remember=remember)
     report_path = out_dir / REPORT_NAME
     if remember and not learned.unreadable:
         shown = teaching_for(terms_in(report_path.read_text(encoding="utf-8")), learned)
@@ -269,12 +329,38 @@ def _convert(
     for decision in result.decisions:
         print(f"note: {decision.action}", file=sys.stderr)
 
-    print(
-        f"This tool read {len(ingest_result.statements)} statements from {sql_path}. "
-        f"This tool wrote {len(change.models)} models and proposed {len(change.sources)} "
-        f"sources. {len(change.pending)} statements are still pending. Report: {report_path}"
-    )
+    print(_summary(sql_path, len(ingest_result.statements), change, report_path))
     return 0
+
+
+def _counted(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def _summary(sql_path: str, read: int, change: ProjectChange, report_path: Path) -> str:
+    """What the run did, for the terminal, with each pending statement named.
+
+    A reader who reads only the terminal must still learn which statements
+    this tool did not convert, where they are, and why. The place is
+    relative to the SQL that the reader gave, as in the report.
+    """
+    lines = [
+        f"This tool read {_counted(read, 'statement', 'statements')} from {sql_path}.",
+        f"This tool wrote {_counted(len(change.models), 'model', 'models')} and proposed "
+        f"{_counted(len(change.sources), 'source', 'sources')}.",
+    ]
+    pending = len(change.pending)
+    if pending:
+        verb = "is" if pending == 1 else "are"
+        lines.append(f"{_counted(pending, 'statement', 'statements')} {verb} still pending:")
+        root = sql_root(Path(sql_path))
+        for _, stmt in change.pending:
+            where = f"{shown_path(stmt.raw.source_file, root)}:{stmt.raw.line_start}"
+            lines.append(f"  - {where} ({stmt.kind}): {stmt.reason}")
+    else:
+        lines.append("No statement is still pending.")
+    lines.append(f"Report: {report_path}")
+    return "\n".join(lines)
 
 
 def _web(

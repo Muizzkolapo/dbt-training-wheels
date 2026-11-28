@@ -54,17 +54,20 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 def _unparseable_reason(raw: RawStatement, exc: SqlglotError, dialect: str | None) -> str:
     """Why sqlglot could not parse `raw`, as sentences for the reader.
 
-    sqlglot counts the line from the top of the statement. `raw.line_start`
-    is the file line of the first character of the statement, so the sum
-    gives the file line. The column is given only on a later line of the
-    statement. Its first line can start after another statement, so a column
-    on that line is not always the column in the file.
+    sqlglot counts the line from the top of the text of the statement, and
+    that text starts with any leading comment. `raw.line_start` is the first
+    SQL line, after that comment, so it is not the top of the text. The text
+    ends on `raw.line_end`, so the top of the text is `raw.line_end` less the
+    line breaks in the text. The column is given only on a later line of the
+    text. Its first line can start after another statement, so a column on
+    that line is not always the column in the file.
     """
+    top = raw.line_end - raw.text.count("\n")
     error = exc.errors[0] if isinstance(exc, ParseError) and exc.errors else None
     if error is not None and error.get("line") and error.get("highlight"):
         raw_token = str(error["highlight"])
         line = int(error["line"])
-        where = f"line {raw.line_start + line - 1}"
+        where = f"line {top + line - 1}"
         if line > 1 and "\n" not in raw_token:
             where += f", column {int(error['col']) - len(raw_token) + 1}"
         token = _clean(raw_token)

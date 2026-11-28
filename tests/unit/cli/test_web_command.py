@@ -295,7 +295,7 @@ def test_web_refuses_an_out_dir_inside_the_project_before_serving_anything(
     inside = project / "out"
     assert main(["web", str(_sql(tmp_path)), "--project", str(project), "--out", str(inside)]) == 2
     err = capsys.readouterr().err
-    assert "refusing" in err
+    assert "refuses to write the conversion inside" in err
     assert not inside.exists()
 
 

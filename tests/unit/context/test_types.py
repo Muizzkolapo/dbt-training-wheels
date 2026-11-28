@@ -24,6 +24,7 @@ def test_context_is_immutable():
 def test_detection_records_provenance():
     d = Detection(
         key="layer.staging.prefix",
+        label="Prefix of staging models",
         status="detected",
         value="stg_",
         evidence="stg_ — from 3 of 3 models in models/staging",

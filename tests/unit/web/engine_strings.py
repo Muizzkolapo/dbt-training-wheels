@@ -150,7 +150,7 @@ def written_files(session: Session, change: ProjectChange | None = None) -> dict
     change = change if change is not None else session.view().change
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "preview"
-        result = emit(change, read_project(session.project), out)
+        result = emit(change, read_project(session.project), out, sql_path=session.sql)
         return {
             path.relative_to(out).as_posix(): path.read_text(encoding="utf-8")
             for path in result.paths
@@ -241,7 +241,7 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
     ctx = read_project(session.project)
     produced.append(ctx.project_name)
     for detection in ctx.detections:
-        produced.extend((detection.key, detection.value or "", detection.evidence))
+        produced.extend((detection.key, detection.label, detection.reading, detection.evidence))
 
     # What each materialization a reader can choose means. Engine-owned and
     # rendered beside the choice, so it is checked like any other sentence.

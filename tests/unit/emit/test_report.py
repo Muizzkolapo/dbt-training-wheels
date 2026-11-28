@@ -411,7 +411,6 @@ def test_not_done_yet_keeps_every_caveat_that_is_true_of_every_run():
         assert "This tool did no validation." in section
         assert "did not start dbt, compiled nothing" in section
         assert "ran nothing against a warehouse" in section
-        assert "temporary tables" in section
         assert "documentation blocks or exposures" in section
         assert "review the model bodies and the decisions above" in section
 

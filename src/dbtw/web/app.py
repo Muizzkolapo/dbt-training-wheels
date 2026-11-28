@@ -653,7 +653,10 @@ def _example_for(decision: Decision, change: ProjectChange) -> Example | None:
 
 
 def _previews(
-    session: Session, change: ProjectChange, progress: Progress = NOTHING_EXPLAINED
+    session: Session,
+    change: ProjectChange,
+    progress: Progress = NOTHING_EXPLAINED,
+    remember: bool = True,
 ) -> tuple[FilePreview, ...]:
     """Every file this conversion would write, with its contents.
 
@@ -668,7 +671,14 @@ def _previews(
     """
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory) / "preview"
-        result = emit(change, read_project(session.project), out, progress)
+        result = emit(
+            change,
+            read_project(session.project),
+            out,
+            progress,
+            sql_path=session.sql,
+            remember=remember,
+        )
         return tuple(
             FilePreview(
                 path=path.relative_to(out).as_posix(),
@@ -1309,8 +1319,9 @@ def create_app(source: Source) -> Flask:
         # project named `warehouse_core` defined "warehouse" here though the
         # word was nowhere in what the page says. See the note in `start`.
         spoken = _spoken(
+            (d.label for d in ctx.detections),
             (d.key for d in ctx.detections),
-            (d.value or "" for d in ctx.detections),
+            (d.reading for d in ctx.detections),
             (d.evidence for d in ctx.detections),
             (screen.label for screen in _walk(view) if screen.engine),
         )
@@ -1718,7 +1729,7 @@ def create_app(source: Source) -> Flask:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        previews = _previews(_conversation(), view.change, _learned(source))
+        previews = _previews(_conversation(), view.change, _learned(source), source.remember)
         spoken = _spoken(
             (preview.path for preview in previews),
             (preview.contents for preview in previews),
@@ -1794,7 +1805,12 @@ def create_app(source: Source) -> Flask:
             return redirect(url_for("written_page"))
         try:
             result = emit(
-                view.change, read_project(_conversation().project), source.out, _learned(source)
+                view.change,
+                read_project(_conversation().project),
+                source.out,
+                _learned(source),
+                sql_path=_conversation().sql,
+                remember=source.remember,
             )
         except _WRITE_FAILURES as failure:
             # 500 rather than 400: the form carried nothing wrong. The paths
@@ -1997,7 +2013,7 @@ def create_app(source: Source) -> Flask:
         what this conversion is, so they can fix where it was going and press
         again.
         """
-        previews = _previews(_conversation(), view.change, _learned(source))
+        previews = _previews(_conversation(), view.change, _learned(source), source.remember)
         spoken = _spoken(
             message,
             str(source.out),

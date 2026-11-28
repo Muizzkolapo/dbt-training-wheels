@@ -11,14 +11,20 @@ from dbtw.core.ingest.splitter import split_sql
 from dbtw.core.ingest.types import IngestResult, RawStatement, UnknownDialectError
 
 _NO_DIALECT_WARNING = (
-    "no dialect was specified, so this tool parsed the statements with the permissive "
-    "default of sqlglot"
+    "no dialect was specified, so this tool read the SQL with general SQL rules, not "
+    "the rules of one database. If your SQL uses the syntax of one database, give its "
+    "name with --dialect, for example `--dialect postgres`."
 )
+
+
+def known_dialects() -> tuple[str, ...]:
+    """The names that --dialect accepts, sorted."""
+    return tuple(sorted(k for k in Dialect.classes if k))
 
 
 def ingest(source: Path | str | Sequence[Path | str], dialect: str | None = None) -> IngestResult:
     if dialect is not None and dialect not in Dialect.classes:
-        valid = ", ".join(sorted(k for k in Dialect.classes if k))
+        valid = ", ".join(known_dialects())
         raise UnknownDialectError(
             f"This tool does not know the dialect {dialect!r}. "
             f"Use one of these dialects: `{valid}`."

@@ -16,6 +16,11 @@
   tool could not read is a thing the reader knows and this does not, and
   dropping those rows would turn "I could not tell" into "there is nothing
   there" -- which is the silence this project does not keep.
+
+  The label leads each row, and the key follows it as quiet mono text. The
+  key is this tool's own name for the convention, and a reader who has never
+  used dbt cannot read it. Both, and the reading of an empty value ("not
+  found", "none"), come from `Detection` in dbtw.core.context.
 #}
 {% extends "base.html" %}
 {% block main %}
@@ -26,13 +31,14 @@
 <ul class="detections">
   {%- for detection in detections %}
   <li data-item="detection">
-    <p class="key"><span data-engine>{{ detection.key }}</span></p>
-    {%- if detection.value %}
-    <p class="value"><span data-engine>{{ detection.value }}</span></p>
+    <p class="label"><span data-engine>{{ detection.label }}</span></p>
+    {%- if detection.status == "detected" %}
+    <p class="value"><span data-engine>{{ detection.reading }}</span></p>
     {%- else %}
-    <p class="value"><span class="mark blank">Not determined</span></p>
+    <p class="value"><span class="mark blank" data-engine>{{ detection.reading }}</span></p>
     {%- endif %}
     <p class="evidence"><span data-engine>{{ detection.evidence }}</span></p>
+    <p class="key"><span data-engine>{{ detection.key }}</span></p>
   </li>
   {%- endfor %}
 </ul>

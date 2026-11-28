@@ -45,7 +45,7 @@ def _find(tmp_path, name_fragment: str) -> str:
     return match.read_text()
 
 
-def test_help_text_answers_the_append_or_merge_question(capsys):
+def test_help_text_says_what_the_key_does_to_an_insert_select(capsys):
     parser = _build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["convert", "--help"])
@@ -53,7 +53,7 @@ def test_help_text_answers_the_append_or_merge_question(capsys):
     # compare with whitespace collapsed out entirely rather than searching
     # for a phrase that could legitimately be split across two lines.
     out = "".join(capsys.readouterr().out.split())
-    assert "append-or-mergequestion" in out
+    assert "updatestherowsthatmatchonthesecolumns" in out
     assert "INSERT...SELECT" in out
 
 
