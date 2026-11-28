@@ -161,8 +161,8 @@ GLOSSARY: tuple[Term, ...] = (
         name="staging",
         plain=(
             "A layer of models, not a deployment environment. Here, `staging` is the "
-            "folder of models that clean raw tables one for one, so that later models "
-            "start from clean data. These models rename columns and correct types, and "
+            "folder of models that tidy raw tables one for one, so that later models "
+            "start from something clean. These models rename columns and correct types, and "
             "they do not use joins. The word has no relation to "
             "staging versus production. The same folder exists in each place where "
             "the project is deployed."
@@ -197,9 +197,9 @@ GLOSSARY: tuple[Term, ...] = (
             "How a model names another model, in place of the table that the other "
             "model writes. From this call, dbt reads the name of the other model. Then "
             "dbt finds that it must write the other model first, and puts the real "
-            "table name into the SQL. If you rename a model, each of these calls "
-            "follows the new name. A table name that you type by hand would not follow "
-            "it."
+            "table name into the SQL. If you rename a model, dbt uses the new table name "
+            "in place of each of these calls. A table name that you type by hand would "
+            "not follow the rename."
         ),
     ),
     Term(
@@ -227,9 +227,9 @@ GLOSSARY: tuple[Term, ...] = (
         name="warehouse",
         plain=(
             "The database where the SQL actually runs. Examples are Snowflake, "
-            "BigQuery, Redshift, Postgres and other databases. Unlike the warehouse, "
-            "dbt stores no data of its own. Instead, dbt sends SQL to the warehouse, "
-            "and every table that this conversion mentions is in the warehouse."
+            "BigQuery, Redshift, Postgres and other databases. dbt stores no data of its "
+            "own. dbt sends SQL to the warehouse. Every table that this conversion "
+            "mentions is in the warehouse."
         ),
     ),
 )

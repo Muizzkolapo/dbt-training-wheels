@@ -218,7 +218,7 @@ def _refuse_without_remote(root: Path, remote: str) -> None:
                 else ", and no remotes at all"
             )
             + ". The branch is still here. Add a remote and push the branch yourself, "
-            "or add a remote and press the button again"
+            "or add a remote and ask for the push again"
         )
 
 

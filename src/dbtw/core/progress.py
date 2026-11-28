@@ -163,7 +163,13 @@ def _stored_key(projects: Mapping[str, object], project: Path) -> str:
 
 
 def _fault(path: Path, detail: str) -> str:
-    return f"this tool could not read the record of the words it showed you ({path}): {detail}"
+    # Two sentences, not one clause: the report splices this in as a sentence
+    # of its own, and the detail (a JSON error, an OS error) has no fixed
+    # length, so a single sentence holding both would pass the STE limit.
+    return (
+        f"this tool could not read the record of the words that it explained to you "
+        f"({path}). The reason: {detail}"
+    )
 
 
 def _counts_fault(shown: object) -> str:

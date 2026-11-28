@@ -15,7 +15,7 @@ FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
 
 def test_missing_dbt_project_yml_raises(tmp_path):
-    with pytest.raises(NotADbtProjectError, match="has no dbt_project.yml"):
+    with pytest.raises(NotADbtProjectError, match="no dbt_project.yml at"):
         read_project(tmp_path)
 
 

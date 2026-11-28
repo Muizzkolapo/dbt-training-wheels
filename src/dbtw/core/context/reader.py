@@ -120,7 +120,7 @@ def _configured_paths(
 def _load_project_yaml(root: Path) -> dict[str, Any]:
     project_file = root / "dbt_project.yml"
     if not project_file.is_file():
-        raise NotADbtProjectError(f"the folder {root} has no dbt_project.yml")
+        raise NotADbtProjectError(f"there is no dbt_project.yml at {root}")
     try:
         loaded = yaml.safe_load(project_file.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:

@@ -147,7 +147,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "comma-separated column(s) that answer the append-or-merge question for "
-            "models converted from a bare INSERT...SELECT. This option changes every "
+            "models converted from a bare INSERT...SELECT. This option upgrades every "
             "append incremental to a merge incremental, keyed on these columns"
         ),
     )

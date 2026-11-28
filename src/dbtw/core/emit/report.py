@@ -256,11 +256,11 @@ def _render_glossary(teaching: Teaching, progress: Progress) -> str:
         # Said here rather than swallowed: a damaged record and a first
         # conversion produce the same full glossary, and only one of them is
         # a reason to say nothing.
+        why = progress.unreadable[0].upper() + progress.unreadable[1:]
         lines += [
-            f"This report explains every word in full below, because "
-            f"{progress.unreadable}. Nothing is wrong with this conversion. This tool "
-            "will continue to explain every word in full until it can read that file "
-            "again, or until that file is deleted.",
+            f"This report explains every word in full below. {why}. Nothing is wrong "
+            "with this conversion. This tool will continue to explain every word in "
+            "full until it can read that file again, or until that file is deleted.",
             "",
         ]
     named = ", ".join(f"`{term.name}`" for term in teaching.met)
