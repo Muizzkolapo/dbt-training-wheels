@@ -142,9 +142,10 @@ class OutputInsideProjectError(ValueError):
 class StaleOutputError(ValueError):
     """The previous write's files cannot be cleared safely.
 
-    Two causes, both input-driven, so a usage error to every front end: the
-    record of the previous write cannot be read, or a file that write
-    produced, and that this write no longer produces, has been changed since.
+    Three causes, all input-driven, so a usage error to every front end: the
+    record of the previous write cannot be read, a file that write produced,
+    and that this write no longer produces, has been changed since, or such a
+    file is a .yml whose kind cannot be read because it does not parse.
 
     Refused rather than worked around. Reading a damaged record as empty
     would leave the previous write's stale files in place, to be delivered
@@ -414,6 +415,11 @@ def emit(
     reported = (
         dataclasses.replace(change, decisions=(*change.decisions, *emitted)) if emitted else change
     )
+    # Rendered before anything is written or removed, like every other file:
+    # a report that fails to render (`shown_path` refuses a statement outside
+    # the reader's SQL) must leave the out_dir as it was, not half-written.
+    root = None if sql_path is None else sql_root(sql_path)
+    report = render_report(reported, ctx, progress, sql_root=root, remember=remember)
 
     for path, text in planned:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,11 +432,7 @@ def emit(
     for path in removed:
         path.unlink()
 
-    root = None if sql_path is None else sql_root(sql_path)
-    report_path.write_text(
-        render_report(reported, ctx, progress, sql_root=root, remember=remember),
-        encoding="utf-8",
-    )
+    report_path.write_text(report, encoding="utf-8")
     written.append(report_path)
 
     # Last, so the record never lists a file this write did not finish. A
@@ -593,16 +595,37 @@ def _kind_of(path: Path) -> str:
     `_stale` refuses a file that changed. A file that is neither a model nor
     one of the two .yml shapes is `_OTHER`, and its reason says only what is
     true of every file.
+
+    A recorded .yml that does not parse is refused with `StaleOutputError`.
+    The digest check means this tool wrote those bytes, so a parse failure is
+    not the reader's edit. Calling it `_OTHER` would hide that, and a raw
+    parser traceback would name no file. Raised before anything is written.
     """
     if path.suffix == ".sql":
         return _MODEL
     if path.suffix == ".yml":
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as exc:
+            raise _unparsable(path, "The file is not UTF-8 text.") from exc
+        except yaml.YAMLError as exc:
+            mark = getattr(exc, "problem_mark", None)
+            where = "" if mark is None else f" The parser stopped at line {mark.line + 1}."
+            raise _unparsable(path, f"The file is not YAML.{where}") from exc
         if isinstance(loaded, dict) and "sources" in loaded:
             return _SOURCES
         if isinstance(loaded, dict) and "models" in loaded:
             return _SCHEMA
     return _OTHER
+
+
+def _unparsable(path: Path, why: str) -> StaleOutputError:
+    return StaleOutputError(
+        f"cannot read {path}. The previous write into this directory wrote that file. "
+        "This conversion no longer produces that file, so this tool must remove it. "
+        f"{why} So this tool cannot tell what the file held, and this tool wrote nothing. "
+        "Move the file out of the directory, or delete the file. Then write again."
+    )
 
 
 def sql_root(sql_path: Path) -> Path:

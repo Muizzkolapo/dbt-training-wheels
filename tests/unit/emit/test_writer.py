@@ -1,3 +1,6 @@
+import dataclasses
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -8,12 +11,14 @@ from tests.unit.test_ste_wording import findings
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import ProjectContext, SourceInfo, read_project
 from dbtw.core.emit import (
+    WRITE_RECORD_NAME,
     DuplicateSourceEntryError,
     OrphanModelDescriptionError,
     OrphanSchemaTestError,
+    StaleOutputError,
     emit,
 )
-from dbtw.core.passes import Answer, ModelDescription, SchemaTest, verify_option
+from dbtw.core.passes import Answer, Decision, ModelDescription, SchemaTest, verify_option
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -771,3 +776,56 @@ def test_end_to_end_an_unanswered_conversion_emits_no_yml_and_reports_zero_tests
     assert list(tmp_path.rglob("*.yml")) == []
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "**Tests**: 0" in report
+
+
+def test_a_report_that_cannot_render_leaves_the_out_dir_empty(tmp_path):
+    """The report names the file of each Decision relative to `sql_path`. A
+    Decision whose file is outside `sql_path` makes `shown_path` raise. Emit
+    rendered the report after it wrote the model files, so the out_dir was
+    left half-written. Now emit renders every file before it writes one.
+    """
+    stray = Decision(
+        key="k1",
+        tier=1,
+        action="created model stg_orders",
+        reason="because dbt",
+        source_file="/somewhere/else/a.sql",
+        line_start=1,
+        line_end=1,
+    )
+    change = dataclasses.replace(_change(), decisions=(stray,))
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    out = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="is not in the subpath"):
+        emit(change, ctx, out, sql_path=tmp_path / "in.sql")
+
+    assert [p for p in out.rglob("*") if p.is_file()] == []
+
+
+def test_a_stale_yml_that_is_not_yaml_is_refused_with_its_name(tmp_path):
+    """Emit reads the kind of a stale .yml off its YAML. The digest check
+    passes only for a file that this tool wrote, but that file can still fail
+    to parse. Emit must refuse with a message that names the file, not stop
+    with a raw parser traceback. It must also write nothing.
+    """
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    out = tmp_path / "out"
+    emit(_change(sources=(SourceEntry(source_name="raw", schema="raw", table="x"),)), ctx, out)
+    (sources,) = list(out.rglob("*.yml"))
+    sources.write_text("sources: [unclosed\n", encoding="utf-8")
+    record_path = out / WRITE_RECORD_NAME
+    record = json.loads(record_path.read_text())
+    relative = sources.relative_to(out).as_posix()
+    record["files"][relative] = hashlib.sha256(sources.read_bytes()).hexdigest()
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    before = {p: p.read_bytes() for p in out.rglob("*") if p.is_file()}
+
+    with pytest.raises(StaleOutputError) as refused:
+        emit(_change(), ctx, out)
+
+    message = str(refused.value)
+    assert str(sources) in message
+    assert "is not YAML" in message
+    assert findings(message) == [], findings(message)
+    assert {p: p.read_bytes() for p in out.rglob("*") if p.is_file()} == before

@@ -316,7 +316,7 @@ def test_the_columns_requirement_is_read_off_the_option_not_its_label(monkeypatc
         label="key it on a column",
         kind="merge",
         effect="Each run updates the row whose key matches and inserts the rest.",
-        columns_prompt="the column(s) that identify a row uniquely",
+        columns_prompt="one or more columns that together identify a row uniquely",
     )
     monkeypatch.setattr(tier2_module, "merge_option", lambda keys=(): renamed)
     key = _question_for(convert(ONE_APPEND), "revenue_events").key

@@ -6,7 +6,7 @@ from pathlib import Path
 from dbtw.core.assemble import AssembledModel, assemble
 from dbtw.core.context import read_project
 from dbtw.core.emit.render import render_model
-from dbtw.core.passes import ModelDraft, PassState
+from dbtw.core.passes import ModelDraft, PassState, unique_key_config
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
 
@@ -59,6 +59,20 @@ def test_merge_with_two_keys_renders_unique_key_as_a_list():
         ") }}\n\n"
         "SELECT\n  a\nFROM raw_orders\n"
     )
+
+
+def test_the_written_unique_key_is_the_text_that_a_decision_quotes():
+    """A Decision quotes the config with `unique_key_config`. The model file
+    must hold the same characters, for one key and for several keys.
+    `render_model` once kept its own copy of that rule. A change to one copy
+    and not to the other made the screen and the file disagree.
+    """
+    for keys in (("id",), ("order_id", "line_no")):
+        out = render_model(
+            _model(materialization="incremental", incremental_strategy="merge", unique_key=keys)
+        )
+        (line,) = [line.strip() for line in out.splitlines() if "unique_key=" in line]
+        assert line == unique_key_config(keys)
 
 
 def test_append_with_no_key_omits_the_unique_key_line():

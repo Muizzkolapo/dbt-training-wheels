@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 
 from dbtw.core.assemble import AssembledModel, SourceEntry
-from dbtw.core.passes import SchemaTest
+from dbtw.core.passes import SchemaTest, unique_key_config
 
 
 class _IndentedDumper(yaml.SafeDumper):
@@ -43,10 +43,9 @@ def _config_args(model: AssembledModel) -> list[str]:
         args.append(f"incremental_strategy={model.incremental_strategy!r}")
 
     if model.unique_key:
-        key: str | list[str] = (
-            model.unique_key[0] if len(model.unique_key) == 1 else list(model.unique_key)
-        )
-        args.append(f"unique_key={key!r}")
+        # The one spelling of the key, shared with every Decision that quotes
+        # the config, so the screen and the file cannot disagree.
+        args.append(unique_key_config(model.unique_key))
 
     # After materialization and the incremental pair, before grants: this is
     # the order dbt's own docs put them in, and a config block is read top to
