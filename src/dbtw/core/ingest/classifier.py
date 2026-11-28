@@ -6,9 +6,11 @@ as the reason. Never raises for statement content.
 
 from __future__ import annotations
 
+import re
+
 import sqlglot
 from sqlglot import exp
-from sqlglot.errors import SqlglotError
+from sqlglot.errors import ParseError, SqlglotError
 
 from dbtw.core.ingest.types import (
     ClassifiedStatement,
@@ -22,13 +24,72 @@ def classify(raw: RawStatement, dialect: str | None = None) -> ClassifiedStateme
     try:
         node = sqlglot.parse_one(raw.text, read=dialect)
     except SqlglotError as exc:
-        return ClassifiedStatement(raw=raw, kind="unsupported", reason=f"could not parse: {exc}")
+        return ClassifiedStatement(
+            raw=raw, kind="unsupported", reason=_unparseable_reason(raw, exc, dialect)
+        )
     kind, reason = _classify_node(node)
     return ClassifiedStatement(raw=raw, kind=kind, reason=reason)
 
 
 def classify_statements(result: IngestResult) -> tuple[ClassifiedStatement, ...]:
     return tuple(classify(raw, result.dialect) for raw in result.statements)
+
+
+# sqlglot underlines the offending token with terminal escape codes. A report
+# and a web page show them as raw text.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+# Some sqlglot messages hold the repr of a Token object. The reader needs only
+# its text. SENTINEL is the token sqlglot puts after the last real token.
+_TOKEN_REPR = re.compile(r"<Token token_type: TokenType\.(\w+), text: (.*?), line: .*?>")
+_POSITION = re.compile(r"\. Line \d+, Col: \d+\.?$")
+
+
+def _unparseable_reason(raw: RawStatement, exc: SqlglotError, dialect: str | None) -> str:
+    """Why sqlglot could not parse `raw`, as sentences for the reader.
+
+    sqlglot counts the line from the top of the statement. `raw.line_start`
+    is the file line of the first character of the statement, so the sum
+    gives the file line. The column is given only on a later line of the
+    statement. Its first line can start after another statement, so a column
+    on that line is not always the column in the file.
+    """
+    error = exc.errors[0] if isinstance(exc, ParseError) and exc.errors else None
+    if error is not None and error.get("line") and error.get("highlight"):
+        token = str(error["highlight"])
+        line = int(error["line"])
+        where = f"line {raw.line_start + line - 1}"
+        if line > 1 and "\n" not in token:
+            where += f", column {int(error['col']) - len(token) + 1}"
+        first = f"This tool could not parse the token {_code(token)} at {where}."
+        detail = str(error.get("description") or "")
+    else:
+        first = "This tool could not parse the statement."
+        detail = _ANSI.sub("", str(exc)).strip().splitlines()[0] if str(exc).strip() else ""
+    detail = _POSITION.sub("", _TOKEN_REPR.sub(_token_text, _ANSI.sub("", detail))).strip()
+    parts = [first]
+    if detail:
+        parts.append(f"The sqlglot error is {_code(detail)}.")
+    if dialect is None:
+        parts.append(
+            "This tool used no dialect. The SQL may use the syntax of one database. "
+            "To parse that syntax, give the --dialect option, "
+            "for example `--dialect postgres`."
+        )
+    else:
+        parts.append(
+            f"This tool parsed the SQL as the {dialect} dialect. "
+            "If a different database runs this SQL, give its name with the --dialect option."
+        )
+    return " ".join(parts)
+
+
+def _token_text(match: re.Match[str]) -> str:
+    return "the end of the statement" if match.group(1) == "SENTINEL" else match.group(2)
+
+
+def _code(text: str) -> str:
+    """`text` as one code span. A backtick inside it would end the span."""
+    return "`" + text.replace("`", "'") + "`"
 
 
 def _classify_node(node: exp.Expr) -> tuple[StatementKind, str]:

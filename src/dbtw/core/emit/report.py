@@ -627,4 +627,9 @@ def _render_pending(change: ProjectChange) -> str:
         # -- and a reader who wants to look at it needs somewhere to look.
         where = f"{PurePath(stmt.raw.source_file).name}:{stmt.raw.line_start}"
         lines.append(f"- **{stmt.kind}** — `{where}` — {excerpt(stmt.raw.text, change.dialect)}")
+        # The reason under it, as part of the same item. The kind says what
+        # the statement is. The reason says why the tool declined it, and for
+        # a statement that did not parse, what to do next. A line of its own
+        # keeps the line above short enough to read as one line.
+        lines.append(f"  - {stmt.reason}")
     return "\n".join(lines)
