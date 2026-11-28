@@ -42,8 +42,8 @@ def remote(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 def _delivered(walk: Walk, walk_sql: Path, project_dir: Path):  # type: ignore[no-untyped-def]
     app, client, session = walk(walk_sql)
-    assert client.post("/write").status_code == 200
-    assert client.post("/deliver").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
+    assert client.post("/deliver", follow_redirects=True).status_code == 200
     return app, client, session
 
 
@@ -54,7 +54,7 @@ def test_a_push_sends_the_delivered_branch_to_the_remote(
     _git(project_dir, "remote", "add", "origin", str(remote))
     app, client, _session = _delivered(walk, walk_sql, project_dir)
 
-    sent = client.post("/push")
+    sent = client.post("/push", follow_redirects=True)
 
     assert sent.status_code == 200
     branch = _git(project_dir, "branch", "--show-current")
@@ -76,10 +76,10 @@ def test_pressing_push_twice_sends_once(
     _as_git_repo(project_dir)
     _git(project_dir, "remote", "add", "origin", str(remote))
     app, client, _session = _delivered(walk, walk_sql, project_dir)
-    assert client.post("/push").status_code == 200
+    assert client.post("/push", follow_redirects=True).status_code == 200
     first = app.config["dbtw_source"].pushed
 
-    assert client.post("/push").status_code == 200
+    assert client.post("/push", follow_redirects=True).status_code == 200
 
     assert app.config["dbtw_source"].pushed is first, "a second press pushed again"
 
@@ -94,7 +94,7 @@ def test_a_project_with_no_remote_is_refused_on_the_screen_that_delivered(
     _as_git_repo(project_dir)
     app, client, _session = _delivered(walk, walk_sql, project_dir)
 
-    refused = client.post("/push")
+    refused = client.post("/push", follow_redirects=True)
 
     assert refused.status_code == 409
     assert app.config["dbtw_source"].pushed is None
@@ -119,3 +119,25 @@ def test_a_push_before_a_delivery_goes_back_rather_than_sending_anything(
     assert sent.status_code == 302
     assert app.config["dbtw_source"].pushed is None
     assert not _git(project_dir, "branch", "--list", "dbtw/*"), "a branch was made anyway"
+
+
+def test_deliver_and_push_each_redirect_to_the_written_page(
+    walk: Walk, walk_sql: Path, project_dir: Path, remote: Path
+) -> None:
+    """POST, redirect, GET, like the write: a refresh after either press
+    re-renders the result rather than asking the browser to send it again.
+    """
+    _as_git_repo(project_dir)
+    _git(project_dir, "remote", "add", "origin", str(remote))
+    _app, client, _session = walk(walk_sql)
+    assert client.post("/write").headers["Location"].endswith("/written")
+
+    delivered = client.post("/deliver")
+    pushed = client.post("/push")
+
+    assert delivered.status_code == 302
+    assert delivered.headers["Location"].endswith("/written")
+    assert pushed.status_code == 302
+    assert pushed.headers["Location"].endswith("/written")
+    page = read(client.get("/written").get_data(as_text=True))
+    assert any("origin" in run for run in page.engine), "the push result is on the page"

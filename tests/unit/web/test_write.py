@@ -72,7 +72,7 @@ def test_the_write_action_writes_the_conversion_that_is_on_screen(
     previewed = read(client.get("/files").get_data(as_text=True))
     shown = [run for run in previewed.engine]
 
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     written = _tree(out_dir)
     assert written, "the write action wrote nothing"
@@ -89,7 +89,7 @@ def test_a_conversion_with_nothing_to_answer_can_be_written(
     _app, client, session = walk(sql_script(NO_QUESTIONS))
     assert session.view().questions == ()
 
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
     assert "CONVERSION_REPORT.md" in _tree(out_dir)
 
 
@@ -108,7 +108,7 @@ def test_the_written_screen_names_the_directory_and_every_file(
 
 def _written(walk: Walk, sql: Path) -> str:
     _app, client, _session = walk(sql)
-    response = client.post("/write")
+    response = client.post("/write", follow_redirects=True)
     assert response.status_code == 200
     return response.get_data(as_text=True)
 
@@ -132,7 +132,7 @@ def test_an_answer_in_the_browser_writes_what_the_equivalent_cli_flag_writes(
     sql = sql_script(ONE_APPEND)
     _app, client, session = walk(sql)
     _answer(client, _append_key(session), "merge", typed="order_id")
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     cli_out = tmp_path / "cli-out"
     code = main(
@@ -198,7 +198,7 @@ def test_the_checked_answer_writes_a_dbt_test_the_cli_cannot_ask_for(
     alone for that reason, not because a comparison was overlooked."""
     _app, client, session = walk(sql_script(ONE_APPEND))
     _answer(client, _append_key(session), "merge_checked", typed="order_id")
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     written = _tree(out_dir)
     schema = written["models/staging/stg_revenue_events.yml"].decode()
@@ -223,7 +223,7 @@ def test_two_questions_answered_differently_write_two_different_models(
     _app, client, session = walk(sql_script(TWO_APPENDS))
     _answer(client, _append_key(session, "revenue_events"), "merge", typed="order_id")
     _answer(client, _append_key(session, "page_views"), "append")
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     written = _tree(out_dir)
     merged = written["models/staging/stg_revenue_events.sql"].decode()
@@ -263,7 +263,7 @@ def test_the_write_route_refuses_to_write_into_the_target_project(
     _app, client, _session = walk(sql_script(ONE_APPEND), out=out)
     before = _snapshot_project(project_dir)
 
-    response = client.post("/write")
+    response = client.post("/write", follow_redirects=True)
 
     assert response.status_code == 500, where
     assert _snapshot_project(project_dir) == before, where
@@ -276,7 +276,7 @@ def test_the_refusal_screen_carries_the_error_the_path_and_the_models(
     """Spec section 7's failure row, in full. A page saying only "failed"
     sends the reader back to a terminal they were not using."""
     _app, client, session = walk(sql_script(ONE_APPEND), out=project_dir)
-    page = read(client.post("/write").get_data(as_text=True))
+    page = read(client.post("/write", follow_redirects=True).get_data(as_text=True))
 
     rendered = " ".join(page.engine)
     assert "refusing to convert into the target project" in rendered, rendered
@@ -305,7 +305,7 @@ def test_the_refusal_screen_carries_every_file_the_conversion_would_write(
     difference between "all of them" and "the first of them" is four.
     """
     _app, client, session = walk(walk_sql, out=project_dir)
-    page = read(client.post("/write").get_data(as_text=True))
+    page = read(client.post("/write", follow_redirects=True).get_data(as_text=True))
 
     expected = written_files(session)
     assert len(expected) > 2, "this script is meant to write more than a model and a report"
@@ -324,7 +324,7 @@ def test_a_refused_write_is_never_reported_as_a_written_one(
     """The word the reader scans for. A refusal headed "Written" is worse
     than no page at all."""
     _app, client, _session = walk(sql_script(ONE_APPEND), out=project_dir)
-    page = read(client.post("/write").get_data(as_text=True))
+    page = read(client.post("/write", follow_redirects=True).get_data(as_text=True))
     assert "Written" not in page.text, page.text[:400]
 
 
@@ -343,7 +343,7 @@ def test_a_write_that_fails_part_way_is_not_reported_as_success(
     (out_dir / "CONVERSION_REPORT.md").mkdir(parents=True)
     _app, client, _session = walk(sql_script(ONE_APPEND))
 
-    response = client.post("/write")
+    response = client.post("/write", follow_redirects=True)
 
     assert response.status_code == 500
     page = read(response.get_data(as_text=True))
@@ -360,7 +360,7 @@ def test_the_walk_still_renders_after_a_failed_write(
     """Spec section 7: "the models still on screen". A failure that left the
     session unable to render anything would have taken the walk with it."""
     app, client, _session = walk(sql_script(ONE_APPEND), out=project_dir)
-    assert client.post("/write").status_code == 500
+    assert client.post("/write", follow_redirects=True).status_code == 500
     for url in ("/", "/questions/0", "/caveats", "/files", "/done"):
         assert client.get(url).status_code == 200, url
 
@@ -374,7 +374,7 @@ def test_a_failed_write_can_be_retried_and_still_fails(
     _app, client, _session = walk(sql_script(ONE_APPEND), out=project_dir)
     before = _snapshot_project(project_dir)
     for _ in range(2):
-        assert client.post("/write").status_code == 500
+        assert client.post("/write", follow_redirects=True).status_code == 500
     assert _snapshot_project(project_dir) == before
 
 
@@ -401,7 +401,7 @@ def test_pressing_write_twice_does_not_write_twice(
 
     _app, client, _session = walk(sql_script(ONE_APPEND))
     for _ in range(2):
-        assert client.post("/write").status_code == 200
+        assert client.post("/write", follow_redirects=True).status_code == 200
 
     # `_previews` runs emit into a throwaway directory on the files screen and
     # on a failure page, so only the writes aimed at the destination count.
@@ -414,11 +414,11 @@ def test_answering_again_after_a_write_writes_again(walk: Walk, sql_script, out_
     again must get the conversion they now have. Reporting the first result
     over the second would be the page lying about what is on disk."""
     _app, client, session = walk(sql_script(ONE_APPEND))
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
     assert "unique_key" not in _tree(out_dir)["models/staging/stg_revenue_events.sql"].decode()
 
     _answer(client, _append_key(session), "merge", typed="order_id")
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     model = _tree(out_dir)["models/staging/stg_revenue_events.sql"].decode()
     assert "unique_key='order_id'" in model, model
@@ -439,7 +439,7 @@ def test_a_stale_answer_stops_the_write_and_says_which_answer(
     _answer(client, question.key, "append")
     sql.write_text("SELECT id INTO dim_people FROM raw_people;\n", encoding="utf-8")
 
-    response = client.post("/write")
+    response = client.post("/write", follow_redirects=True)
 
     assert response.status_code == 409
     assert not out_dir.exists(), "a stranded conversation wrote to disk"
@@ -450,7 +450,7 @@ def test_the_walk_still_renders_after_a_write(walk: Walk, sql_script) -> None:
     """A write is terminal for the conversion, not for the pages. A reader
     who writes and then goes back to read a caveat has to find one."""
     _app, client, _session = walk(sql_script(ONE_APPEND))
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
     for url in ("/", "/questions/0", "/caveats", "/files", "/done"):
         assert client.get(url).status_code == 200, url
 

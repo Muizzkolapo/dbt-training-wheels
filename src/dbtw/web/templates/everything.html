@@ -21,8 +21,8 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Everything</h1>
-<p class="tally"><span data-count="ask">{{ asks | length }}</span> questions,
-  <span data-count="model">{{ models | length }}</span> models,
+<p class="tally"><span data-count="ask">{{ asks | length }}</span> {{ (asks | length) | noun("question") }},
+  <span data-count="model">{{ models | length }}</span> {{ (models | length) | noun("model") }},
   <span data-count="described">{{ described }}</span> described</p>
 
 {%- if asks %}
@@ -85,7 +85,7 @@
   <li data-item="model">
     <h3><span data-engine>{{ row.model.name }}</span>
       {%- if row.description %}
-      <span class="mark" data-item="described">Written</span>
+      <span class="mark" data-item="described">Described</span>
       {%- else %}
       <span class="mark blank">Still blank</span>
       {%- endif %}</h3>

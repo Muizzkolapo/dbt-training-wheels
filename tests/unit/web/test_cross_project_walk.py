@@ -99,7 +99,7 @@ def test_the_cross_project_answer_is_carried_into_the_written_files(walk_with_ot
     app, client, session = walk_with_other
     cross = _cross_key(session)
     assert client.post("/answer", data={"key": cross, "kind": "cross_ref"}).status_code == 302
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     bodies = " ".join(m.body for m in session.view().change.models)
     assert "ref('core_platform', 'dim_customers')" in bodies

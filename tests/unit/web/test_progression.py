@@ -83,7 +83,7 @@ def test_writing_records_what_this_walk_explained(
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     _app, client, session = walk(sql_script(ONE_APPEND), out=tmp_path / "out")
 
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     recorded = load_progress(session.project, path=state / "dbtw" / "learned.json")
     assert recorded.conversions == 1
@@ -117,7 +117,7 @@ def test_no_remember_defines_everything_and_records_nothing(
     client.application.config["dbtw_source"].remember = False
 
     page = client.get("/").get_data(as_text=True)
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
 
     assert 'data-item="term"' in page, "every word is defined in full"
     assert 'data-item="met"' not in page
@@ -139,7 +139,7 @@ def test_the_file_preview_shows_the_report_the_write_will_write(
     _learned_everything(session.project, state / "dbtw" / "learned.json")
 
     preview = client.get("/files").get_data(as_text=True)
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
     out = client.application.config["dbtw_source"].out
     written = (out / "CONVERSION_REPORT.md").read_text(encoding="utf-8")
 

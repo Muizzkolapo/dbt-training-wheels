@@ -20,7 +20,7 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Decided for you</h1>
-<p class="tally"><span data-count="caveat">{{ decided }}</span> decisions</p>
+<p class="tally"><span data-count="caveat">{{ decided }}</span> {{ (decided) | noun("decision") }}</p>
 <ul class="caveats">
   {%- for consequence in caveats %}
   <li>
@@ -43,7 +43,7 @@
 </ul>
 
 <h2>Still pending</h2>
-<p class="tally"><span data-count="pending">{{ pending | length }}</span> statements</p>
+<p class="tally"><span data-count="pending">{{ pending | length }}</span> {{ (pending | length) | noun("statement") }}</p>
 <ul class="pending">
   {%- for statement in pending %}
   <li data-item="pending">

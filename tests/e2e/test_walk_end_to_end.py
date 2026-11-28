@@ -149,7 +149,7 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
         assert client.get(url).status_code == 200, url
 
     # 8. Write, and the files are on disk with the reader's own words in them.
-    assert client.post("/write").status_code == 200
+    assert client.post("/write", follow_redirects=True).status_code == 200
     written = {
         p.relative_to(out).as_posix(): p.read_text(encoding="utf-8")
         for p in out.rglob("*")
@@ -170,7 +170,7 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
     )
 
     # 10. Deliver: a branch in their own repository, holding those files.
-    delivered = client.post("/deliver")
+    delivered = client.post("/deliver", follow_redirects=True)
     assert delivered.status_code == 200
     branch = subprocess.run(
         ["git", "branch", "--show-current"], cwd=project, capture_output=True, text=True

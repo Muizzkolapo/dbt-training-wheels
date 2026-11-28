@@ -66,6 +66,13 @@ _ENTRY = "/source"
 # is where it is held to the same rules.
 _WORKBENCH = "/everything"
 
+# The result of the write, at its own address so a refresh re-renders it
+# rather than sending the form again. Not a screen of the walk: the rail does
+# not list it, and before anything is written it sends a reader to `/done`.
+# Its contents are still guarded -- the write, deliver and push states reach
+# it by following their redirect, so every check reads it as it renders.
+_RESULT = "/written"
+
 
 def _screen_urls(app, session: Session) -> tuple[str, ...]:
     """Every screen of the walk, derived from the app's own routing table.
@@ -77,11 +84,12 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
     A rule taking any other argument stops the test rather than being skipped
     -- a screen this cannot address is a screen nothing here checks.
 
-    Two exclusions, and both are screens that belong to something other than
-    this walk. `/source` is the screen a reader is on *before* the walk
-    exists, so it has no conversation to render; it is still guarded, see
-    `_ENTRY`. `/everything` is the screen the *other mode* has, and in this
-    one it redirects; see `_WORKBENCH`.
+    Three exclusions, and all are pages that belong to something other than
+    this walk. `/written` is the write's result; see `_RESULT`. `/source`
+    is the screen a reader is on *before* the walk exists, so it has no
+    conversation to render; it is still guarded, see `_ENTRY`. `/everything`
+    is the screen the *other mode* has, and in this one it redirects; see
+    `_WORKBENCH`.
     """
     asked = len(session.view().questions)
     urls: list[str] = []
@@ -89,7 +97,7 @@ def _screen_urls(app, session: Session) -> tuple[str, ...]:
         methods = rule.methods or set()
         if rule.endpoint == "static" or "GET" not in methods:
             continue
-        if rule.rule in (_ENTRY, _WORKBENCH):
+        if rule.rule in (_ENTRY, _WORKBENCH, _RESULT):
             continue
         if not rule.arguments:
             urls.append(rule.rule)
@@ -232,7 +240,7 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         # destination that cannot take it, and every screen still has to
         # render around that.
         app, client, session = walk(walk_sql, out=project_dir)
-        assert client.post("/write").status_code == 500
+        assert client.post("/write", follow_redirects=True).status_code == 500
         return app, client, session, project_dir, frozenset()
 
     if state in (_PUSHED, _PUSH_REFUSED):
@@ -246,9 +254,9 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
             _as_remote_of(project_dir, out_dir.parent / "origin.git")
         app, client, session = walk(walk_sql)
         source = app.config["dbtw_source"]
-        assert client.post("/write").status_code == 200
-        assert client.post("/deliver").status_code == 200
-        sent = client.post("/push")
+        assert client.post("/write", follow_redirects=True).status_code == 200
+        assert client.post("/deliver", follow_redirects=True).status_code == 200
+        sent = client.post("/push", follow_redirects=True)
         assert sent.status_code == (200 if state == _PUSHED else 409)
         # What git printed, read off `Source.pushed` -- the engine's own
         # value, not the page's echo of it. Taking it from the rendered page
@@ -268,8 +276,8 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         if state == _DELIVERED:
             _as_git_repo(project_dir)
         app, client, session = walk(walk_sql)
-        assert client.post("/write").status_code == 200
-        delivered = client.post("/deliver")
+        assert client.post("/write", follow_redirects=True).status_code == 200
+        delivered = client.post("/deliver", follow_redirects=True)
         assert delivered.status_code == (200 if state == _DELIVERED else 409)
         return app, client, session, out_dir, frozenset()
 
@@ -287,7 +295,7 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         answer = {"key": _append_key(session), "kind": "merge", "typed": "evnt_id"}
         assert client.post("/answer", data=answer).status_code == 302
     elif state == _WRITTEN:
-        assert client.post("/write").status_code == 200
+        assert client.post("/write", follow_redirects=True).status_code == 200
     return app, client, session, out_dir, frozenset()
 
 
@@ -508,7 +516,7 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     if state in (_STALE, _STALE_DESCRIPTION):
         stranded = client.get("/")
         assert stranded.status_code == 409
-        written = client.post("/write")
+        written = client.post("/write", follow_redirects=True)
         assert written.status_code == 409
         return {
             "/ (stranded)": read(stranded.get_data(as_text=True)),
@@ -522,7 +530,7 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     described = client.post("/describe", data={"model": _NOT_A_MODEL, "text": "words"})
     assert described.status_code == 400
     pages["/describe (refused)"] = read(described.get_data(as_text=True))
-    result = client.post("/write")
+    result = client.post("/write", follow_redirects=True)
     assert result.status_code == (500 if state == _WRITE_FAILED else 200)
     pages["/write"] = read(result.get_data(as_text=True))
     # The entry screen is not one of the walk's screens, and is guarded like

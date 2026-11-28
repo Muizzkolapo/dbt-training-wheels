@@ -462,8 +462,23 @@ def answer_for(decision: Decision, kind: str, columns: tuple[str, ...] = ()) -> 
             "for an option carrying a columns_prompt."
         )
     if option.columns_prompt and not columns:
+        # The one refusal here a reader can cause by pressing a button, so it
+        # is worded for them: the table they recognise, not `decision.key`,
+        # which exists for the engine to match answers by. The others name
+        # the key because reaching them is a caller bug, and a key is what
+        # finds the bug.
+        if decision.subject is None:
+            # Only tier-2 questions offer an option with a columns_prompt,
+            # and every one of them carries a subject. Reaching this is an
+            # engine bug, and it names the key because the key finds it.
+            raise ValueError(
+                f"{decision.key} offers {option.label!r}, which asks for columns, but "
+                "carries no subject to name. This is an engine bug, not a caller bug."
+            )
+        table = decision.subject.table
         raise ValueError(
-            f"{decision.key}'s {kind!r} option asks {option.columns_prompt!r} and got no columns."
+            f"{option.label!r} for {table} asks {option.columns_prompt!r} and got no "
+            "columns: tick one or type one, and press it again."
         )
     return Answer(label=option.label, columns=columns)
 

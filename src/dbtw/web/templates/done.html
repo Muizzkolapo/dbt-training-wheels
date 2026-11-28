@@ -24,7 +24,7 @@
 </form>
 
 <h2>Then, in your project</h2>
-<p class="tally"><span data-count="term">{{ commands | length }}</span> commands</p>
+<p class="tally"><span data-count="term">{{ commands | length }}</span> {{ (commands | length) | noun("command") }}</p>
 {# Each command beside what it does, in the order a first run goes: see what
    would be sent, send it, check it, and the one that does both. The
    definitions are the glossary's own -- `data-aside`, because they are

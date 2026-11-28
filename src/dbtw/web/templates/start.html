@@ -30,7 +30,7 @@
 <p class="source"><span data-engine data-identifier>{{ sql }}</span></p>
 
 <h2>Building</h2>
-<p class="tally"><span data-count="model">{{ models | length }}</span> models</p>
+<p class="tally"><span data-count="model">{{ models | length }}</span> {{ (models | length) | noun("model") }}</p>
 <ul class="building">
   {%- for model in models %}
   <li data-item="model">
@@ -42,7 +42,7 @@
 
 <h2>Renaming</h2>
 {%- if renames %}
-<p class="tally"><span data-count="rename">{{ renames | length }}</span> tables</p>
+<p class="tally"><span data-count="rename">{{ renames | length }}</span> {{ (renames | length) | noun("table") }}</p>
 <ul class="renames">
   {%- for rename in renames %}
   <li data-item="rename"><span data-engine>{{ rename.action }}</span></li>

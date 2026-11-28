@@ -8,7 +8,7 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Answers with no question</h1>
-<p class="tally"><span data-count="stale">{{ stale | length }}</span> answers</p>
+<p class="tally"><span data-count="stale">{{ stale | length }}</span> {{ (stale | length) | noun("answer") }}</p>
 <ul class="stale">
   {%- for key in stale %}
   <li data-item="stale"><span data-engine>{{ key }}</span></li>
