@@ -44,8 +44,6 @@ PROJECTS = FIXTURES / "projects"
 PENDING = {
     "teach",
     "report",
-    "tier1",
-    "tier2",
 }
 
 # Scripts that reach the Decisions the fixtures alone do not: a bare query, a

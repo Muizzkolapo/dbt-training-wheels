@@ -50,7 +50,7 @@ def test_unmatched_grant_dropped_with_note():
     assert out.pending == ()
     assert out.drafts[0].grants == ()
     (dec,) = out.decisions
-    assert "doesn't create" in dec.action
+    assert "does not create" in dec.action
 
 
 def test_revoke_dropped_with_note():

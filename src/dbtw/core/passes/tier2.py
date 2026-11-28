@@ -147,11 +147,10 @@ def _collision_decision(
             f"{pass_name}.supersede",
             tier,
             action=(
-                f"superseded: this earlier definition of {table_name} is replaced "
-                "by a later definition"
+                f"superseded: a later definition replaces this earlier definition of {table_name}"
             ),
             reason=(
-                "a later statement in this conversion defines this model; dbt keeps "
+                "a later statement in this conversion defines this model. dbt keeps "
                 "only the final definition"
             ),
         )
@@ -161,8 +160,11 @@ def _collision_decision(
             index,
             f"{pass_name}.redefinition",
             tier,
-            action=f"redefinition of {table_name} — kept the last definition",
-            reason="defined twice; a dbt model is one file, so the last definition wins",
+            action=f"redefinition of {table_name}: kept the last definition",
+            reason=(
+                "this conversion has two definitions of this table. A dbt model is one file, "
+                "so the last definition wins"
+            ),
         )
     return _decision(
         stmt,
@@ -171,12 +173,12 @@ def _collision_decision(
         tier,
         action=(
             f"{existing.qualified_name} and {draft.qualified_name} both map to "
-            f"model {table_name} — kept {draft.qualified_name}; resolve the "
-            "collision before deploying"
+            f"model {table_name}: kept {draft.qualified_name}. Resolve the "
+            "collision before you deploy"
         ),
         reason=(
-            "two different source tables produce the same model name; dbt needs "
-            "one definition per model"
+            "two different source tables produce the same model name. dbt needs "
+            "one definition for each model"
         ),
     )
 
@@ -270,18 +272,18 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                         2,
                         action=(
                             f"deferred: INSERT INTO {table.name} is one of several statements in "
-                            f"this conversion that write {table.name}, so together they "
+                            f"this conversion that write {table.name}. Together they "
                             "are one multi-statement build (catalog 2.8, deferred to "
                             "slice 6c)"
                         ),
                         reason=(
-                            "another statement earlier in this conversion writes this "
-                            "target, and both of them run and leave rows behind. A dbt "
-                            "model is one SELECT, so this statement cannot become one of "
-                            "its own without either replacing what that statement "
-                            "produces or claiming to be the whole of a target two "
-                            "statements write; combining them would mean inventing a "
-                            "query the script never wrote"
+                            "an earlier statement in this conversion also writes this "
+                            "target. Both statements run, and both leave rows in the "
+                            "target. A dbt model is one SELECT. As a model, this "
+                            "statement would replace what the other statement produces, "
+                            "or claim to be the whole of a target that two statements "
+                            "write. A combination of the two would be a query that the "
+                            "script never wrote"
                         ),
                     )
                 )
@@ -297,13 +299,13 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                             "list but no TRUNCATE before it to pair with"
                         ),
                         reason=(
-                            "a column list maps positionally onto the SELECT's "
-                            "projections as part of a TRUNCATE+INSERT rebuild, where the "
-                            "pair defines the table's whole contents. On its own this "
-                            "INSERT appends rows under a column mapping, which is a "
-                            "conversion this converter does not make yet (catalog 2.8), "
-                            "so the statement is left as written rather than converted "
-                            "into an append that drops the mapping"
+                            "in a TRUNCATE+INSERT rebuild, the pair defines all the "
+                            "contents of the table. There, a column list maps positionally "
+                            "onto the projections of the SELECT. Alone, this INSERT appends "
+                            "rows under a column mapping. This tool does not make that "
+                            "conversion yet (catalog 2.8). So this conversion leaves the "
+                            "statement as written, and does not change it into an append "
+                            "that drops the mapping"
                         ),
                     )
                 )
@@ -330,11 +332,11 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: INSERT INTO {table.name} selects * against an explicit "
-                        "column list — cannot map columns positionally"
+                        "column list, so this conversion cannot map the columns positionally"
                     ),
                     reason=(
-                        "a star projection hides the column count, so the column list can't "
-                        "be mapped onto it positionally"
+                        "a star projection hides the number of columns. So this conversion "
+                        "cannot map the column list onto the projection positionally"
                     ),
                 )
             )
@@ -347,12 +349,12 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                     "truncate_insert_columns",
                     2,
                     action=(
-                        f"deferred: INSERT INTO {table.name} column count doesn't match its "
-                        "SELECT's projection count"
+                        f"deferred: the column count of INSERT INTO {table.name} does not "
+                        "match the projection count of its SELECT"
                     ),
                     reason=(
-                        "a positional column mapping needs the same number of columns and "
-                        "projections on both sides"
+                        "a positional column mapping needs the same number of items on both "
+                        "sides: columns in the list and projections in the SELECT"
                     ),
                 )
             )
@@ -395,11 +397,12 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
                 1,
                 action=(
                     f"TRUNCATE + INSERT INTO {table.name} became one model "
-                    "(materialized='table'); its column list became positional SELECT aliases"
+                    "(materialized='table'). The column list became positional SELECT aliases"
                 ),
                 reason=(
-                    "truncate-then-insert is a full rebuild, like dbt's table materialization; "
-                    "the column list maps positionally onto the SELECT's projections"
+                    "a TRUNCATE before an INSERT is a full rebuild, like dbt's table "
+                    "materialization. The column list maps positionally onto the projections "
+                    "of the SELECT"
                 ),
             )
         )
@@ -988,8 +991,8 @@ def _merge_projection(
     node: exp.Merge, branches: _MergeBranches, dialect: str | None
 ) -> _Projection | str:
     """The columns the model body selects, or why it cannot be narrowed to
-    them — a clause that completes "the model body is not narrowed to the
-    columns this MERGE writes, because ...".
+    them — a clause that completes "This conversion does not narrow the model
+    body to the columns that this MERGE writes. The reason is that ...".
 
     dbt's merge writes every column the model selects, on update and on
     insert alike. A body of `SELECT * FROM <source>` makes dbt write every
@@ -1020,11 +1023,13 @@ def _merge_projection(
     """
     using = node.args["using"]
     if isinstance(using, exp.Subquery):
-        return "its USING source is a subquery, which becomes the model body as written"
+        return "the USING source is a subquery, and the subquery becomes the model body as written"
     if not isinstance(using, exp.Table):
-        return f"its USING source ({using.sql(dialect=dialect)}) is not a table"
+        return f"the USING source ({using.sql(dialect=dialect)}) is not a table"
     if branches.unnamed:
-        return f"a WHEN branch writes columns without naming them ({'; '.join(branches.unnamed)})"
+        return (
+            f"a WHEN branch writes columns but does not name them ({'; '.join(branches.unnamed)})"
+        )
     source = _target_alias(using)
     key_pairs = [
         (_identifier(key), value) for key, value in _key_equalities(node, _target_alias(node.this))
@@ -1038,16 +1043,16 @@ def _merge_projection(
             and (not value.table or _qualifies_to(value, source))
         ):
             return (
-                f"{name} is written from {value.sql(dialect=dialect)}, which is not a column "
-                "of the USING source"
+                f"this MERGE writes {name} from {value.sql(dialect=dialect)}, which is not a "
+                "column of the USING source"
             )
         seen = next((written for target, written in columns if _names(column, (target,))), None)
         if seen is None:
             columns.append((column, value))
         elif not _names(_identifier(value), (_identifier(seen),)):
             return (
-                f"{name} is written from {seen.sql(dialect=dialect)} in one place and from "
-                f"{value.sql(dialect=dialect)} in another"
+                f"this MERGE writes {name} from {seen.sql(dialect=dialect)} in one place and "
+                f"from {value.sql(dialect=dialect)} in another place"
             )
     return _Projection(
         keys=tuple(column for column, _ in key_pairs),
@@ -1092,8 +1097,8 @@ def _merge_caveats(
                 f"caveat: {table_name} has no WHEN NOT MATCHED branch, but the converted "
                 "model will insert rows that match nothing",
                 "dbt's merge incremental strategy always inserts a row that matches no "
-                "unique_key; this MERGE only acts on rows that already exist, so the "
-                "converted model inserts rows the script never did",
+                "unique_key. This MERGE acts only on rows that already exist. So the "
+                "converted model inserts rows that the script never inserted",
             )
         )
     if not branches.updates_matched:
@@ -1102,15 +1107,16 @@ def _merge_caveats(
                 "merge.no_update_branch",
                 f"caveat: {table_name} has no WHEN MATCHED THEN UPDATE branch, but the "
                 "converted model will update every row matching its unique_key",
-                "dbt's merge incremental strategy always updates a row matching unique_key "
-                "with every column the model selects; this MERGE only inserts rows that "
-                "match nothing, so the converted model overwrites rows the script left alone",
+                "dbt's merge incremental strategy always updates a row that matches "
+                "unique_key, with every column that the model selects. The only action of "
+                "this MERGE is to insert rows that match nothing. So the converted model "
+                "overwrites rows that the script did not change",
             )
         )
     restore = (
         "The adapter-specific merge_update_columns config restores the restriction where "
-        "the adapter supports it; it is not emitted here because the adapter is not known "
-        "at convert time"
+        "the adapter supports it. This conversion does not emit that config, because the "
+        "adapter is not known at convert time"
     )
     if isinstance(projection, _Projection):
         selected = [column for column, _ in projection.columns]
@@ -1140,10 +1146,10 @@ def _merge_caveats(
                     f"caveat: {phrase}, but the converted model updates {extra} in every "
                     "matched row",
                     "dbt's merge incremental strategy updates a matched row with every column "
-                    "the model selects. The model selects every column this MERGE writes in "
-                    "any branch, so a column one branch writes is overwritten by every "
-                    f"matched row, including rows a branch that leaves it alone handles. "
-                    f"{restore}",
+                    "that the model selects. The model selects every column that this MERGE "
+                    "writes in any branch. So dbt writes a column that one branch writes into "
+                    "every matched row. The overwrite includes the rows of a branch that does "
+                    f"not write that column. {restore}",
                 )
             )
         if defaulted:
@@ -1161,14 +1167,15 @@ def _merge_caveats(
                     f"caveat: {phrase}, but the converted model writes {extra} into every "
                     "inserted row",
                     "dbt's merge incremental strategy builds an inserted row from every column "
-                    "the model selects. The model selects every column this MERGE writes in "
-                    "any branch, so a column this MERGE's INSERT left to the target's default "
-                    "is written from the USING source instead",
+                    "that the model selects. The model selects every column that this MERGE "
+                    "writes in any branch. So dbt writes a column from the USING source where "
+                    "the INSERT of this MERGE left the target's default",
                 )
             )
     else:
         unnarrowed = (
-            f"The model body is not narrowed to the columns this MERGE writes, because {projection}"
+            "This conversion does not narrow the model body to the columns that this MERGE "
+            f"writes. The reason is that {projection}"
         )
         if branches.updated_columns:
             named = ", ".join(branches.updated_columns)
@@ -1180,8 +1187,9 @@ def _merge_caveats(
                     "merge.update_columns",
                     f"caveat: {phrase}, but the converted model updates every column it selects",
                     "dbt's merge incremental strategy updates a matched row with every column "
-                    "the model selects, not a chosen subset, so the columns this MERGE leaves "
-                    f"alone are overwritten on every run. {unnarrowed}. {restore}",
+                    "that the model selects, not with a chosen subset. So dbt overwrites the "
+                    f"columns that this MERGE does not change, on every run. {unnarrowed}. "
+                    f"{restore}",
                 )
             )
         if branches.inserted_columns:
@@ -1194,9 +1202,9 @@ def _merge_caveats(
                     "merge.insert_columns",
                     f"caveat: {phrase}, but the converted model inserts every column it selects",
                     "dbt's merge incremental strategy builds an inserted row from every column "
-                    "the model selects, not a chosen subset, so a column this MERGE's INSERT "
-                    "left to the target's default is written from the model's own SELECT "
-                    f"instead. {unnarrowed}",
+                    "that the model selects, not from a chosen subset. So dbt writes a column "
+                    "from the model's own SELECT where the INSERT of this MERGE left the "
+                    f"target's default. {unnarrowed}",
                 )
             )
         if branches.rewritten:
@@ -1207,12 +1215,13 @@ def _merge_caveats(
                     f"caveat: {table_name} writes {written}, not from the source's own column "
                     "of that name, but the converted model writes every column from its own "
                     "SELECT",
-                    "dbt's merge incremental strategy fills each column of an updated or "
-                    "inserted row from the model's own SELECT, and the model's body is this "
-                    "MERGE's USING source. A value the script took from anywhere else — a "
-                    "constant, a DEFAULT, an expression, the target's own column, or a source "
-                    "column of a different name — is replaced by the source column of the "
-                    "same name, changing what lands in that column",
+                    "dbt's merge incremental strategy writes each column of an updated or "
+                    "inserted row from the model's own SELECT. The body of the model is the "
+                    "USING source of this MERGE. The script takes some values from other "
+                    "places: a constant, a DEFAULT, an expression, the target's own column, "
+                    "or a source column of another name. So dbt replaces each of these "
+                    "values with the source column of the same name, and the data in that "
+                    "column changes",
                 )
             )
     if branches.conditions:
@@ -1222,10 +1231,11 @@ def _merge_caveats(
                 "merge.branch_condition",
                 f"caveat: {table_name} restricts a WHEN branch with a condition ({stated}), "
                 "but the converted model applies dbt's merge to every row",
-                "dbt's merge incremental strategy has no per-branch condition: every row "
-                "matching unique_key is updated and every row matching none is inserted, "
-                "whatever a branch condition says. The condition is named here as evidence "
-                "for a human to re-express in the model's own SELECT, never applied as one",
+                "dbt's merge incremental strategy has no per-branch condition. The strategy "
+                "updates every row that matches unique_key, and inserts every row that matches "
+                "none, whatever a branch condition says. This conversion names the condition here "
+                "as evidence for a human to express again in the model's own SELECT. This "
+                "conversion never applies the condition",
             )
         )
     return caveats
@@ -1330,17 +1340,18 @@ def merge_pass(state: PassState) -> PassState:
                     "merge.unsupported_branch",
                     2,
                     action=(
-                        f"deferred: MERGE INTO {table.name} has a WHEN branch dbt's merge "
-                        "incremental strategy cannot perform "
+                        f"deferred: MERGE INTO {table.name} has a WHEN branch that dbt's "
+                        "merge incremental strategy cannot perform "
                         f"({'; '.join(branches.unsupported)})"
                     ),
                     reason=(
-                        "dbt's merge incremental strategy performs exactly two actions: "
-                        "update a row matching unique_key with every column the model "
-                        "selects, and insert a row matching none. It has no delete branch, "
-                        "no NOT MATCHED BY SOURCE branch and no way to leave a matched row "
-                        "alone, so converting this MERGE would silently drop what that "
-                        "branch does"
+                        "dbt's merge incremental strategy performs exactly two actions. The "
+                        "first action updates a row that matches unique_key, with every "
+                        "column that the model selects. The second action inserts a row "
+                        "that matches none. The strategy has no delete branch, no NOT "
+                        "MATCHED BY SOURCE branch, and no way to leave a matched row "
+                        "unchanged. So a conversion of this MERGE would silently drop what "
+                        "that branch does"
                     ),
                 )
             )
@@ -1358,11 +1369,12 @@ def merge_pass(state: PassState) -> PassState:
                         f"({'; '.join(branches.unreadable)})"
                     ),
                     reason=(
-                        "dbt's merge incremental strategy assigns whole columns, taken from "
-                        "the model's own SELECT. This branch's target is not a whole column "
-                        "— an assignment to a path inside one, like SET t.data['city'] = "
-                        "s.city, is the usual case — so dbt has no way to perform it, and a "
-                        "converted model would overwrite the whole column on every run"
+                        "dbt's merge incremental strategy assigns whole columns, from the "
+                        "model's own SELECT. The target of this branch is not a whole "
+                        "column. The usual case is an assignment to a path inside a column, "
+                        "for example SET t.data['city'] = s.city. dbt cannot perform that "
+                        "assignment. A converted model would overwrite the whole column on "
+                        "every run"
                     ),
                 )
             )
@@ -1380,10 +1392,10 @@ def merge_pass(state: PassState) -> PassState:
                         f"({'; '.join(branches.unpairable)})"
                     ),
                     reason=(
-                        "which column receives which value cannot be read from a list of "
-                        "columns and a list of values of different lengths, so what this "
-                        "branch writes where is unknown; converting it would state one "
-                        "reading of the statement as though it were the only one"
+                        "the list of columns and the list of values in this branch have "
+                        "different lengths. So this conversion cannot read which column "
+                        "receives which value. A converted model would state one reading of "
+                        "the statement as if it were the only reading"
                     ),
                 )
             )
@@ -1397,16 +1409,17 @@ def merge_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: MERGE INTO {table.name} has a WHEN branch that writes "
-                        "no value taken from the source "
+                        "no value from the source "
                         f"({'; '.join(branches.no_source_values)})"
                     ),
                     reason=(
-                        "dbt's merge incremental strategy fills every column of an updated "
-                        "or inserted row from the model's own SELECT, which is this MERGE's "
-                        "USING source. This branch writes only constants, defaults or the "
-                        "target's own columns, so a converted model would put source rows "
-                        "where the script deliberately put none — not a wider version of "
-                        "the same job but a different one"
+                        "dbt's merge incremental strategy writes every column of an updated "
+                        "or inserted row from the model's own SELECT. That SELECT is the "
+                        "USING source of this MERGE. This branch writes only constants, "
+                        "defaults or the target's own columns. So a converted model would "
+                        "put source rows where the script deliberately put none. The result "
+                        "is not a wider version of the same job. The result is a different "
+                        "job"
                     ),
                 )
             )
@@ -1420,16 +1433,16 @@ def merge_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: MERGE INTO {table.name} has a WHEN NOT MATCHED branch "
-                        "whose INSERT names target columns but supplies no values for them "
-                        "(INSERT DEFAULT VALUES writes a row of the target's own column "
-                        "defaults)"
+                        "whose INSERT names target columns but supplies no values for them. "
+                        "INSERT DEFAULT VALUES writes a row of the target's own column "
+                        "defaults"
                     ),
                     reason=(
                         "dbt's merge incremental strategy builds an inserted row from every "
-                        "column the model selects. This branch takes nothing from the source "
-                        "at all, so there is no source row for the model's SELECT to stand "
-                        "in for, and a converted model would write selected rows where the "
-                        "script wrote defaults"
+                        "column that the model selects. This branch takes nothing from the "
+                        "source at all. So the model's SELECT has no source row to replace. "
+                        "A converted model would write selected rows where the script wrote "
+                        "defaults"
                     ),
                 )
             )
@@ -1437,25 +1450,25 @@ def merge_pass(state: PassState) -> PassState:
             refused = True
             if refusal_reason == "disjunctive":
                 action = (
-                    f"deferred: MERGE INTO {table.name} has no unique key extractable "
-                    "from its ON clause — the ON clause is disjunctive (OR), which has "
-                    "no unique_key representation"
+                    f"deferred: MERGE INTO {table.name} has no unique key that this "
+                    "conversion can extract from its ON clause. The ON clause is "
+                    "disjunctive (OR), which has no unique_key representation"
                 )
                 reason = (
-                    "dbt's merge incremental strategy's unique_key is inherently a "
-                    "conjunction of columns; a disjunctive (OR) match condition cannot "
-                    "be expressed as one, and converting it anyway would silently "
-                    "change the MERGE's match semantics"
+                    "the unique_key of dbt's merge incremental strategy is inherently a "
+                    "conjunction of columns. A unique_key cannot express a disjunctive "
+                    "(OR) match condition. A conversion would silently change the match "
+                    "semantics of the MERGE"
                 )
             else:
                 action = (
-                    f"deferred: MERGE INTO {table.name} has no unique key extractable "
-                    "from its ON clause"
+                    f"deferred: MERGE INTO {table.name} has no unique key that this "
+                    "conversion can extract from its ON clause"
                 )
                 reason = (
-                    "dbt's merge incremental strategy requires a unique_key; an ON "
+                    "dbt's merge incremental strategy requires a unique_key. An ON "
                     "clause with no target-column = source-column equality gives no "
-                    "column to use as one"
+                    "column to use as the unique_key"
                 )
             decisions.append(_decision(stmt, index, "merge", 2, action=action, reason=reason))
         if refused:
@@ -1469,16 +1482,16 @@ def merge_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: MERGE INTO {table.name} is one of several statements in "
-                        f"this conversion that write {table.name}, so together they are "
+                        f"this conversion that write {table.name}. Together they are "
                         "one multi-statement build (catalog 2.8, deferred to slice 6c)"
                     ),
                     reason=(
-                        "another statement earlier in this conversion writes this "
-                        "target, and both of them run and leave rows behind. A dbt model "
-                        "is one SELECT, so the MERGE cannot become one of its own without "
-                        "either replacing what that statement produces or claiming to be "
-                        "the whole of a target two statements write; expressing both at "
-                        "once would mean inventing a query the script never wrote"
+                        "an earlier statement in this conversion also writes this "
+                        "target. Both statements run, and both leave rows in the target. "
+                        "A dbt model is one SELECT. As a model, the MERGE would replace "
+                        "what the other statement produces, or claim to be the whole of a "
+                        "target that two statements write. A combination of the two would "
+                        "be a query that the script never wrote"
                     ),
                 )
             )
@@ -1531,9 +1544,9 @@ def merge_pass(state: PassState) -> PassState:
                     f"(incremental_strategy='merge', unique_key={list(keys)!r})"
                 ),
                 reason=(
-                    "dbt's merge incremental strategy updates a row matching unique_key "
-                    "with every column the model selects, and inserts a row matching "
-                    f"none; this MERGE {performed}"
+                    "dbt's merge incremental strategy updates a row that matches unique_key "
+                    "with every column that the model selects, and inserts a row that "
+                    f"matches none. This MERGE {performed}"
                 ),
                 question=f"does {key_list} uniquely identify a row in {table.name}?",
                 plain_question=(
@@ -1673,16 +1686,17 @@ def append_pass(state: PassState) -> PassState:
                         "not an append"
                         if confirmed
                         else f"deferred: TRUNCATE + INSERT INTO {table.name} may be a full "
-                        "rebuild, but their qualification can't confirm it"
+                        "rebuild, but the qualification of their targets cannot confirm it"
                     ),
                     reason=(
-                        "a truncate-then-insert pair replaces the table's whole contents on "
-                        "every run, which is dbt's table materialization; an append "
-                        "incremental keeps everything already there and adds to it, so "
-                        "converting this INSERT to an append would turn a rebuild into a "
-                        "table that only ever grows. The pair was not converted here — a "
-                        "pass that could have paired them declined to — so it is left "
-                        "pending rather than converted into the opposite of what it says"
+                        "a TRUNCATE and INSERT pair replaces all the contents of the table "
+                        "on every run, which is dbt's table materialization. An append "
+                        "incremental keeps all the rows already in the table and adds to "
+                        "them. So an append would change a rebuild into a table that only "
+                        "ever grows. A pass that could pair the two statements declined to "
+                        "pair them, so no pass converted the pair here. This conversion "
+                        "leaves the pair pending, and does not convert the pair into the "
+                        "opposite of what it says"
                     ),
                 )
             )
@@ -1697,13 +1711,14 @@ def append_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: DELETE + INSERT INTO {table.name} is a delete and insert "
-                        "pair, not converted (catalog 2.3, deferred to slice 6c)"
+                        "pair, which this conversion does not convert (catalog 2.3, deferred "
+                        "to slice 6c)"
                     ),
                     reason=(
-                        "a delete-then-insert pair only replaces the rows the DELETE removed; "
-                        "an append incremental re-inserts everything the model selects on every "
-                        "run regardless of the DELETE, which would silently change which rows "
-                        "survive a run"
+                        "a DELETE and INSERT pair replaces only the rows that the DELETE "
+                        "removed. An append incremental re-inserts everything that the model "
+                        "selects on every run, and ignores the DELETE. So an append would "
+                        "silently change which rows survive a run"
                     ),
                 )
             )
@@ -1717,14 +1732,16 @@ def append_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: DELETE + INSERT INTO {table.name} may be a delete and "
-                        "insert pair, but their qualification can't confirm it (catalog 2.3)"
+                        "insert pair, but the qualification of their targets cannot confirm "
+                        "it (catalog 2.3)"
                     ),
                     reason=(
-                        "a DELETE and this INSERT name the same bare table but qualification "
-                        "differs enough that they can't be confirmed as the same target from "
-                        "the SQL alone — which schema an unqualified name resolves to depends "
-                        "on the session's default, not on the script — so this is left pending "
-                        "for a human to confirm rather than guessed either way"
+                        "a DELETE and this INSERT name the same bare table, but their "
+                        "qualification differs enough that the SQL alone cannot confirm the "
+                        "same target. The schema that an unqualified name resolves to depends "
+                        "on the default schema of the session, not on the script. So this "
+                        "conversion leaves the statement pending for a human to confirm, and "
+                        "does not guess either way"
                     ),
                 )
             )
@@ -1739,17 +1756,16 @@ def append_pass(state: PassState) -> PassState:
                     2,
                     action=(
                         f"deferred: INSERT INTO {table.name} is one of several statements in "
-                        f"this conversion that write {table.name}, so together they are "
+                        f"this conversion that write {table.name}. Together they are "
                         "one multi-statement build (catalog 2.8, deferred to slice 6c)"
                     ),
                     reason=(
-                        "another statement earlier in this conversion writes this "
-                        "target, and both of them run and leave rows behind. A dbt model "
-                        "is one SELECT, so this statement cannot become one of its own "
-                        "without either replacing what that statement produces or "
-                        "claiming to be the whole of a target two statements write; "
-                        "combining them would mean inventing a query the script never "
-                        "wrote"
+                        "an earlier statement in this conversion also writes this "
+                        "target. Both statements run, and both leave rows in the target. "
+                        "A dbt model is one SELECT. As a model, this statement would "
+                        "replace what the other statement produces, or claim to be the "
+                        "whole of a target that two statements write. A combination of the "
+                        "two would be a query that the script never wrote"
                     ),
                 )
             )
@@ -1781,16 +1797,17 @@ def append_pass(state: PassState) -> PassState:
         # above the options offering that same switch in-band, to readers
         # (the web layer among them) who have no command line to type it on.
         reason = (
-            "an append incremental re-inserts everything the model selects on every run "
-            "unless the model's own SELECT filters to new rows; keying it on a column "
-            "that identifies a row uniquely would make it a merge incremental instead"
+            "an append incremental re-inserts everything that the model selects on every "
+            "run, unless the model's own SELECT filters to new rows. A key on a column that "
+            "identifies a row uniquely would make the model a merge incremental instead"
         )
         where = select.args.get("where") if isinstance(select, exp.Select) else None
         if where is not None:
             where_sql = where.this.sql(dialect=state.dialect)
             reason += (
-                f" — the SELECT already carries a WHERE ({where_sql}), named here as the "
-                "likely incremental filter for a human to confirm, not applied as one"
+                f". The SELECT already has a WHERE ({where_sql}). This conversion names the "
+                "WHERE here as the likely incremental filter, for a human to confirm. This "
+                "conversion does not apply the WHERE as that filter"
             )
         append_answer = append_option()
         decisions.append(
@@ -1804,7 +1821,9 @@ def append_pass(state: PassState) -> PassState:
                     "(incremental_strategy='append')"
                 ),
                 reason=reason,
-                question=("Should rows be appended on every run, or deduplicated on a unique key?"),
+                question=(
+                    "Should each run append every row, or deduplicate the rows on a unique key?"
+                ),
                 # `draft.name` is the INSERT's *destination*, and the sentence
                 # has to name it as one. Wording it as where rows come from
                 # ("every row it finds in revenue_events") contradicts the
@@ -1819,9 +1838,9 @@ def append_pass(state: PassState) -> PassState:
                 # plain wording rendered directly below it and by the worked
                 # example rendered below that.
                 plain_question=(
-                    f"When this runs again tomorrow, should every row it produces be added "
-                    f"to {draft.name} on top of what is already there -- or should the ones "
-                    f"matching a row that is already there update it instead?"
+                    "When this runs again tomorrow, should every row that it produces be "
+                    f"added to {draft.name}, on top of the rows already there? Or should a "
+                    "new row that matches a row already there update that row instead?"
                 ),
                 chosen=append_answer.label,
                 options=(append_answer, merge_option(), verify_option()),

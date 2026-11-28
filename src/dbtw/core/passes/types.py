@@ -113,14 +113,14 @@ def append_option() -> Option:
         label="append every row",
         kind="append",
         effect=(
-            "Every run re-inserts everything this model selects. Rows already in the "
-            "table stay where they are, so a second run duplicates them unless the "
-            "SELECT filters to new rows itself."
+            "Every run re-inserts everything that this model selects. Rows already in "
+            "the table stay in the table. So a second run duplicates them, unless the "
+            "SELECT itself filters to new rows."
         ),
         plain=(
-            "Every time this runs it adds everything it finds, on top of what is "
-            "already there. Run it twice and you get two copies of every row, "
-            "unless the query itself only asks for new ones."
+            "Each time this runs, it adds everything that it finds, on top of the rows "
+            "already there. If you run it twice, you get two copies of every row, "
+            "unless the query itself asks only for new rows."
         ),
     )
 
@@ -145,19 +145,20 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
             label="merge on a unique key",
             kind="merge",
             effect=(
-                "Each run updates the row whose key matches and inserts the rows that "
-                "match nothing. Needs a column that identifies a row uniquely — with an "
-                "empty unique_key there is nothing to match on, so nothing gets updated."
+                "Each run updates the row whose key matches, and inserts the rows that "
+                "match nothing. The merge needs a column that identifies a row uniquely. "
+                "With an empty unique_key, the merge has nothing to match on, so no row "
+                "is updated."
             ),
             # The one option whose label leaves its key unsaid, so the one
             # option that needs columns supplied with the answer.
             columns_prompt="the column(s) that identify a row uniquely",
             plain=(
-                "Each run compares that column's value against what is already in "
-                "the table -- a match updates the existing row, and everything "
-                "else gets added, so nothing is duplicated. It needs a column "
-                "whose value is different on every row -- an id -- and without "
-                "one there is nothing to compare against, so nothing gets updated."
+                "Each run compares the value in that column with the rows already "
+                "in the table. A match updates the existing row. Each run adds every "
+                "other row, so nothing is duplicated. This choice needs a column with "
+                "a different value on every row, for example an id. A run without "
+                "that column has nothing to compare with, so no row is updated."
             ),
         )
     named = ", ".join(keys)
@@ -167,12 +168,12 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
         # was built for -- see `kind` on Option.
         kind="merge",
         effect=(
-            f"Updates the row whose {named} matches, with every column this model "
-            "selects, and inserts rows matching none."
+            f"Each run updates the row whose {named} matches, with every column that "
+            "this model selects, and inserts the rows that match none."
         ),
         plain=(
-            f"Each run finds the row whose {named} matches and updates it, and "
-            "adds the rows that match nothing. Rows are not duplicated."
+            f"Each run finds the row whose {named} matches and updates that row. Each "
+            "run also adds the rows that match nothing. No row is duplicated."
         ),
     )
 
@@ -189,17 +190,18 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
             label="merge on a unique key, checked on every run",
             kind="merge_checked",
             effect=(
-                "The same merge, plus dbt's unique test on the chosen column: "
-                "declared in a .yml file beside the model, it fails loudly the "
-                "first time two rows share a value."
+                "The same merge, plus dbt's unique test on the chosen column. "
+                "This conversion declares the test in a .yml file beside the "
+                "model. The test fails loudly the first time that two rows share "
+                "a value."
             ),
             columns_prompt="the column(s) that identify a row uniquely",
             declares_test="unique",
             plain=(
-                "The same as merging, plus a check that runs alongside: if "
-                "two rows ever share the same value in that column, the "
-                "check fails the next time it runs and names the value, so "
-                "the problem cannot slip past unnoticed."
+                "The same as merging, plus a check that also runs. If two "
+                "rows ever share the same value in that column, the check "
+                "fails the next time it runs. The check names the value, so "
+                "the problem cannot stay hidden."
             ),
         )
     named = ", ".join(keys)
@@ -208,15 +210,16 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
         kind="merge_checked",
         effect=(
             f"The same merge as 'merge on {named}', plus dbt's unique test on "
-            f"{named}: declared in a .yml file beside the model, it fails "
-            f"loudly the first time two rows share the same {named}."
+            f"{named}. This conversion declares the test in a .yml file beside "
+            "the model. The test fails loudly the first time that two rows share "
+            f"the same {named}."
         ),
         declares_test="unique",
         plain=(
-            f"The same as merging on {named}, plus a check that runs "
-            f"alongside: if two rows ever share the same {named}, the check "
-            "fails the next time it runs and names the value, so the "
-            "problem cannot slip past unnoticed."
+            f"The same as merging on {named}, plus a check that also runs. "
+            f"If two rows ever share the same {named}, the check fails the "
+            "next time it runs. The check names the value, so the problem "
+            "cannot stay hidden."
         ),
     )
 
@@ -227,13 +230,13 @@ def inline_option() -> Option:
         label="inline the literal value",
         kind="inline",
         effect=(
-            "The literal from the source SQL is spliced into the model body. The "
-            "model stops taking the value at run time and always uses this one."
+            "This choice writes the literal from the source SQL into the model body. "
+            "The model stops taking the value at run time, and always uses this literal."
         ),
         plain=(
-            "The value from your script is written straight into the model, so "
-            "it is the same on every run and cannot be changed without editing "
-            "the file."
+            "This choice writes the value from your script directly into the model. "
+            "So the value is the same on every run. You cannot change the value "
+            "unless you edit the file."
         ),
     )
 
@@ -248,12 +251,13 @@ def var_option(name: str = "") -> Option:
         label="keep as a dbt var",
         kind="var",
         effect=(
-            f"The value stays a run-time parameter: the model calls {called} "
-            "and dbt supplies it per run, so it can differ between environments."
+            f"The value stays a run-time parameter. The model calls {called}, and "
+            "dbt supplies the value for each run. So the value can differ between "
+            "environments."
         ),
         plain=(
-            f"The value stays something you set when you run it, so {name or 'it'} "
-            "can be different in testing than in production."
+            "The value stays something that you set when you run the model. So "
+            f"{name or 'the value'} can be different in testing than in production."
         ),
     )
 

@@ -236,8 +236,8 @@ def test_two_files_of_one_name_are_told_they_are_two_files() -> None:
     refusal = next(d for d in state.decisions if ".name_taken." in d.key)
     assert "a/orders.sql" in refusal.reason, "the two files must be told apart"
     assert "b/orders.sql" in refusal.reason
-    assert "Rename either file" in refusal.reason
-    assert "file of its own" not in refusal.reason, "it is already in a file of its own"
+    assert "Rename one of the two files" in refusal.reason
+    assert "Put the query in a file" not in refusal.reason, "it is already in a file of its own"
     assert "two files" in refusal.plain_reason.casefold()
 
 
@@ -254,8 +254,8 @@ def test_a_name_a_written_table_holds_is_refused_as_a_statement_not_a_file() -> 
     state = state_from(both, filename="revenue_daily.sql")
 
     refusal = next(d for d in state.decisions if ".name_taken." in d.key)
-    assert "a table one of its own statements writes" in refusal.reason
-    assert "Rename either file" not in refusal.reason
+    assert "a table that one of its own statements writes" in refusal.reason
+    assert "Rename one of the two files" not in refusal.reason
 
 
 def test_a_name_differing_only_in_case_is_already_taken() -> None:
@@ -280,7 +280,7 @@ def test_a_name_differing_only_in_case_is_already_taken() -> None:
 
     assert [d.name for d in state.drafts] == ["Orders"], "the query must not claim the name too"
     refusal = next(d for d in state.decisions if ".name_taken." in d.key)
-    assert "a table one of its own statements writes" in refusal.reason
+    assert "a table that one of its own statements writes" in refusal.reason
 
 
 def test_the_refusal_says_the_rule_the_name_actually_broke() -> None:
@@ -294,4 +294,4 @@ def test_the_refusal_says_the_rule_the_name_actually_broke() -> None:
 
     refusal = next(d for d in state.decisions if ".unusable_name." in d.key)
     assert "cannot start with a number" in refusal.plain_reason
-    assert "not starting with a digit" in refusal.reason
+    assert "must not start with a digit" in refusal.reason

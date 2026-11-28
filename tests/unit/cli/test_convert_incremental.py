@@ -437,7 +437,7 @@ def test_the_report_asks_the_append_and_the_merge_question(tmp_path):
     append can't know whether re-running duplicates rows, and the merge can't
     know whether its ON columns really identify one."""
     report = _run_fixture(tmp_path)
-    assert "Should rows be appended on every run, or deduplicated on a unique key?" in report
+    assert "Should each run append every row, or deduplicate the rows on a unique key?" in report
     assert "Chose: append every row" in report
     assert "does customer_id uniquely identify a row in dim_customers?" in report
     assert "Chose: merge on customer_id" in report
