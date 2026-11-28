@@ -42,18 +42,20 @@
 {% extends "base.html" %}
 {% block main %}
 <div class="opening">
-  <h1 class="hero"><span data-engine>{{ headline }}</span></h1>
-  <p class="lede"><span data-engine>{{ lede }}</span></p>
+  <h1 class="hero"><span data-engine>{{ headline | code }}</span></h1>
+  <p class="lede"><span data-engine>{{ lede | code }}</span></p>
 </div>
 
 {%- if refusal %}
-{# The box the refusal is about, by that box's own label. A mistyped "Also
-   reading" path and a mistyped project path were refused in the same words,
-   and the reader looked in the wrong box. #}
+{# The box the refusal is about, by that box's own label. A mistyped path in
+   the other projects box and a mistyped project path were refused in the
+   same words, and the reader looked in the wrong box. A refused file name
+   carries its box's label too, as the other two do. #}
 <p class="refusal">
   {%- if box == "project" %}<span class="tag">Converting against:</span> {% endif %}
-  {%- if box == "elsewhere" %}<span class="tag">Also reading:</span> {% endif %}
-  <span data-engine>{{ refusal }}</span></p>
+  {%- if box == "elsewhere" %}<span class="tag">Other dbt projects:</span> {% endif %}
+  {%- if box == "name" %}<span class="tag">File name:</span> {% endif %}
+  <span data-engine>{{ refusal | code }}</span></p>
 {%- endif %}
 
 <form method="post" action="/source" enctype="multipart/form-data">
@@ -65,8 +67,10 @@
                placeholder="/path/to/dbt/project" required>
       </label>
       <label class="field">
-        <span class="key">Also reading</span>
-        {# A box of lines, not a one-line input: an input joined two typed
+        <span class="key">Other dbt projects</span>
+        {# Named for what it wants. "Also reading" did not say that the box
+           takes other dbt projects, not more SQL.
+           A box of lines, not a one-line input: an input joined two typed
            paths with a space, and the route reads one path per line. The
            paths are the reader's own, so they are an identifier here. #}
         {%- if elsewhere %}
@@ -106,12 +110,12 @@
   <li data-item="pillar">
     <span class="no" data-ordinal="pillar">{{ pillar.number }}</span>
     <span class="name"><span data-engine>{{ pillar.name }}</span></span>
-    <p><span data-engine>{{ pillar.plain }}</span></p>
+    <p><span data-engine>{{ pillar.plain | code }}</span></p>
   </li>
   {%- endfor %}
 </ol>
 
-<p class="fineprint"><span data-engine>{{ privacy }}</span></p>
+<p class="fineprint"><span data-engine>{{ privacy | code }}</span></p>
 
 {%- if started %}
 <p class="onward"><a data-link="back" href="/">Back to the walk</a></p>

@@ -57,15 +57,25 @@
   The typed values are the reader's text, held for one render. A refusal
   about a model this conversion does not build has no row, so it shows above
   the rows.
+
+  Each row is its own form, so a Save reloads the page and sends that row
+  only. `unsaved.js` keeps what was typed into the other rows for the next
+  render, and warns before any other way off the page.
+
+  The tags label says how the box splits: on commas and on spaces, so
+  "finance team" is two tags.
 #}
 {% extends "base.html" %}
+{% block scripts %}
+    <script src="{{ url_for('static', filename='unsaved.js') }}" defer></script>
+{%- endblock %}
 {% block main %}
 <h1>Describe</h1>
 <p class="tally"><span data-count="described">{{ described }}</span> of
   <span data-count="model">{{ models | length }}</span> described</p>
 
 {%- if refusal %}
-<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+<p class="refusal"><span data-engine>{{ refusal | code }}</span></p>
 {%- endif %}
 
 {# What the "built as" choices mean, once, above every model that offers
@@ -78,7 +88,7 @@
   {%- for name, plain in meanings %}
   <li data-item="meaning">
     <code><span data-engine>{{ name }}</span></code>
-    <span class="means"><span data-engine>{{ plain }}</span></span>
+    <span class="means"><span data-engine>{{ plain | code }}</span></span>
   </li>
   {%- endfor %}
 </ul>
@@ -103,7 +113,7 @@
       {%- endfor %}</p>
     {%- endif %}
     {%- if row.draft %}
-    <p class="refusal"><span data-engine>{{ row.draft.message }}</span></p>
+    <p class="refusal"><span data-engine>{{ row.draft.message | code }}</span></p>
     {%- endif %}
     <form method="post" action="/describe">
       <input type="hidden" name="model" value="{{ row.model.name }}">
@@ -129,7 +139,7 @@
           </select>
         </label>
         <label class="field-block">
-          <span class="key">Tags</span>
+          <span class="key">Tags (commas or spaces)</span>
           {%- if tags %}
           <textarea name="tags" rows="1" spellcheck="false"
                     data-engine data-identifier>{{ tags }}</textarea>

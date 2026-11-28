@@ -209,7 +209,8 @@ def test_the_one_screen_is_held_to_the_rules_every_screen_is(
         listed = sum(1 for item in page.items if item == name)
         assert shown == str(listed), f"says {shown} {name} beside {listed}"
     assert not page.undeclared_numbers(), page.undeclared_numbers()
-    assert page.scripts == ()
+    # The unsaved-text guard on its model rows, and no other script.
+    assert page.scripts == ("/static/unsaved.js",)
 
 
 def test_the_write_action_is_not_gated_in_direct_mode_either(walk: Walk, walk_sql: Path) -> None:

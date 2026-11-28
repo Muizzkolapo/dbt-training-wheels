@@ -5,10 +5,14 @@ so far. No I/O of its own beyond the pipeline's, and no conversion logic --
 
 from __future__ import annotations
 
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import sqlglot
+from sqlglot.errors import SqlglotError
 
 from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble, clean_tags
 from dbtw.core.context import NotADbtProjectError, read_project
@@ -684,12 +688,21 @@ class UnnamedPasteError(ValueError):
     """
 
 
+# The names a dbt model can take: letters, digits and underscores, not
+# starting with a digit. A model is named after its file, so a file named
+# outside this set builds no model -- `a b.sql` and `Weekly-Revenue.sql`
+# started a walk that said "Building 0 models".
+_MODEL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def pasted_file_name(name: str) -> str:
     """The file name pasted SQL is staged under: the reader's name, plus `.sql`.
 
-    One plain file name and nothing else. A path separator or a leading dot
-    would stage the paste somewhere other than the one staging directory, or
-    as a file `ingest` does not read, so either is refused rather than
+    One plain file name that dbt can name a model after, and nothing else. A
+    path separator would stage the paste somewhere other than the one staging
+    directory, a leading dot would stage it as a file `ingest` does not read,
+    and any other character outside `_MODEL_NAME` would stage a file that
+    builds no model. Each is refused, with its own reason, rather than
     cleaned up into something the reader did not type.
     """
     stem = name.strip()
@@ -697,16 +710,39 @@ def pasted_file_name(name: str) -> str:
         stem = stem[: -len(".sql")]
     if not stem:
         raise UnnamedPasteError(
-            "name the pasted SQL. A dbt model takes its name from its file. So a query "
+            "Name the pasted SQL. A dbt model takes its name from its file. So a query "
             "that you paste here needs the file name that you would save it as. For "
-            "example, the file name weekly_revenue gives a model called weekly_revenue"
+            "example, the file name weekly_revenue gives a model called weekly_revenue."
         )
-    if "/" in stem or "\\" in stem or "\x00" in stem or stem.startswith("."):
+    if "/" in stem or "\\" in stem or "\x00" in stem:
         raise UnnamedPasteError(
             f"{name.strip()!r} is not one plain file name. Give the name that you would "
-            "save the query as, with no folder in it. For example: weekly_revenue"
+            "save the query as, with no folder in it. For example: weekly_revenue."
+        )
+    if stem.startswith("."):
+        raise UnnamedPasteError(
+            f"{name.strip()!r} starts with a dot. This tool does not read a file whose "
+            "name starts with a dot. Give a name that starts with a letter. For example: "
+            "weekly_revenue."
+        )
+    if not _MODEL_NAME.fullmatch(stem):
+        raise UnnamedPasteError(
+            f"{name.strip()!r} cannot be the name of a dbt model. A model name can contain "
+            "only letters, digits and underscores. It cannot start with a digit. For "
+            "example: weekly_revenue."
         )
     return f"{stem}.sql"
+
+
+def _holds_sql(text: str, dialect: str | None) -> bool:
+    """Whether `text` holds at least one SQL token, or cannot be tokenized.
+
+    See `Source._refuse_without_statements`.
+    """
+    try:
+        return bool(sqlglot.tokenize(text, read=dialect))
+    except SqlglotError:
+        return True
 
 
 @dataclass
@@ -810,8 +846,8 @@ class Source:
             # dbt_project.yml at" with nothing after "at".
             raise ProjectPathError(
                 "project",
-                "the project path is blank. Type the path of the folder that "
-                "contains your dbt_project.yml",
+                "The project path is blank. Type the path of the folder that "
+                "contains your dbt_project.yml.",
             )
         root = Path(typed).expanduser()
         # Read, not merely existence-checked: the conventions this walk
@@ -828,8 +864,9 @@ class Source:
             _read_from(other, "elsewhere")
         if not files or not any(text.strip() for text in files.values()):
             raise EmptySourceError(
-                "nothing to convert. Paste a query or choose a .sql file. Then press Convert"
+                "Nothing to convert. Paste a query or choose a .sql file. Then press Convert."
             )
+        self._refuse_without_statements(files)
         staged = self._staging()
         for existing in staged.iterdir():
             existing.unlink()
@@ -853,6 +890,33 @@ class Source:
         if self._staged is not None and self.session.sql == self._staged:
             return ", ".join(sorted(path.name for path in self._staged.iterdir()))
         return str(self.session.sql)
+
+    def _refuse_without_statements(self, files: Mapping[str, str]) -> None:
+        """Refuse `files` when `ingest` finds no statement with SQL in it.
+
+        Text that is only a comment is not blank, so the blank check above
+        lets it through, and it started a walk that built 0 models. Which
+        statements are there is `ingest`'s question, so this asks it -- over
+        a scratch copy, because the staging directory still holds the
+        previous source, and a refusal must not take that with it.
+
+        `ingest` hands back a comment with no SQL after it as a statement of
+        its own: its splitter keeps every non-blank span. So each one is
+        also asked whether it holds a token. The tokenizer reads a comment as
+        part of the token after it, and a span with no token is comments
+        only. A span the tokenizer cannot read is not empty: it holds
+        something, and the caveats screen says what was wrong with it.
+        """
+        with tempfile.TemporaryDirectory(prefix="dbtw-check-") as scratch:
+            for name, text in files.items():
+                (Path(scratch) / name).write_text(text, encoding="utf-8")
+            result = ingest(Path(scratch), self.dialect)
+            if any(_holds_sql(raw.text, result.dialect) for raw in result.statements):
+                return
+        raise EmptySourceError(
+            "Nothing to convert. The SQL that you gave contains no statement, only comments "
+            "or blank lines. Paste a query or choose a .sql file that contains one."
+        )
 
     def _staging(self) -> Path:
         if self._staged is None:

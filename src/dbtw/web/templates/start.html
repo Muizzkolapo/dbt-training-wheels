@@ -45,16 +45,15 @@
 <p class="tally"><span data-count="rename">{{ renames | length }}</span> {{ (renames | length) | noun("table") }}</p>
 <ul class="renames">
   {%- for rename in renames %}
-  <li data-item="rename"><span data-engine>{{ rename.action }}</span></li>
+  <li data-item="rename"><span data-engine>{{ rename.action | code }}</span></li>
   {%- endfor %}
 </ul>
 {%- else %}
 <p class="settled"><span class="mark blank">Nothing renamed</span></p>
 {%- endif %}
 {%- if cutover %}
-<p><span data-engine>{{ cutover.reason }}</span></p>
-<p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ cutover.plain_reason }}</span></p>
+<p><span data-engine>{{ cutover.reason | code }}</span></p>
+<p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ cutover.plain_reason | code }}</span></p>
 {%- endif %}
 
-<p class="onward"><a data-link="next" href="{{ onward }}">Next</a></p>
 {% endblock %}

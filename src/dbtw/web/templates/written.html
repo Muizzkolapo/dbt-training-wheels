@@ -30,7 +30,14 @@
   what it copies into the reader's own project is this directory, whose
   contents they have just read file by file. Once it has run, the form is
   gone and the branch is named instead -- the walk cannot undo a branch in
-  someone's repository, so it does not offer to make a second one.
+  someone's repository, so it does not offer to make a second one for the
+  same write.
+
+  A newer write is another matter. After a changed answer and a second
+  write, the branch holds the earlier write, and this page said "Delivered"
+  over files the branch does not hold. The branch is still named, with the
+  engine's sentence that it holds an earlier write, and the form comes back
+  to put this write on a new branch.
 #}
 {% extends "base.html" %}
 {% block main %}
@@ -56,8 +63,16 @@
 <h2>Delivered</h2>
 <p class="branch">On branch <span data-engine data-identifier>{{ delivered.branch }}</span>
   as <span data-engine data-identifier>{{ delivered.commit }}</span></p>
+{%- if delivered.not_returned %}
+{# The delivery stands -- the branch and its commit exist -- but the project
+   is not back on the branch it started on. The engine says which branch it
+   is on and why. #}
+<p class="refusal"><span data-engine>{{ delivered.not_returned | code }}</span></p>
+{%- endif %}
 
-{%- if pushed %}
+{%- if earlier %}
+<p class="earlier"><span data-engine>{{ earlier | code }}</span></p>
+{%- elif pushed %}
 <h2>Pushed</h2>
 <p class="branch">To <span data-engine data-identifier>{{ pushed.remote }}</span></p>
 {# What the remote said, verbatim and unparsed. A forge prints the
@@ -66,20 +81,21 @@
    it rather than reading it. #}
 <pre data-engine>{{ pushed.said }}</pre>
 {%- else %}
-{%- if refusal %}
+{%- if push_refusal %}
 <h2>Not pushed</h2>
-<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+<p class="refusal"><span data-engine>{{ push_refusal | code }}</span></p>
 {%- endif %}
 <h2>Push it</h2>
 <form method="post" action="/push">
   <p class="onward"><button type="submit">Push the branch</button></p>
 </form>
 {%- endif %}
+{%- endif %}
 
-{%- else %}
-{%- if refusal %}
+{%- if not delivered or earlier %}
+{%- if deliver_refusal %}
 <h2>Not delivered</h2>
-<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+<p class="refusal"><span data-engine>{{ deliver_refusal | code }}</span></p>
 {%- endif %}
 <h2>Deliver</h2>
 <form method="post" action="/deliver">

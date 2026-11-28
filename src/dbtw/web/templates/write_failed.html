@@ -16,7 +16,7 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Not written</h1>
-<p><span data-engine>{{ message }}</span></p>
+<p><span data-engine>{{ message | code }}</span></p>
 <p class="destination"><span data-engine>{{ out }}</span></p>
 
 <h2>Files</h2>

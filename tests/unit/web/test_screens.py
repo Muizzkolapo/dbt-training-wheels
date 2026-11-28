@@ -12,7 +12,9 @@ every string this conversion produced. Neither reads a template.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from tests.unit.web.conftest import Walk
@@ -28,6 +30,7 @@ from tests.unit.web.page import Page, as_shown, normalised, read, words
 
 import dbtw.web
 from dbtw.core.context import read_project
+from dbtw.core.deliver import earlier_write
 from dbtw.core.emit import (
     AFTER_RUN_LABEL,
     PLACEHOLDER_NOTICE,
@@ -38,6 +41,10 @@ from dbtw.core.emit import (
 from dbtw.core.teach import terms_in
 from dbtw.web import Session, Source
 from dbtw.web.app import _branch_name, _described_state, _screens
+
+# The one script a page may carry: the guard on the model rows that keeps
+# text the reader typed and did not save. See `dbtw/web/static/unsaved.js`.
+UNSAVED_SCRIPT = "/static/unsaved.js"
 
 # What counts as a sentence in an authored run. Every label the templates
 # write is three words or fewer ("In plain words", "Write these files"), so
@@ -176,6 +183,10 @@ _DESCRIBED = "described"
 # same wrong-coverage-set defect this file has been fixed for three times.
 _PUSHED = "pushed"
 _PUSH_REFUSED = "push refused"
+# A delivered walk, then a changed answer and a second write. The written
+# page then names a branch that holds the earlier write, says so, and offers
+# this write on a new branch -- a page no other state renders.
+_WRITTEN_AFTER_DELIVERY = "written after delivery"
 _STATES = (
     _PRISTINE,
     _ANSWERED,
@@ -189,6 +200,7 @@ _STATES = (
     _DELIVERY_REFUSED,
     _PUSHED,
     _PUSH_REFUSED,
+    _WRITTEN_AFTER_DELIVERY,
 )
 
 # What a reader writes on the describe screen in the state built around it.
@@ -309,6 +321,16 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         assert delivered.status_code == (200 if state == _DELIVERED else 409)
         return app, client, session, out_dir, frozenset()
 
+    if state == _WRITTEN_AFTER_DELIVERY:
+        _as_git_repo(project_dir)
+        app, client, session = walk(walk_sql)
+        assert client.post("/write", follow_redirects=True).status_code == 200
+        assert client.post("/deliver", follow_redirects=True).status_code == 200
+        answer = {"key": _append_key(session), "kind": "merge_checked", "typed": "event_id"}
+        assert client.post("/answer", data=answer).status_code == 302
+        assert client.post("/write", follow_redirects=True).status_code == 200
+        return app, client, session, out_dir, frozenset()
+
     if state == _DOWNGRADED:
         app, client, session = walk(sql_script(_unknowable(walk_sql)))
         answer = {"key": _append_key(session), "kind": "merge", "typed": "evnt_id"}
@@ -404,6 +426,14 @@ def _produced(
         strings |= _delivery_strings(session, out, _DELIVERED)
         strings |= _push_strings(session, state)
         strings |= said
+    if state == _WRITTEN_AFTER_DELIVERY:
+        # The branch and commit of the first delivery, which the page still
+        # names, and the sentence `deliver` gives for a branch that holds an
+        # earlier write -- asked of `dbtw.core.deliver`, not written here.
+        delivery = _delivery_strings(session, out, _DELIVERED)
+        strings |= delivery
+        branch = next(text for text in delivery if text.startswith("dbtw/"))
+        strings |= {normalised(as_shown(earlier_write(branch)))}
     if state in (_DELIVERED, _DELIVERY_REFUSED):
         # What a delivery reports is git's own: a branch name this module
         # derived and a commit sha only git can know. Asked of the thing that
@@ -514,9 +544,10 @@ def _delivery_strings(session: Session, out: Path, state: str) -> frozenset[str]
             )
             return done.stdout.strip()
 
-        return frozenset(
-            {normalised(git("rev-parse", "HEAD")), normalised(git("branch", "--show-current"))}
-        )
+        # The delivered branch, read off the repository: `deliver` checks out
+        # the reader's own branch again, so it is not the current one.
+        (branch,) = git("for-each-ref", "--format=%(refname:short)", "refs/heads/dbtw/").split()
+        return frozenset({normalised(git("rev-parse", branch)), normalised(branch)})
 
     scratch = Path(tempfile.mkdtemp()) / "project"
     shutil.copytree(session.project, scratch)
@@ -889,12 +920,42 @@ def test_no_screen_gates_the_write_action(
     for url, page in pages.items():
         gated = [c for c in page.controls if c.get("type") == "checkbox" and "required" in c]
         assert not gated, f"{state} {url} demands a tick before it will go on"
-        assert page.scripts == (), f"{state} {url} carries script that could gate it"
+        # One script is permitted, and only on a page with model rows: the
+        # guard that keeps unsaved row text. It reads and writes those rows
+        # and nothing else -- `test_the_screens_with_model_rows_carry_the
+        # _unsaved_text_guard` holds it away from the write action.
+        rows = any(form.get("action") == "/describe" for form in page.forms)
+        allowed = (UNSAVED_SCRIPT,) if rows else ()
+        assert page.scripts == allowed, f"{state} {url} carries script that could gate it"
 
 
+def _direct_pages(client) -> dict[str, Page]:  # type: ignore[no-untyped-def]
+    """Every screen of the direct walk, read off its own rail.
+
+    The rail is the list of screens a direct reader can reach, so it is the
+    coverage set: a screen it does not list is a screen nobody reads.
+    """
+    assert client.post("/mode", data={"mode": "direct", "back": "/"}).status_code == 302
+    nav = client.get("/").get_data(as_text=True).split("<nav>")[1].split("</nav>")[0]
+    pages: dict[str, Page] = {}
+    for url in re.findall(r'<li data-item="screen"[^>]*>\s*<a href="([^"]+)"', nav):
+        response = client.get(url)
+        assert response.status_code == 200, f"{url} -> {response.status_code}"
+        pages[url] = read(response.get_data(as_text=True))
+    assert "/everything" in pages
+    return pages
+
+
+@pytest.mark.parametrize("mode", ["guided", "direct"])
 @pytest.mark.parametrize("state", [_PRISTINE, _ANSWERED, _DOWNGRADED, _DESCRIBED])
 def test_every_decision_reaches_exactly_one_screen(
-    walk: Walk, sql_script, walk_sql: Path, project_dir: Path, out_dir: Path, state: str
+    walk: Walk,
+    sql_script,
+    walk_sql: Path,
+    project_dir: Path,
+    out_dir: Path,
+    state: str,
+    mode: str,
 ) -> None:
     """Nothing is silent. Every Decision this conversion recorded is on a
     screen, and on one screen: a Decision rendered nowhere is a choice made
@@ -907,11 +968,15 @@ def test_every_decision_reaches_exactly_one_screen(
     at the same moment the question screen starts. Checked only before the
     first answer, the partition would be checked in the one state where
     nothing has moved.
+
+    In both modes. Direct mode has no question screens, so a Decision an
+    answer produced belongs beside its question on the one screen. Checked
+    in guided mode only, that record reached no screen in direct mode.
     """
     app, client, session, out, said = _walk_in(
         walk, sql_script, walk_sql, state, project_dir, out_dir
     )
-    pages = _pages(app, client, session)
+    pages = _pages(app, client, session) if mode == "guided" else _direct_pages(client)
     decisions = session.view().change.decisions
     assert len(decisions) > 5, "this conversion should record more than a handful"
 
@@ -1461,7 +1526,9 @@ def test_the_refusal_page_goes_back_to_the_question_it_refused(walk: Walk, walk_
     # The link the page itself offers, not merely a link on it: every page in
     # the walk carries a nav link to every question, so "the refusal links to
     # /questions/1" is true of the start screen too and says nothing.
-    assert page.named_links["back"] == f"/questions/{index}"
+    # The path, because the link also carries the refused answer as a query,
+    # so the question it opens refills its picker.
+    assert urlsplit(page.named_links["back"]).path == f"/questions/{index}"
     assert set(page.links) >= set(_screen_urls(app, session))
 
 

@@ -118,13 +118,24 @@ def words(text: str) -> list[str]:
 def as_shown(text: str) -> str:
     """`text` as a reader reads it once its code spans are rendered.
 
-    A glossary definition marks a value a reader types with backticks
-    (`staging`), and a screen renders each span as `<code>`. The backticks
-    are markup, not text, so the run a page holds is the definition without
-    them. Comparing against the raw definition would make the check demand
-    the literal backticks a tester found on screen.
+    Engine text marks code with backticks -- a value in a glossary
+    definition (`staging`), a flag in a parse reason (`--dialect postgres`)
+    -- and a screen renders each span as `<code>`. The backticks are markup,
+    not text, so the run a page holds is the text without them. Comparing
+    against the raw text would make the check demand the literal backticks a
+    tester found on screen.
+
+    Backticks pair from the left, as the screen's `code` filter pairs them.
+    A last backtick with no partner is text, and stays. So does a pair with
+    nothing between them.
     """
-    return text.replace("`", "")
+    parts = text.split("`")
+    tail = ""
+    if len(parts) % 2 == 0:
+        tail = "`" + parts[-1]
+        parts = parts[:-1]
+    shown = "".join(part if index % 2 == 0 or part else "``" for index, part in enumerate(parts))
+    return shown + tail
 
 
 def normalised(text: str) -> str:

@@ -57,9 +57,12 @@ def test_a_push_sends_the_delivered_branch_to_the_remote(
     sent = client.post("/push", follow_redirects=True)
 
     assert sent.status_code == 200
-    branch = _git(project_dir, "branch", "--show-current")
+    pushed = app.config["dbtw_source"].pushed
+    assert pushed is not None
+    branch = pushed.branch
+    assert branch.startswith("dbtw/")
     assert _git(project_dir, "rev-parse", f"refs/remotes/origin/{branch}") == _git(
-        project_dir, "rev-parse", "HEAD"
+        project_dir, "rev-parse", branch
     )
     assert app.config["dbtw_source"].pushed is not None
 

@@ -1,7 +1,7 @@
 """Two question steps in the rail never share a label.
 
 Each question step is named by its table and a kind word ("revenue_daily
-append", "revenue_daily layer"). Two questions of one kind about one table
+new rows", "revenue_daily layer"). Two questions of one kind about one table
 would still share that label, and a reader could not tell which step is
 which. Those are numbered, in rail order; every other step keeps its label.
 """
@@ -83,6 +83,6 @@ def test_the_walk_numbers_its_own_question_steps() -> None:
     steps = [s for s in _screens(view) if s.url.startswith("/questions/")]  # type: ignore[arg-type]
 
     assert [(s.label, s.kind, s.nth) for s in steps] == [
-        ("revenue_daily", "append", "1"),
-        ("revenue_daily", "append", "2"),
+        ("revenue_daily", "new rows", "1"),
+        ("revenue_daily", "new rows", "2"),
     ]
