@@ -68,6 +68,7 @@ def test_all_sections_present_in_order():
         GLOSSARY_HEADING,
         "## Your project's conventions",
         "## Models",
+        "## One model, as dbt reads it",
         "## Sources",
         "## Decisions",
         "## Still pending",

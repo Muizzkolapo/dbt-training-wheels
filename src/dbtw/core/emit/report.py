@@ -17,6 +17,7 @@ from dbtw.core.emit.example import (
     Example,
     worked_example,
 )
+from dbtw.core.emit.render import render_model
 from dbtw.core.excerpt import excerpt
 from dbtw.core.naming import is_atomic_sql
 from dbtw.core.passes.types import Decision, statement_index
@@ -44,6 +45,63 @@ multi-statement rewrites remain deferred. Tests, documentation blocks, and
 exposures were not generated. Review the model bodies and the decisions above
 before treating any of this as final.\
 """
+
+
+MODEL_HEADING = "## One model, as dbt reads it"
+
+_MODEL_INTRO = (
+    "This is `{path}` as it was written. It is the same SELECT a model file always "
+    "is; anything inside double curly brackets is an instruction to dbt, filled in "
+    "before the SQL is sent. The other model files read the same way."
+)
+
+
+def _render_one_model(change: ProjectChange, elsewhere: str) -> str | None:
+    """One written model file, in full, or None when nothing was written.
+
+    The report listed model paths and never a model's contents, so the two
+    glossary words that are syntax -- `{{ }}` and `config()` -- were words a
+    reader of the CLI could not meet: ten conversions left them at 12 of 14.
+    The glossary is read off the report, so showing a file is what makes it
+    define them, in the report the reader is holding.
+
+    One file, not all of them: the files are on disk, and a report that
+    reprinted every one would bury the decisions under SQL the reader already
+    has. The one shown is the file that puts the most dbt words in front of
+    the reader that the rest of the report (`elsewhere`) does not already say.
+    Counting every word instead lets a file full of `ref(` and `source(` --
+    both said in "Not done yet" in every report -- tie with the one file that
+    carries `config(`, win the tie by position, and leave `config()` the word
+    nobody defines. A tie goes to the first in the change's own order, which
+    is dependency order. A model with no dbt syntax at all is still shown -- a
+    SELECT in a file is what a model is.
+    """
+    if not change.models:
+        return None
+    said = set(terms_in(elsewhere))
+    rendered = [(m, render_model(m)) for m in change.models]
+    model, text = max(rendered, key=lambda pair: len(set(terms_in(pair[1])) - said))
+    fence = _fence_for(text)
+    return "\n".join(
+        [
+            MODEL_HEADING,
+            "",
+            _MODEL_INTRO.format(path=model.path),
+            "",
+            f"{fence}sql\n{text}{fence}",
+        ]
+    )
+
+
+def _fence_for(text: str) -> str:
+    """A backtick fence longer than any backtick run in `text`, at least three.
+
+    A model body can hold backticks -- a quoted identifier, a string literal
+    -- and a run of three at the start of a line would close a fixed fence
+    early, rendering the rest of the file as Markdown.
+    """
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(text)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 NEXT_HEADING = "## Then, in your project"
@@ -83,11 +141,7 @@ def render_report(
     change: ProjectChange, ctx: ProjectContext, progress: Progress = NOTHING_EXPLAINED
 ) -> str:
     summary = _render_summary(change)
-    sections = [
-        _render_conventions(ctx),
-        _render_models(change),
-        _render_sources(change),
-    ]
+    sections = [_render_conventions(ctx), _render_models(change), _render_sources(change)]
     if change.variables:
         sections.append(_render_vars(change))
     sections.extend(
@@ -100,6 +154,11 @@ def render_report(
             _render_next(),
         ]
     )
+    # Chosen against everything else the report says, so it is built last
+    # and placed after the models table it shows one row of.
+    one_model = _render_one_model(change, "\n\n".join([summary, *sections]))
+    if one_model is not None:
+        sections.insert(2, one_model)
     # Second, not last. The glossary is read off the report rather than
     # authored, so it has to be built after the rest of the report exists --
     # but it is placed before the first section that uses any of the words.
