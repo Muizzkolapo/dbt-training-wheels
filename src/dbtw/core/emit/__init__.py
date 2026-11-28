@@ -9,14 +9,17 @@ from dbtw.core.emit.render import render_model, render_schema_yaml, render_sourc
 from dbtw.core.emit.report import render_report
 from dbtw.core.emit.writer import (
     REPORT_NAME,
+    WRITE_RECORD_NAME,
     DuplicateSourceEntryError,
     EmitResult,
     OrphanModelDescriptionError,
     OrphanSchemaTestError,
     OutputInsideProjectError,
+    StaleOutputError,
     UnsafeOutputPathError,
     emit,
     refuse_output_inside_project,
+    written_by_last_emit,
 )
 
 __all__ = [
@@ -29,13 +32,16 @@ __all__ = [
     "OrphanModelDescriptionError",
     "OrphanSchemaTestError",
     "OutputInsideProjectError",
+    "StaleOutputError",
     "UnsafeOutputPathError",
     "emit",
     "refuse_output_inside_project",
     "render_model",
     "REPORT_NAME",
+    "WRITE_RECORD_NAME",
     "render_report",
     "render_schema_yaml",
     "render_sources_yaml",
     "worked_example",
+    "written_by_last_emit",
 ]

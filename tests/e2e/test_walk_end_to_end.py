@@ -26,6 +26,7 @@ import yaml
 from tests.unit.web.page import normalised, read
 
 from dbtw.core.context import read_project
+from dbtw.core.emit import WRITE_RECORD_NAME
 from dbtw.web import Source
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
@@ -150,11 +151,15 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
 
     # 8. Write, and the files are on disk with the reader's own words in them.
     assert client.post("/write", follow_redirects=True).status_code == 200
+    # Every file of the conversion -- not the record `emit` keeps beside it
+    # of which files this write produced. That is bookkeeping for the next
+    # write and for delivery, and step 10 checks it stays out of the commit.
     written = {
         p.relative_to(out).as_posix(): p.read_text(encoding="utf-8")
         for p in out.rglob("*")
-        if p.is_file()
+        if p.is_file() and p.name != WRITE_RECORD_NAME
     }
+    assert (out / WRITE_RECORD_NAME).is_file()
     assert "CONVERSION_REPORT.md" in written
     models = [name for name in written if name.endswith(".sql")]
     assert models, f"no model files written: {sorted(written)}"
@@ -186,6 +191,7 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
     for name in written:
         assert name in committed, f"{name} was written but not delivered"
         assert (project / name).read_text(encoding="utf-8") == written[name]
+    assert WRITE_RECORD_NAME not in committed, "the write record was delivered"
 
     # 11. The tree is clean: everything that landed is in the commit.
     assert (

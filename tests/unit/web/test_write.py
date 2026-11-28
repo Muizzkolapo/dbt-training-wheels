@@ -35,17 +35,26 @@ from tests.unit.web.helpers import NO_QUESTIONS, ONE_APPEND
 from tests.unit.web.page import normalised, read
 
 from dbtw.cli.main import main
+from dbtw.core.emit import WRITE_RECORD_NAME
 from dbtw.web import Session
 
 _REPORT = "CONVERSION_REPORT.md"
 
 
 def _tree(root: Path) -> dict[str, bytes]:
-    """Every file under `root`, by relative path, with its bytes."""
+    """Every file of the conversion under `root`, by relative path, with its
+    bytes.
+
+    Not the write record. `emit` keeps it beside the report so the next
+    write knows what this one produced; it is bookkeeping, never previewed
+    and never listed as written, so a tree of what the reader was shown
+    leaves it out. `test_the_record_lists_exactly_the_files_of_the_latest_write`
+    is where it is held to account.
+    """
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in sorted(root.rglob("*"))
-        if path.is_file()
+        if path.is_file() and path.name != WRITE_RECORD_NAME
     }
 
 
@@ -499,3 +508,82 @@ def test_these_tests_convert_against_a_copy(
     assert project_dir.resolve() != fixture.resolve()
     assert tmp_path_factory.getbasetemp().resolve() in project_dir.resolve().parents
     assert _tree(project_dir) == _tree(fixture)
+
+
+# --- a second write after an answer that moved a model
+
+
+_CHAIN = (
+    "INSERT INTO revenue_events SELECT order_id, amount FROM raw_orders;\n"
+    "INSERT INTO revenue_daily SELECT order_id, amount FROM revenue_events;\n"
+)
+_IN_MARTS = "models/marts/revenue_daily.sql"
+_IN_INTERMEDIATE = "models/intermediate/revenue_daily.sql"
+
+
+@pytest.fixture
+def three_layers_walk(tmp_path_factory: pytest.TempPathFactory, sql_script):  # type: ignore[no-untyped-def]
+    """The walk over a project with both an intermediate and a marts layer,
+    so the engine asks where `revenue_daily` goes, as a git repository so
+    the written conversion can be delivered.
+    """
+    import shutil
+    import subprocess
+
+    from dbtw.web import Source
+    from dbtw.web.app import create_app
+
+    project = tmp_path_factory.mktemp("proj") / "three_layers"
+    shutil.copytree(Path(__file__).parents[2] / "fixtures" / "projects" / "three_layers", project)
+    for arguments in (
+        ("init", "-q"),
+        ("config", "user.email", "reader@example.invalid"),
+        ("config", "user.name", "The Reader"),
+        ("add", "--", "."),
+        ("commit", "-q", "-m", "the project as it was"),
+    ):
+        subprocess.run(["git", *arguments], cwd=project, check=True, capture_output=True)
+    out = tmp_path_factory.mktemp("walk") / "dbtw-out"
+    session = Session(project=project, sql=sql_script(_CHAIN))
+    app = create_app(Source(project=project, out=out, session=session))
+    app.testing = True
+    return app.test_client(), session, project, out
+
+
+def _move_to_intermediate(client, session: Session) -> None:  # type: ignore[no-untyped-def]
+    key = next(d.key for d in session.view().questions if d.key.startswith("assemble.layer."))
+    _answer(client, key, "intermediate")
+
+
+def test_a_second_write_after_moving_a_model_leaves_it_in_one_layer(three_layers_walk) -> None:
+    """The defect as a reader met it: write, change the answer that places
+    `revenue_daily`, write again. The out_dir held the model in both layers,
+    which is two models with one name.
+    """
+    client, session, _project, out = three_layers_walk
+    assert client.post("/write", follow_redirects=True).status_code == 200
+    assert (out / _IN_MARTS).is_file()
+
+    _move_to_intermediate(client, session)
+    second = client.post("/write", follow_redirects=True)
+
+    assert second.status_code == 200
+    assert not (out / _IN_MARTS).exists(), "the model is still in the layer it left"
+    assert (out / _IN_INTERMEDIATE).is_file()
+    page = read(second.get_data(as_text=True))
+    assert _IN_MARTS in {run.strip() for run in page.engine}, "the removal is not named"
+    assert "removed" in page.items
+
+
+def test_delivery_after_a_second_write_does_not_carry_the_stale_model(
+    three_layers_walk,
+) -> None:
+    client, session, project, _out = three_layers_walk
+    assert client.post("/write", follow_redirects=True).status_code == 200
+    _move_to_intermediate(client, session)
+    assert client.post("/write", follow_redirects=True).status_code == 200
+
+    assert client.post("/deliver", follow_redirects=True).status_code == 200
+
+    assert (project / _IN_INTERMEDIATE).is_file()
+    assert not (project / _IN_MARTS).exists(), "the stale model was delivered"

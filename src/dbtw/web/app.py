@@ -82,6 +82,7 @@ from dbtw.core.emit import (
     SUPPOSED_ROW_LABEL,
     Example,
     OutputInsideProjectError,
+    StaleOutputError,
     UnsafeOutputPathError,
     emit,
     render_model,
@@ -287,7 +288,9 @@ class FilePreview:
 # What a write can fail with that the reader can do something about: a
 # destination inside their own dbt project, a model path that would escape
 # the destination, and every OSError a directory can raise -- a permission,
-# a file standing where a directory belongs, a disk that is full.
+# a file standing where a directory belongs, a disk that is full -- and a
+# previous write into the destination whose files cannot be cleared, because
+# one of them was edited since or its record is damaged (`StaleOutputError`).
 #
 # `emit` raises two more. `DuplicateSourceEntryError` and
 # `OrphanSchemaTestError` are each documented as unreachable through the
@@ -296,7 +299,7 @@ class FilePreview:
 # blaming them for its own bug. They are absent here for the same reason they
 # are absent from the CLI's `_USAGE_ERRORS`, and absent means they surface as
 # a traceback.
-_WRITE_FAILURES = (OutputInsideProjectError, UnsafeOutputPathError, OSError)
+_WRITE_FAILURES = (OutputInsideProjectError, UnsafeOutputPathError, StaleOutputError, OSError)
 
 # What a delivery can fail with that a reader can do something about: their
 # project is not a git repository or not the root of one, their working tree
@@ -373,11 +376,17 @@ class Written:
     what was written and writes only when those differ -- so a double click
     writes once and a changed answer writes again, which a boolean cannot
     tell apart.
+
+    `removed` is what this write took away: the files the previous write
+    into `out` produced and this one does not -- a model an answer moved to
+    another layer, left behind in the one it left. Read off
+    `EmitResult.removed`, as `files` is read off `EmitResult.paths`.
     """
 
     out: Path
     files: tuple[str, ...]
     change: ProjectChange
+    removed: tuple[str, ...] = ()
 
 
 def noun(count: int, singular: str) -> str:
@@ -1530,6 +1539,7 @@ def create_app(source: Source) -> Flask:
             out=source.out,
             files=tuple(path.relative_to(source.out).as_posix() for path in result.paths),
             change=view.change,
+            removed=tuple(path.relative_to(source.out).as_posix() for path in result.removed),
         )
         _record(result.paths)
         return redirect(url_for("written_page"))
@@ -1572,6 +1582,7 @@ def create_app(source: Source) -> Flask:
         spoken = _spoken(
             str(record.out),
             record.files,
+            record.removed,
             (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
@@ -1581,6 +1592,7 @@ def create_app(source: Source) -> Flask:
             teaching=teaching_for(_terms(spoken), _learned(source)),
             out=str(record.out),
             files=record.files,
+            removed=record.removed,
             branch=_branch_name(view.change),
             delivered=delivered,
             pushed=source.pushed,
@@ -1634,6 +1646,7 @@ def create_app(source: Source) -> Flask:
                         _spoken(
                             str(written.out),
                             written.files,
+                            written.removed,
                             str(refusal),
                             (screen.label for screen in _walk(view) if screen.engine),
                         )
@@ -1642,6 +1655,7 @@ def create_app(source: Source) -> Flask:
                 ),
                 out=str(written.out),
                 files=written.files,
+                removed=written.removed,
                 branch=branch,
                 delivered=None,
                 pushed=None,
@@ -1691,6 +1705,7 @@ def create_app(source: Source) -> Flask:
                         _spoken(
                             str(written.out),
                             written.files,
+                            written.removed,
                             str(refusal),
                             (screen.label for screen in _walk(view) if screen.engine),
                         )
@@ -1699,6 +1714,7 @@ def create_app(source: Source) -> Flask:
                 ),
                 out=str(written.out),
                 files=written.files,
+                removed=written.removed,
                 branch=delivered.branch,
                 delivered=delivered,
                 pushed=None,
