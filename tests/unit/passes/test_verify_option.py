@@ -69,3 +69,15 @@ def test_the_plain_wording_does_not_imply_the_merge_is_blocked():
         # (rather than just softening its timing) fails here too.
         assert "next time it runs" in plain, option.plain
         assert "names the value" in plain, option.plain
+
+
+def test_each_keyless_prompt_says_how_many_columns_its_option_takes():
+    """The checked merge takes exactly one column, because dbt's unique test
+    checks one column. The walk shows its picker as radio buttons. The plain
+    merge takes one or more columns. One prompt, "the column(s)", for both
+    options told the reader that the checked merge takes several columns.
+    """
+    checked = verify_option().columns_prompt
+    plain = merge_option().columns_prompt
+    assert checked == "the column that identifies a row uniquely"
+    assert plain == "one or more columns that together identify a row uniquely"

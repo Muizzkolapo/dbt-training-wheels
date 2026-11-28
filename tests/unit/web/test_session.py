@@ -227,10 +227,12 @@ def test_the_columns_an_answer_needs_are_read_off_the_pristine_question(
     """
     session = Session(project=project_dir, sql=sql_file, dialect=None, answers={})
     (question,) = session.questions()
-    key_prompt = "the column(s) that identify a row uniquely"
+    # Each option asks for as many columns as it takes: the checked merge
+    # takes one column, the plain merge one or more.
+    key_prompt = "the column that identifies a row uniquely"
     assert session.columns_prompts(question.key) == {
         "append": "",
-        "merge": key_prompt,
+        "merge": "one or more columns that together identify a row uniquely",
         "merge_checked": key_prompt,
     }
 

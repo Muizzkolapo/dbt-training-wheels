@@ -153,8 +153,9 @@ def merge_option(keys: tuple[str, ...] = ()) -> Option:
                 "is updated."
             ),
             # The one option whose label leaves its key unsaid, so the one
-            # option that needs columns supplied with the answer.
-            columns_prompt="the column(s) that identify a row uniquely",
+            # option that needs columns supplied with the answer. A merge can
+            # match on several columns, so the prompt asks for one or more.
+            columns_prompt="one or more columns that together identify a row uniquely",
             plain=(
                 "Each run compares the value in that column with the rows already "
                 "in the table. A match updates the existing row. Each run adds every "
@@ -197,7 +198,10 @@ def verify_option(keys: tuple[str, ...] = ()) -> Option:
                 "model. The test fails loudly the first time that two rows share "
                 "a value."
             ),
-            columns_prompt="the column(s) that identify a row uniquely",
+            # One column, not one or more: dbt's unique test checks one
+            # column, and the assembler refuses a checked answer with more
+            # (MulticolumnCheckedAnswerError). The walk shows radio buttons.
+            columns_prompt="the column that identifies a row uniquely",
             declares_test="unique",
             plain=(
                 "The same as merging, plus a check that also runs. If two "
@@ -415,10 +419,10 @@ class Answer:
 def unique_key_config(keys: tuple[str, ...]) -> str:
     """`unique_key=...` as the config of a model file writes it.
 
-    One key is written as a string and several as a list, which is how
-    `emit.render` writes the config and how dbt's own docs spell it. A
-    Decision that quotes the config spells it this way too, so the text on the
-    screen and the line in the file are the same characters. The first shape
+    One key is written as a string and several as a list, which is how dbt's
+    own docs spell it. `emit.render` writes the config line with this
+    function, and a Decision that quotes the config calls it too, so the text
+    on the screen and the line in the file are the same characters. The first shape
     of the Decisions wrote every key as a list, and `unique_key=['order_id']`
     sat beside a file that said `unique_key='order_id'`.
     """
