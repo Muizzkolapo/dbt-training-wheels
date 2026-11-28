@@ -1383,7 +1383,11 @@ def test_a_key_a_fully_known_model_does_not_select_is_refused_and_not_held(
     app, client, session = walk(walk_sql)
     key = _append_key(session)
 
-    refused = client.post("/answer", data={"key": key, "kind": "merge", "typed": "evnt_id"})
+    sent = client.post("/answer", data={"key": key, "kind": "merge", "typed": "evnt_id"})
+    # A refused answer redirects to GET /refused, which shows it once with
+    # a 400, so a reload does not send the form again.
+    assert sent.status_code == 302
+    refused = client.get(sent.headers["Location"])
 
     assert refused.status_code == 400
     page = normalised(refused.get_data(as_text=True))
