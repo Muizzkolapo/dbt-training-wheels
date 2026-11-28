@@ -21,6 +21,10 @@
   key is this tool's own name for the convention, and a reader who has never
   used dbt cannot read it. Both, and the reading of an empty value ("not
   found", "none"), come from `Detection` in dbtw.core.context.
+
+  The label, the reading and the evidence go through the `code` filter, as
+  engine prose does on every other screen: a backticked span is code, not two
+  backticks. The key does not, because it is an identifier and not prose.
 #}
 {% extends "base.html" %}
 {% block main %}
@@ -31,13 +35,13 @@
 <ul class="detections">
   {%- for detection in detections %}
   <li data-item="detection">
-    <p class="label"><span data-engine>{{ detection.label }}</span></p>
+    <p class="label"><span data-engine>{{ detection.label | code }}</span></p>
     {%- if detection.status == "detected" %}
-    <p class="value"><span data-engine>{{ detection.reading }}</span></p>
+    <p class="value"><span data-engine>{{ detection.reading | code }}</span></p>
     {%- else %}
-    <p class="value"><span class="mark blank" data-engine>{{ detection.reading }}</span></p>
+    <p class="value"><span class="mark blank" data-engine>{{ detection.reading | code }}</span></p>
     {%- endif %}
-    <p class="evidence"><span data-engine>{{ detection.evidence }}</span></p>
+    <p class="evidence"><span data-engine>{{ detection.evidence | code }}</span></p>
     <p class="key"><span data-engine>{{ detection.key }}</span></p>
   </li>
   {%- endfor %}
