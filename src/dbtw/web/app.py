@@ -100,7 +100,14 @@ from dbtw.core.progress import (
     teaching_for,
 )
 from dbtw.core.teach import COMMANDS, Term, terms_in
-from dbtw.web.state import EmptySourceError, Session, SessionView, Source
+from dbtw.web.state import (
+    EmptySourceError,
+    Session,
+    SessionView,
+    Source,
+    UnnamedPasteError,
+    pasted_file_name,
+)
 
 # The key prefix `assemble` gives the Decisions it records for a model rather
 # than for a statement -- `assemble.rename.<name>`, the shape
@@ -896,7 +903,7 @@ def create_app(source: Source) -> Flask:
                 raise
             return stranded
 
-    def _entry_page(refusal: str) -> str:
+    def _entry_page(refusal: str, typed: dict[str, str] | None = None) -> str:
         """The screen a reader meets before there is a conversion.
 
         It speaks, and every sentence on it is `dbtw.core.intro`'s. That is
@@ -918,8 +925,15 @@ def create_app(source: Source) -> Flask:
             teaching=teaching_for(_terms(spoken), _learned(source)),
             here="/source",
             started=source.session is not None,
-            project=str(source.project) if source.project else "",
-            elsewhere="\n".join(str(path) for path in source.elsewhere),
+            # What the reader typed, when this is a refusal of it: sending
+            # them back to an empty box after a refusal about one field would
+            # make them retype the other three.
+            project=typed["project"] if typed else (str(source.project) if source.project else ""),
+            elsewhere=typed["elsewhere"]
+            if typed
+            else "\n".join(str(path) for path in source.elsewhere),
+            pasted=typed["pasted"] if typed else "",
+            name=typed["name"] if typed else "",
             headline=HEADLINE,
             lede=LEDE,
             pillars=PILLARS,
@@ -978,20 +992,33 @@ def create_app(source: Source) -> Flask:
             if storage.filename
         }
         files = dict(uploaded)
-        if pasted.strip():
-            files["pasted.sql"] = pasted
+        name = request.form.get("name", "")
+        elsewhere = request.form.get("elsewhere", "")
         # One per line. A reader with three other projects types three paths,
         # and blank lines between them are how people type lists.
-        others = [line.strip() for line in request.form.get("elsewhere", "").splitlines()]
+        others = [line.strip() for line in elsewhere.splitlines()]
         try:
+            if pasted.strip():
+                staged_as = pasted_file_name(name)
+                # One name is one file on disk, so a paste named like a file
+                # chosen beside it would replace that file -- or be replaced
+                # by it -- with nothing saying which.
+                if staged_as in files:
+                    raise UnnamedPasteError(
+                        f"{staged_as} is already the name of a chosen file: give the pasted "
+                        "SQL a different name, so each becomes a model of its own"
+                    )
+                files[staged_as] = pasted
             source.start(project, files, [line for line in others if line])
         except (
             NotADbtProjectError,
             EmptySourceError,
+            UnnamedPasteError,
             OSError,
             UnicodeDecodeError,
         ) as refusal:
-            return _entry_page(refusal=str(refusal)), 400
+            typed = {"project": project, "elsewhere": elsewhere, "pasted": pasted, "name": name}
+            return _entry_page(refusal=str(refusal), typed=typed), 400
         return redirect(url_for("start"))
 
     @app.get("/project")
@@ -1068,7 +1095,7 @@ def create_app(source: Source) -> Flask:
             here="/",
             teaching=teaching_for(_terms(spoken), _learned(source)),
             project=view.change.project_name,
-            sql=str(_conversation().sql),
+            sql=source.shown(),
             models=view.change.models,
             renames=renames,
             cutover=cutover,

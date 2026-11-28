@@ -84,7 +84,7 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
     assert source.project is None
 
     # 2. Convert refuses without a project, in the engine's own words.
-    refused = client.post("/source", data={"project": "", "pasted": SCRIPT})
+    refused = client.post("/source", data={"project": "", "pasted": SCRIPT, "name": "nightly"})
     assert refused.status_code == 400
     # Through a local: asserting `source.session is None` here narrows the
     # attribute for the rest of this function, and the POST below that fills
@@ -94,7 +94,9 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
     assert after_refusal is None
 
     # 3. The project and the SQL together open the conversation.
-    started = client.post("/source", data={"project": str(project), "pasted": SCRIPT})
+    started = client.post(
+        "/source", data={"project": str(project), "pasted": SCRIPT, "name": "nightly"}
+    )
     assert started.status_code == 302
     assert source.project == project
     session = source.session

@@ -608,6 +608,42 @@ class EmptySourceError(ValueError):
     """
 
 
+class UnnamedPasteError(ValueError):
+    """Pasted SQL arrived with no usable file name.
+
+    Input-driven, like `EmptySourceError`, and rendered on the entry screen.
+    A dbt model takes its name from its file, so the name a pasted query is
+    saved under is the name its model gets. Choosing one for the reader --
+    `pasted.sql` was the old choice -- built a model called `pasted` and
+    taught the naming rule with a name nobody chose.
+    """
+
+
+def pasted_file_name(name: str) -> str:
+    """The file name pasted SQL is staged under: the reader's name, plus `.sql`.
+
+    One plain file name and nothing else. A path separator or a leading dot
+    would stage the paste somewhere other than the one staging directory, or
+    as a file `ingest` does not read, so either is refused rather than
+    cleaned up into something the reader did not type.
+    """
+    stem = name.strip()
+    if stem.lower().endswith(".sql"):
+        stem = stem[: -len(".sql")]
+    if not stem:
+        raise UnnamedPasteError(
+            "name the pasted SQL: a dbt model takes its name from its file, so a query "
+            "pasted here needs the file name it would be saved as -- weekly_revenue, "
+            "for example, builds a model called weekly_revenue"
+        )
+    if "/" in stem or "\\" in stem or "\x00" in stem or stem.startswith("."):
+        raise UnnamedPasteError(
+            f"{name.strip()!r} is not one plain file name: give the name the query would be "
+            "saved as, with no folder in it -- weekly_revenue, for example"
+        )
+    return f"{stem}.sql"
+
+
 @dataclass
 class Source:
     """Where this walk's SQL comes from, and the conversation over it.
@@ -727,6 +763,21 @@ class Source:
         self.project = root
         self.elsewhere = others
         self.session = Session(project=root, sql=staged, dialect=self.dialect, elsewhere=others)
+
+    def shown(self) -> str:
+        """What the walk names as the SQL it is converting.
+
+        The files the reader brought, by the names they gave them, when the
+        SQL came in through the entry screen: the staging directory is where
+        this process keeps them, a temporary path that means nothing to the
+        person who pasted them. A path given on the command line is the
+        reader's own, and is shown as given.
+        """
+        if self.session is None:
+            raise EmptySourceError("nothing has been brought to convert yet")
+        if self._staged is not None and self.session.sql == self._staged:
+            return ", ".join(sorted(path.name for path in self._staged.iterdir()))
+        return str(self.session.sql)
 
     def _staging(self) -> Path:
         if self._staged is None:
