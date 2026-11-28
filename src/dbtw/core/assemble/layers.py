@@ -134,8 +134,8 @@ def intermediate_option(layer: LayerInfo, own: str | None = None) -> Option:
         effect=_effect(layer, own),
         kind="intermediate",
         plain=(
-            "Where the work happens: joins, filters and calculations that other "
-            "models read from. Not the table you would point a colleague at."
+            "A model here does the work: joins, filters and calculations that other "
+            "models read. This table is not the one that you would send a colleague to."
         ),
     )
 
@@ -151,8 +151,9 @@ def mart_option(layer: LayerInfo, own: str | None = None) -> Option:
         effect=_effect(layer, own),
         kind="mart",
         plain=(
-            "The table other people query. It is the promise you are making to "
-            "them, so it wants a name and a shape you are willing to keep."
+            "A model here is the table that other people query. The table is a "
+            "promise that you make to them. So the table needs a name and a shape "
+            "that you are willing to keep."
         ),
     )
 
@@ -174,13 +175,13 @@ def source_option(table: str) -> Option:
     return Option(
         label=f"declare {table} as my source",
         effect=(
-            f"{table} is declared in this project's sources.yml and read with "
+            f"this project declares {table} in its sources.yml and reads it with "
             f"source(), so this conversion depends on the raw table"
         ),
         kind="source",
         plain=(
-            "Your project names the raw table itself and reads straight from it. "
-            "Nothing you build depends on anybody else's work."
+            "Your project names the raw table itself and reads directly from it. "
+            "Nothing that you build depends on the work of another person."
         ),
     )
 
@@ -195,13 +196,14 @@ def cross_ref_option(project: str, model: str) -> Option:
     return Option(
         label=f"read it from {project}",
         effect=(
-            f"read with ref('{project}', '{model}') instead of a source, so this "
-            f"conversion inherits {project}'s tests and lineage for it -- and its changes"
+            f"read with ref('{project}', '{model}') instead of a source. This "
+            f"conversion then inherits the tests and lineage of {project} for the table, "
+            f"and also the changes that {project} makes to it"
         ),
         kind="cross_ref",
         plain=(
-            "Another team has already tidied this table up in their own project. "
-            "You read their finished version instead of the raw one, which means "
-            "you get their fixes and also their mistakes."
+            "Another team already cleaned this table in their own project. "
+            "You read their finished version instead of the raw table. "
+            "So you get their fixes and also their mistakes."
         ),
     )

@@ -158,8 +158,8 @@ def _resolve_one(
                 target="",
                 source_name="",
                 reason=(
-                    "source declarations carry no database; catalog-qualified "
-                    "reference left as written"
+                    "source declarations carry no database, so this catalog-qualified "
+                    "reference stays as written"
                 ),
             )
 

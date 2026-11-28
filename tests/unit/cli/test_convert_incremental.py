@@ -90,7 +90,7 @@ def test_flag_upgrades_append_but_leaves_a_script_derived_merge_key_alone(tmp_pa
     assert f"    - append every row — {append_option().effect}" in report
     # the untouched model's Decision names both keys and says the flag lost
     assert (
-        "dim_customers kept its script-derived unique_key (customer_id); "
+        "dim_customers kept its script-derived unique_key (customer_id). "
         "--unique-key order_id was not applied" in report
     )
 
@@ -251,7 +251,7 @@ def test_flag_is_applied_through_a_star_projection_but_flagged_as_unverified(tmp
     # "*" alone would trivially match report.py's own "**bold**" markdown;
     # the actual signal is the caveat naming the star projection by name.
     assert "selects *" in report
-    assert "could not be verified" in report
+    assert "could not verify" in report
 
 
 def test_unique_key_with_no_incremental_models_records_a_no_op_decision(tmp_path):
@@ -340,7 +340,7 @@ def test_flag_still_applies_with_a_caveat_when_the_body_is_a_star_projection(tmp
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "Chose: merge on order_id" in report
     assert "selects *" in report
-    assert "could not be verified" in report
+    assert "could not verify" in report
 
 
 def test_a_quoted_output_name_that_only_differs_by_case_is_left_ambiguous(tmp_path):
