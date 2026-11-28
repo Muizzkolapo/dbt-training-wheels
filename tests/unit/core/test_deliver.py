@@ -154,6 +154,118 @@ def test_a_free_branch_name_counts_up_past_the_ones_that_exist(tmp_path: Path) -
     assert free_branch(root, "dbtw/events") == "dbtw/events-3"
 
 
+def test_a_free_branch_name_does_not_collide_with_one_on_the_remote(tmp_path: Path) -> None:
+    """A name the remote already has would be refused at push, so the name
+    must be free there too, not only locally."""
+    from dbtw.core.deliver import free_branch
+
+    root = _repo(tmp_path)
+    _git(root, "update-ref", "refs/remotes/origin/dbtw/events", "HEAD")
+    assert free_branch(root, "dbtw/events") == "dbtw/events-2"
+    _git(root, "update-ref", "refs/remotes/origin/dbtw/events-2", "HEAD")
+    assert free_branch(root, "dbtw/events") == "dbtw/events-3"
+    # Another remote's branches do not take a name from this one.
+    _git(root, "update-ref", "refs/remotes/upstream/dbtw/other", "HEAD")
+    assert free_branch(root, "dbtw/other") == "dbtw/other"
+
+
+def _lock_after_commit(root: Path) -> None:
+    """A post-commit hook that takes the index lock, as a second git process
+    would. The commit exists, and the checkout after it then fails."""
+    hook = root / ".git" / "hooks" / "post-commit"
+    hook.write_text("#!/bin/sh\ntouch .git/index.lock\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+
+def test_a_delivery_whose_return_fails_is_still_a_delivery(tmp_path: Path) -> None:
+    """The branch and its commit exist, so the delivery happened. What failed
+    is the return to the starting branch, and that is reported on its own."""
+    root = _repo(tmp_path)
+    out = _conversion(tmp_path / "out")
+    start = _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    before = _git(root, "rev-parse", "HEAD").strip()
+    _lock_after_commit(root)
+
+    result = deliver(out, read_project(root), branch="dbtw/events", message="m")
+
+    assert result.commit == _git(root, "rev-parse", "dbtw/events").strip()
+    assert result.base == before
+    assert result.start == start
+    assert "dbtw/events" in result.not_returned
+    assert start in result.not_returned
+    assert _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == "dbtw/events"
+
+
+def test_a_retry_after_a_failed_return_branches_from_where_the_project_started(
+    tmp_path: Path,
+) -> None:
+    """Branched from HEAD, the retry would carry the first conversion, because
+    the project is still on the first delivery's branch."""
+    root = _repo(tmp_path)
+    out = _conversion(tmp_path / "out")
+    start = _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    before = _git(root, "rev-parse", "HEAD").strip()
+    _lock_after_commit(root)
+    first = deliver(out, read_project(root), branch="dbtw/events", message="m")
+    (root / ".git" / "hooks" / "post-commit").unlink()
+    (root / ".git" / "index.lock").unlink()
+
+    second = deliver(
+        out,
+        read_project(root),
+        branch="dbtw/events-2",
+        message="m",
+        start_point=first.base,
+        return_to=first.start,
+    )
+
+    assert _git(root, "rev-parse", "dbtw/events-2~1").strip() == before
+    assert second.not_returned == ""
+    assert _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == start
+
+
+def test_a_delivery_into_a_repository_with_no_commit_stays_on_its_branch(
+    tmp_path: Path,
+) -> None:
+    """The starting branch does not exist until its first commit, so there is
+    nothing to check out again. The project stays on the new branch, and the
+    delivery says so."""
+    import shutil
+
+    root = tmp_path / "project"
+    shutil.copytree(FIXTURES / "jaffle_shop", root)
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "reader@example.invalid")
+    _git(root, "config", "user.name", "The Reader")
+    exclude = root / ".git" / "info" / "exclude"
+    listed = sorted(
+        str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts
+    )
+    exclude.write_text("\n".join(listed) + "\n", encoding="utf-8")
+    assert _git(root, "status", "--porcelain").strip() == ""
+    out = _conversion(tmp_path / "out")
+
+    result = deliver(out, read_project(root), branch="dbtw/events", message="m")
+
+    assert result.base == ""
+    assert _git(root, "rev-parse", "--abbrev-ref", "HEAD").strip() == "dbtw/events"
+    assert "dbtw/events" in result.not_returned
+    assert "no commit" in result.not_returned
+
+    # A second branch would have to start from the first one, which holds
+    # the first conversion, so it is refused before anything is copied.
+    with pytest.raises(ValueError, match="no commit"):
+        deliver(
+            out,
+            read_project(root),
+            branch="dbtw/events-2",
+            message="m",
+            start_point=result.base,
+            return_to=result.start,
+        )
+    assert not _git(root, "branch", "--list", "dbtw/events-2").strip()
+
+
 def test_the_commit_holds_exactly_the_files_the_delivery_reports(tmp_path: Path) -> None:
     """What landed in the commit is what `Delivery.files` says landed.
 

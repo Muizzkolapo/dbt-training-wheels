@@ -928,8 +928,12 @@ def _code_spans(text: str) -> Markup:
     parts = text.split("`")
     unpaired = len(parts) % 2 == 0
     spans = parts[:-1] if unpaired else parts
+    # Two backticks with nothing between them mark no code, so they are
+    # shown as the two characters, not as an empty <code>.
     shown = Markup("").join(
-        Markup("<code>{}</code>").format(part) if index % 2 else escape(part)
+        (Markup("<code>{}</code>").format(part) if part else escape("``"))
+        if index % 2
+        else escape(part)
         for index, part in enumerate(spans)
     )
     if unpaired:
@@ -1962,7 +1966,12 @@ def create_app(source: Source) -> Flask:
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        if written is None or written.change != view.change:
+        # One exception: a delivery of this write that could not return the
+        # project to its branch. The project then holds the conversion, so
+        # the conversion reads differently because of the delivery itself --
+        # and this page is the one that says which branch the project is on.
+        stranded = delivered is not None and delivered_of is written and delivered.not_returned
+        if written is None or (written.change != view.change and not stranded):
             return redirect(url_for("done"))
         return _written_page(view, written)
 
@@ -2000,6 +2009,7 @@ def create_app(source: Source) -> Flask:
             record.files,
             record.removed,
             earlier,
+            delivered.not_returned if delivered is not None else "",
             deliver_refusal,
             push_refusal,
             (screen.label for screen in _walk(view) if screen.engine),
@@ -2064,11 +2074,16 @@ def create_app(source: Source) -> Flask:
             _conversation().project, _branch_name(view.change)
         )
         try:
+            # A later delivery starts where the first one started and returns
+            # there, whatever the project has checked out now: a first
+            # delivery that could not return left the project on its branch.
             delivery = deliver(
                 written.out,
                 read_project(_conversation().project),
                 branch=branch,
                 message=_commit_message(view.change),
+                start_point=delivered.base if delivered is not None else "",
+                return_to=delivered.start if delivered is not None else "",
             )
         except _DELIVER_FAILURES as refusal:
             return _written_page(view, written, branch=branch, deliver_refusal=str(refusal)), 409
@@ -2407,10 +2422,22 @@ def _draft_query(key: str, kind: str, ticked: Sequence[str], typed: str) -> str:
     held, would be spent on the refusal page. The address is the way back
     itself: the question it opens shows the draft, and the question opened
     from the rail shows none.
+
+    Bounded, because the address goes in a redirect header: a draft whose
+    query is longer than `_DRAFT_LIMIT` is not carried at all, and Back opens
+    the question with an empty picker. Cut short instead, the picker would
+    show text the reader did not type.
     """
-    return urlencode(
+    query = urlencode(
         [("key", key), ("kind", kind), *(("columns", c) for c in ticked), ("typed", typed)]
     )
+    return query if len(query) <= _DRAFT_LIMIT else ""
+
+
+# The longest refused-answer query the way back carries. A key with a long
+# file path, a kind, a few ticks and a typed key fit well inside it, and a
+# redirect header stays far below what a server accepts.
+_DRAFT_LIMIT = 1500
 
 
 def _index_of(session: Session, key: str) -> int | None:

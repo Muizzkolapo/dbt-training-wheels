@@ -126,12 +126,16 @@ def as_shown(text: str) -> str:
     tester found on screen.
 
     Backticks pair from the left, as the screen's `code` filter pairs them.
-    A last backtick with no partner is text, and stays.
+    A last backtick with no partner is text, and stays. So does a pair with
+    nothing between them.
     """
     parts = text.split("`")
+    tail = ""
     if len(parts) % 2 == 0:
-        return "".join(parts[:-1]) + "`" + parts[-1]
-    return "".join(parts)
+        tail = "`" + parts[-1]
+        parts = parts[:-1]
+    shown = "".join(part if index % 2 == 0 or part else "``" for index, part in enumerate(parts))
+    return shown + tail
 
 
 def normalised(text: str) -> str:

@@ -63,6 +63,12 @@
 <h2>Delivered</h2>
 <p class="branch">On branch <span data-engine data-identifier>{{ delivered.branch }}</span>
   as <span data-engine data-identifier>{{ delivered.commit }}</span></p>
+{%- if delivered.not_returned %}
+{# The delivery stands -- the branch and its commit exist -- but the project
+   is not back on the branch it started on. The engine says which branch it
+   is on and why. #}
+<p class="refusal"><span data-engine>{{ delivered.not_returned | code }}</span></p>
+{%- endif %}
 
 {%- if earlier %}
 <p class="earlier"><span data-engine>{{ earlier | code }}</span></p>

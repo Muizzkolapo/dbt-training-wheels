@@ -383,6 +383,78 @@ def test_a_new_write_after_delivery_is_offered_on_a_new_branch(
     assert _git(project_dir, "branch", "--show-current") == "main"
 
 
+def test_a_delivery_whose_return_fails_is_shown_as_delivered_and_says_where_it_is(
+    walk: Walk, walk_sql: Path, project_dir: Path
+) -> None:
+    """Review finding: a failed checkout after the commit showed "Not
+    delivered", though the branch and its commit existed, and a retry then
+    branched from that commit and carried the first conversion.
+    """
+    _as_git_repo(project_dir)
+    base = _git(project_dir, "rev-parse", "HEAD")
+    hook = project_dir / ".git" / "hooks" / "post-commit"
+    hook.write_text("#!/bin/sh\ntouch .git/index.lock\n", encoding="utf-8")
+    hook.chmod(0o755)
+    app, client, session = walk(walk_sql)
+    assert client.post("/write", follow_redirects=True).status_code == 200
+
+    delivered = client.post("/deliver", follow_redirects=True)
+
+    assert delivered.status_code == 200
+    page = read(delivered.get_data(as_text=True))
+    assert "Not delivered" not in delivered.get_data(as_text=True)
+    first = _git(project_dir, "branch", "--show-current")
+    assert first.startswith("dbtw/")
+    engine = {normalised(run) for run in page.engine}
+    said = [run for run in engine if "could not check out" in run]
+    assert said and first in said[0] and "main" in said[0]
+
+    # The reader clears the lock. A changed answer and a new write are then
+    # delivered from where the project started, not from the first branch.
+    hook.unlink()
+    (project_dir / ".git" / "index.lock").unlink()
+    answer = {"key": _append_key(session), "kind": "merge_checked", "typed": "event_id"}
+    assert client.post("/answer", data=answer).status_code == 302
+    assert client.post("/write", follow_redirects=True).status_code == 200
+    again = client.post("/deliver", follow_redirects=True)
+    assert again.status_code == 200
+    (second,) = [
+        name
+        for name in _git(project_dir, "branch", "--format=%(refname:short)").split()
+        if name.startswith("dbtw/") and name != first
+    ]
+    assert _git(project_dir, "rev-parse", f"{second}~1") == base
+    assert _git(project_dir, "branch", "--show-current") == "main"
+
+
+def test_a_long_refused_answer_does_not_ride_in_the_back_link(walk: Walk, walk_sql: Path) -> None:
+    """Review finding: the draft in the Back link had no length bound, so a
+    long typed value could make the redirect header too long."""
+    _app, client, session = walk(walk_sql)
+    key = _append_key(session)
+    long = "x" * 5000
+
+    refused = client.post(
+        "/answer", data={"key": key, "kind": "merge", "typed": long}, follow_redirects=True
+    )
+
+    assert refused.status_code == 400
+    back = read(refused.get_data(as_text=True)).named_links["back"]
+    assert long not in back
+    assert len(back) < 1000
+    assert urlsplit(back).query == "", "a draft that is too long is not carried at all"
+
+
+def test_two_backticks_together_are_text_not_an_empty_code_span() -> None:
+    from tests.unit.web.page import as_shown
+
+    from dbtw.web.app import _code_spans
+
+    assert str(_code_spans("a `` b")) == "a `` b"
+    assert str(_code_spans("`x` and `` and `y`")) == "<code>x</code> and `` and <code>y</code>"
+    assert as_shown("`x` and `` and `y`") == "x and `` and y"
+
+
 # 10. The mode toggle lands on the matching screen -------------------------------
 
 

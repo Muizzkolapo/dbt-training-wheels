@@ -39,6 +39,7 @@ model that an answer moved to another layer — and the report names each one.
 It never removes a file this tool did not write. If you changed a listed file
 since it was written, the write stops and names the file. "Put on a branch"
 copies only the listed files of the latest write into your project.
+After the commit, it returns your project to the branch that it was on.
 
 ## Development
 

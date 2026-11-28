@@ -26,7 +26,10 @@ After the commit, `deliver` checks out the branch the project was on before.
 The new branch holds the conversion, and the project stays as the reader had
 it. A walk that changes an answer and writes again then builds that write
 against the project the reader has, and its delivery starts a new branch
-from the same place as the first one.
+from the same place as the first one. If that checkout fails, or the
+starting branch has no commit yet, the delivery still stands and says so:
+the branch and its commit exist, and the reader is told which branch the
+project is on.
 
 `deliver` stops at the local branch, and `push` is a second function behind
 a second button for a reason. Delivery writes inside a directory the reader
@@ -116,14 +119,34 @@ class Delivery:
     `files` are project-relative paths, in the order they were copied -- the
     same strings the files screen showed, so a reader can hold what landed
     against what they were told would land.
+
+    `start` is the ref the project was on before the delivery, and `base` is
+    the commit it pointed at -- "" when that branch had no commit yet. A
+    later delivery in the same walk branches from `base` and returns to
+    `start`, whatever the project has checked out by then.
+
+    `not_returned` is "" when the project is back on `start`. Otherwise it is
+    the sentence that says why it is not, and which branch it is on. The
+    delivery itself still happened: the branch and its commit exist.
     """
 
     branch: str
     files: tuple[str, ...]
     commit: str
+    start: str = ""
+    base: str = ""
+    not_returned: str = ""
 
 
-def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) -> Delivery:
+def deliver(
+    out_dir: Path,
+    ctx: ProjectContext,
+    *,
+    branch: str,
+    message: str,
+    start_point: str = "",
+    return_to: str = "",
+) -> Delivery:
     """Copy the latest write in `out_dir` into the project on a new branch,
     and commit it. Only the files that write produced: see `_deliverable`.
 
@@ -131,6 +154,17 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     stopped half way would leave the reader's project holding some of a
     conversion, on a branch created for it, with nothing saying which half --
     which is worse than not starting.
+
+    The new branch starts at `start_point`, and after the commit the project
+    goes back to `return_to`. Both default to where the project is now. A
+    second delivery in one walk passes the first one's `base` and `start`:
+    if the first could not return, the project is still on the first
+    branch, and a branch made from there would carry the first conversion.
+
+    Once the commit exists, the delivery is done. A failure to check out
+    `return_to` again is reported in `Delivery.not_returned`, not raised: a
+    refusal there told the reader that nothing was delivered, while the
+    branch and its commit were in their repository.
     """
     root = ctx.root
     _refuse_unless_git_root(root)
@@ -143,6 +177,15 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
             f"nothing to deliver. {out_dir} contains no conversion that this tool wrote. "
             "Write the conversion before you deliver it"
         )
+    if return_to and not start_point:
+        # The first delivery started on a branch with no commit, and that
+        # branch became the delivered one. No commit is left that a second
+        # branch could start from without the first conversion in it.
+        raise ValueError(
+            f"this tool cannot make a second branch here. The branch {return_to} had no "
+            "commit when the first delivery ran, so no commit is left to start a new "
+            f"branch from. Make a first commit on {return_to}, then start the walk again"
+        )
 
     # Where the reader was, so the project goes back there after the commit.
     # Left on the new branch, the project holds this conversion's own files,
@@ -150,8 +193,14 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     # a project that already contains the conversion: every model "already
     # exists", and a second write, made after a changed answer, is built
     # against that project and not against the one the reader has.
-    start = _current_ref(root)
-    _git(root, "checkout", "-q", "-b", branch)
+    start = return_to or _current_ref(root)
+    base = start_point if return_to else _head_commit(root)
+    if base:
+        _git(root, "checkout", "-q", "-b", branch, base)
+    else:
+        # A branch with no commit yet: there is no commit to start from, and
+        # the new branch takes the place of the unborn one.
+        _git(root, "checkout", "-q", "-b", branch)
     for relative in files:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -167,8 +216,42 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     _git(root, "add", "--", *files)
     _git(root, "commit", "-m", message)
     commit = _git(root, "rev-parse", "HEAD").strip()
-    _git(root, "checkout", "-q", start)
-    return Delivery(branch=branch, files=files, commit=commit)
+    return Delivery(
+        branch=branch,
+        files=files,
+        commit=commit,
+        start=start,
+        base=base,
+        not_returned=_return(root, start, base, branch),
+    )
+
+
+def _return(root: Path, start: str, base: str, branch: str) -> str:
+    """Check out `start` again, and return "" -- or the sentence that says
+    why the project stays on `branch`."""
+    if not base:
+        return (
+            f"The branch {start} has no commit yet, so this tool cannot check it out "
+            f"again. The project stays on the branch {branch}, which contains this "
+            "conversion."
+        )
+    try:
+        _git(root, "checkout", "-q", start)
+    except GitFailedError as failure:
+        return (
+            f"This tool could not check out {start} again after the commit. The project "
+            f"is on the branch {branch}, which contains this conversion. Check out "
+            f"{start} yourself. git said: {failure}"
+        )
+    return ""
+
+
+def _head_commit(root: Path) -> str:
+    """The commit HEAD points at, or "" for a branch with no commit yet."""
+    found = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "HEAD"], cwd=root, capture_output=True, text=True
+    )
+    return found.stdout.strip() if found.returncode == 0 else ""
 
 
 def _current_ref(root: Path) -> str:
@@ -184,26 +267,35 @@ def _current_ref(root: Path) -> str:
 
 def branch_exists(root: Path, branch: str) -> bool:
     """Whether the repository at `root` has a local branch named `branch`."""
+    return _ref_exists(root, f"refs/heads/{branch}")
+
+
+def _ref_exists(root: Path, ref: str) -> bool:
     found = subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=root,
-        capture_output=True,
+        ["git", "show-ref", "--verify", "--quiet", ref], cwd=root, capture_output=True
     )
     return found.returncode == 0
 
 
-def free_branch(root: Path, wanted: str) -> str:
+def free_branch(root: Path, wanted: str, remote: str = "origin") -> str:
     """`wanted`, or `wanted` with the first number that makes it a branch
-    name the repository at `root` does not have yet.
+    name the repository at `root` does not have yet, locally or on `remote`.
 
     `deliver` refuses a branch that exists, so a second delivery in one walk
     needs a name of its own. The number counts up from 2, because the first
-    delivery took the name without a number.
+    delivery took the name without a number. A name that `remote` already
+    has is taken too: `push` sends to that remote, and a branch there of the
+    same name would refuse the push. Only what this repository last fetched
+    is known here, which is what `git push` itself compares against.
     """
-    if not branch_exists(root, wanted):
+
+    def taken(name: str) -> bool:
+        return branch_exists(root, name) or _ref_exists(root, f"refs/remotes/{remote}/{name}")
+
+    if not taken(wanted):
         return wanted
     number = 2
-    while branch_exists(root, f"{wanted}-{number}"):
+    while taken(f"{wanted}-{number}"):
         number += 1
     return f"{wanted}-{number}"
 
