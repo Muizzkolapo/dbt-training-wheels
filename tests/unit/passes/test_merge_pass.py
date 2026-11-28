@@ -1,3 +1,4 @@
+import pytest
 import sqlglot
 from sqlglot import exp
 
@@ -1002,6 +1003,50 @@ def test_a_matched_only_merge_selects_its_key_and_the_columns_it_updates():
     assert _selects(MERGE) == ["s.id", "s.n"]
     caveats = _caveats(merge_pass(_state((0, _stmt(MERGE)))))
     assert [c for c in caveats if "merge_update_columns" in c] == []
+
+
+def test_an_on_key_matched_to_a_differently_named_source_column_is_aliased():
+    """`ON t.cid = s.customer_id` keys the target on cid. The model must carry
+    cid, filled from s.customer_id, or unique_key names a column the model
+    does not have."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.cid = s.customer_id "
+        "WHEN MATCHED THEN UPDATE SET t.n = s.n "
+        "WHEN NOT MATCHED THEN INSERT (cid, n) VALUES (s.customer_id, s.n)"
+    )
+    assert _selects(sql) == ["s.customer_id AS cid", "s.n"]
+    (draft,) = merge_pass(_state((0, _stmt(sql)))).drafts
+    assert draft.unique_key == ("cid",)
+
+
+def test_a_matched_only_on_key_of_a_different_name_is_aliased_too():
+    """No branch writes the key, so only the ON clause names its source."""
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON s.customer_id = t.cid "
+        "WHEN MATCHED THEN UPDATE SET t.n = s.n"
+    )
+    assert _selects(sql) == ["s.customer_id AS cid", "s.n"]
+
+
+@pytest.mark.parametrize(
+    ("assignment", "selected"),
+    [
+        # Unquoted identifiers fold, so CITY and city are one name: no alias.
+        ("t.CITY = s.city", "s.city"),
+        # A quoted name keeps its case, so "City" and city differ: alias.
+        ('t."City" = s.city', 's.city AS "City"'),
+        # The same quoted name on both sides: no alias.
+        ('t."City" = s."City"', 's."City"'),
+        # A quoted lowercase name and an unquoted one of another case differ.
+        ('t."city" = s.CITY', 's.CITY AS "city"'),
+    ],
+)
+def test_an_alias_is_written_exactly_when_the_names_differ_as_identifiers(assignment, selected):
+    sql = (
+        "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
+        f"WHEN MATCHED THEN UPDATE SET {assignment}"
+    )
+    assert _selects(sql) == ["s.id", selected]
 
 
 def test_an_unaliased_using_table_qualifies_the_selected_columns_by_its_name():

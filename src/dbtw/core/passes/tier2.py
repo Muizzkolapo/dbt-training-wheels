@@ -518,7 +518,7 @@ class _MergeBranches:
     restricted_inserts: int  # of those, how many named particular columns
     updated_columns: tuple[str, ...]  # named UPDATE SET targets; () means "all"
     inserted_columns: tuple[str, ...]  # named INSERT target columns; () means "all"
-    rewritten: tuple[tuple[str, str], ...]  # (column, value) pairs dbt will not reproduce
+    rewritten: tuple[tuple[str, str], ...]  # (column, value) not from a same-named source column
     conditions: tuple[str, ...]  # per-branch conditions dbt's merge has no place for
     unnamed: tuple[str, ...]  # converted branches writing columns they do not name, verbatim
     assignments: tuple[tuple[tuple[str, bool], exp.Expr], ...]  # every (column, value) written
@@ -599,7 +599,7 @@ class _BranchWrite:
     """What one convertible WHEN branch writes — see `_branch_write`."""
 
     columns: tuple[tuple[str, bool], ...]  # named targets; () means "every column"
-    rewritten: tuple[tuple[str, str], ...]  # (column, value SQL) dbt will not reproduce
+    rewritten: tuple[tuple[str, str], ...]  # (column, value SQL) not from a same-named column
     reads_source: bool  # any value at all taken from the source row
     pairs: tuple[tuple[tuple[str, bool], exp.Expr], ...]  # each named column with its value
     unnamed: bool  # writes columns it does not name: `INSERT *`, `SET *`, positional VALUES
@@ -621,13 +621,20 @@ def _members(node: exp.Expr | None) -> list[exp.Expr] | None:
 
 def _from_source(target: tuple[str, bool], value: exp.Expr, target_alias: tuple[str, bool]) -> bool:
     """Whether dbt's merge would write `target` with the same value this
-    assignment does.
+    assignment does, when the model body is the USING source unchanged.
 
     dbt fills every column of an inserted or updated row from the model's own
-    SELECT, and the model's body is this MERGE's USING source — so the only
-    assignment it reproduces is one taking the source's column of the same
-    name. A constant, a `DEFAULT`, an expression, a differently named column,
-    or the target's own column is something dbt will replace.
+    SELECT. When that SELECT is the USING source as it stands (`SELECT *`, or
+    a subquery as written), the only assignment dbt reproduces is one taking
+    the source's column of the same name. A constant, a `DEFAULT`, an
+    expression, a differently named column, or the target's own column is
+    something dbt will replace.
+
+    This is not the whole answer when `_merge_projection` narrows the body:
+    the projection aliases a differently named source column to its target
+    (`s.name AS full_name`), so dbt then reproduces that assignment too.
+    `_merge_caveats` reads the pairs this flags only when no projection was
+    derived.
 
     A column qualified to nothing is read as the source's: an unqualified
     right-hand side naming the target's column would be a self-assignment, so
@@ -649,8 +656,9 @@ def _pair(
     target_alias: tuple[str, bool],
     dialect: str | None,
 ) -> list[tuple[str, str]] | None:
-    """The named columns whose value dbt will not reproduce, paired with the
-    value the script wrote, or `None` when the two lists cannot be lined up.
+    """The named columns whose value dbt will not reproduce from an unnarrowed
+    body (see `_from_source`), paired with the value the script wrote, or
+    `None` when the two lists cannot be lined up.
 
     A column list and a VALUES list of different lengths (`INSERT (id, city)
     VALUES (s.id)`) says nothing about which column gets which value, so it is
@@ -836,7 +844,8 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     named are all the statement ever assigns.
 
     `rewritten` collects, across every converted branch, the columns whose
-    value dbt will not reproduce — see `_from_source`.
+    value dbt will not reproduce when the body is the USING source unchanged
+    — see `_from_source`. A projection reproduces them; see `_merge_caveats`.
 
     The last four fields feed `_merge_projection`, which narrows the model
     body to the columns this MERGE writes. `unnamed` quotes each converted
