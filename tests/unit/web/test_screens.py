@@ -160,6 +160,13 @@ _STALE = "stale"
 # would have had none, which is the shape of the unguarded-screen defect this
 # file has already been fixed for twice.
 _STALE_DESCRIPTION = "stale description"
+# The same edit under the last two things a reader holds: tags and a "Built
+# as" choice. Each screen was written and never reached, because `_stale`
+# stopped asking after tags -- a stranded choice raised instead of rendering
+# its screen. A state per screen is how a guard reaches each one.
+_STALE_TAGS = "stale tags"
+_STALE_MATERIALIZATION = "stale materialization"
+_STRANDED = (_STALE, _STALE_DESCRIPTION, _STALE_TAGS, _STALE_MATERIALIZATION)
 _WRITTEN = "written"
 _WRITE_FAILED = "write failed"
 # The two states a reader reaches by pressing the second button that touches
@@ -194,6 +201,8 @@ _STATES = (
     _DESCRIBED,
     _STALE,
     _STALE_DESCRIPTION,
+    _STALE_TAGS,
+    _STALE_MATERIALIZATION,
     _WRITTEN,
     _WRITE_FAILED,
     _DELIVERED,
@@ -272,6 +281,21 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         described = client.post("/describe", data={"model": model.name, "text": _DESCRIPTION})
         assert described.status_code == 302
         sql.write_text(ONE_MERGE, encoding="utf-8")
+        return app, client, session, out_dir, frozenset()
+
+    if state in (_STALE_TAGS, _STALE_MATERIALIZATION):
+        sql = sql_script(ONE_APPEND_ELSEWHERE)
+        app, client, session = walk(sql)
+        (model,) = session.view().change.models
+        held = {"tags": "finance"} if state == _STALE_TAGS else {"materialization": "view"}
+        saved = client.post("/describe", data={"model": model.name, "text": "", **held})
+        assert saved.status_code == 302
+        sql.write_text(ONE_MERGE, encoding="utf-8")
+        # The same press recorded a blank description, which its own screen
+        # names first. Dropping it leaves the walk on the screen this state
+        # is for.
+        assert client.post("/stale").status_code == 302
+        assert session.descriptions == {}
         return app, client, session, out_dir, frozenset()
 
     if state == _WRITE_FAILED:
@@ -414,7 +438,7 @@ def _produced(
     the message instead of against the message.
     """
     strings = engine_strings(session, out)
-    if state in (_STALE, _STALE_DESCRIPTION):
+    if state in _STRANDED:
         return strings
     # Every state but the stranded ones renders both refusals, because
     # `_guarded_pages` presses the misstep that produces each.
@@ -575,7 +599,7 @@ def _guarded_pages(app, client, session: Session, state: str) -> dict[str, Page]
     it took a reviewer to plant a nineteen-word invented sentence on it and
     watch the whole suite pass.
     """
-    if state in (_STALE, _STALE_DESCRIPTION):
+    if state in _STRANDED:
         stranded = client.get("/")
         assert stranded.status_code == 409
         written = client.post("/write", follow_redirects=True)
@@ -832,7 +856,7 @@ def test_every_count_is_the_length_of_what_is_listed_beside_it(
     # every screen of the walk plus the pages the POST-only routes render, and
     # a walk counting fewer than six things across them has stopped deriving
     # numbers it used to derive.
-    floor = 1 if state in (_STALE, _STALE_DESCRIPTION) else 6
+    floor = 1 if state in _STRANDED else 6
     assert seen >= floor, f"{state} counts {seen} things"
 
 
@@ -908,7 +932,7 @@ def test_no_screen_gates_the_write_action(
     )
     pages = _guarded_pages(app, client, session, state)
 
-    if state not in (_STALE, _STALE_DESCRIPTION):
+    if state not in _STRANDED:
         done = pages["/done"]
         assert [form for form in done.forms if form.get("action") == "/write"]
         writing = [control for control in done.controls if control["form"] == "/write"]
@@ -1642,7 +1666,7 @@ def _guarded_bodies(app, client, session: Session, state: str) -> dict[str, str]
     rather than by widening the reader, because "is this block folded" is a
     question about one template and not a property every screen has.
     """
-    if state in (_STALE, _STALE_DESCRIPTION):
+    if state in _STRANDED:
         stranded = client.get("/")
         assert stranded.status_code == 409
         return {"/ (stranded)": stranded.get_data(as_text=True)}

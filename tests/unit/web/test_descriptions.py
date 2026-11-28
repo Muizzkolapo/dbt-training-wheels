@@ -607,6 +607,50 @@ def test_a_walk_stranded_on_a_tag_says_so_and_offers_the_way_out(walk: Walk, sql
         sql.write_text(ONE_APPEND_ELSEWHERE, encoding="utf-8")
 
 
+def test_a_walk_stranded_on_a_materialization_says_so_and_offers_the_way_out(
+    walk: Walk, sql_script
+) -> None:
+    """The materialization half of the stranded machinery. A "Built as"
+    choice keyed by a model an edit retired makes `assemble` refuse the whole
+    conversion, so every screen raises. `stale_materializations` still
+    answers, and its screen must be the one the reader reaches -- not an
+    error with no way out.
+    """
+    sql = sql_script(ONE_APPEND_ELSEWHERE)
+    app, client, session = walk(sql)
+    (model,) = session.view().change.models
+    assert (
+        client.post(
+            "/describe", data={"model": model.name, "text": "", "materialization": "view"}
+        ).status_code
+        == 302
+    )
+    assert session.materializations == {model.name: "view"}
+    try:
+        sql.write_text(ONE_MERGE, encoding="utf-8")
+
+        # The blank description saved in the same press is named first, on
+        # its own screen; the choice is named on the next one.
+        descriptions_screen = client.get("/")
+        assert descriptions_screen.status_code == 409
+        assert "Descriptions with no model" in descriptions_screen.get_data(as_text=True)
+        assert client.post("/stale").status_code == 302
+        assert session.materializations == {model.name: "view"}
+
+        choices_screen = client.get("/")
+        assert choices_screen.status_code == 409
+        body = choices_screen.get_data(as_text=True)
+        assert "Choices with no model" in body
+        assert model.name in read(body).engine
+        assert client.post("/stale").status_code == 302
+
+        assert session.materializations == {}
+        assert session.descriptions == {}
+        assert client.get("/").status_code == 200
+    finally:
+        sql.write_text(ONE_APPEND_ELSEWHERE, encoding="utf-8")
+
+
 def test_the_describe_screen_offers_the_engines_materializations_and_no_others(
     walk: Walk, walk_sql: Path
 ) -> None:

@@ -1151,9 +1151,12 @@ def create_app(source: Source) -> Flask:
 
         Every accessor raises while the reader holds something the current SQL
         no longer has a place for -- the script was edited underneath it.
-        There are two such things, and each has one accessor that still
-        answers, so the screen can say what it is about and offer the way out
-        instead of showing an error with no subject and no way on.
+        There are four such things -- answers, descriptions, tags and
+        materializations -- and each has one accessor that still answers, so
+        the screen can say what it is about and offer the way out instead of
+        showing an error with no subject and no way on. `None` only when none
+        of the four is stranded, so the refusal that sent a screen here was
+        about something else and is raised again.
 
         Answers first, and the order is not a preference. A held answer that
         cannot be resolved is a question this conversion no longer asks, and
@@ -1172,9 +1175,14 @@ def create_app(source: Source) -> Flask:
                 "stale_descriptions.html", "Descriptions with no model", "model", described
             )
         tagged = session.stale_tags()
-        if not tagged:
-            return None
-        return _stranded("stale_tags.html", "Tags with no model", "model", tagged)
+        if tagged:
+            return _stranded("stale_tags.html", "Tags with no model", "model", tagged)
+        chosen = session.stale_materializations()
+        if chosen:
+            return _stranded(
+                "stale_materializations.html", "Choices with no model", "model", chosen
+            )
+        return None
 
     def _stranded(
         template: str, heading: str, counted: str, stale: Sequence[str]
@@ -2233,8 +2241,8 @@ def create_app(source: Source) -> Flask:
         """
         session = _conversation()
         # Only what the screen that offered this named, which is what `_stale`
-        # chose to render: answers while any are stranded, descriptions once
-        # they are not. Dropping both in one press was the first shape of this
+        # chose to render, in its order: answers, then descriptions, then
+        # tags, then materializations. Dropping both in one press was the first shape of this
         # route and it was wrong -- `stale.html` lists answer keys, so a reader
         # pressing it lost a description that no screen had ever named. Being
         # sent to a second stranded screen is not the cost of that fix, it is
