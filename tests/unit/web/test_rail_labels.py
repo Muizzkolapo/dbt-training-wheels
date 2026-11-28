@@ -51,3 +51,38 @@ def test_every_label_in_a_numbered_rail_is_distinct() -> None:
 
     shown = [" ".join(p for p in (s.label, s.kind, s.nth) if p) for s in rail]
     assert len(set(shown)) == len(shown), shown
+
+
+def test_the_walk_numbers_its_own_question_steps() -> None:
+    """Through `_screens`, the function every page builds its rail from, so
+    the numbering cannot be dropped from the walk while its unit tests stay
+    green. No current script asks two questions of one kind about one
+    table, so the questions are built here; `_screens` reads only their
+    keys, subjects and options.
+    """
+    from types import SimpleNamespace
+
+    from dbtw.core.passes import Decision, Subject
+    from dbtw.web.app import _screens
+
+    def ask(index: int) -> Decision:
+        return Decision(
+            key=f"tier2.append.t.sql:{index}",
+            tier=2,
+            action="a",
+            reason="r",
+            source_file="t.sql",
+            line_start=1,
+            line_end=1,
+            question="q?",
+            subject=Subject(table="revenue_daily"),
+        )
+
+    view = SimpleNamespace(questions=(ask(0), ask(1)))
+
+    steps = [s for s in _screens(view) if s.url.startswith("/questions/")]  # type: ignore[arg-type]
+
+    assert [(s.label, s.kind, s.nth) for s in steps] == [
+        ("revenue_daily", "append", "1"),
+        ("revenue_daily", "append", "2"),
+    ]
