@@ -206,7 +206,8 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
     except (UnknownAnswerError, UnknownModelError):
         # Something the reader holds that the current SQL no longer has a
         # place for: an answer to a question it no longer asks, or a
-        # description of a model it no longer builds. Nothing but the pristine
+        # description, tags or a materialization of a model it no longer
+        # builds. Nothing but the pristine
         # run can be computed, and the screen that gets them out renders the
         # keys or the model names.
         produced.extend(session.stale_answers())
@@ -216,6 +217,8 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
             # `Session.stale_descriptions`, which raises while they do not.
             produced.extend(session.stale_descriptions())
             produced.extend(session.descriptions)
+            produced.extend(session.stale_tags())
+            produced.extend(session.stale_materializations())
     else:
         produced.extend(_from_change(change))
         produced.extend(_from_examples(change))

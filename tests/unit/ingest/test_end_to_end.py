@@ -24,3 +24,15 @@ def test_classification_is_total_over_ingest():
     result = ingest(FIXTURES / "etl_script.sql", dialect="tsql")
     classified = classify_statements(result)
     assert len(classified) == len(result.statements)
+
+
+def test_a_trailing_comment_is_not_classified_as_an_unsupported_statement(tmp_path):
+    """The bug: the comment after the last statement came back as a
+    statement, failed to parse, and showed as pending "unsupported" work."""
+    (tmp_path / "load.sql").write_text(
+        "INSERT INTO t SELECT a FROM s;\n-- end of the nightly load\n", encoding="utf-8"
+    )
+
+    classified = classify_statements(ingest(tmp_path, dialect="duckdb"))
+
+    assert [c.kind for c in classified] == ["insert_select"]

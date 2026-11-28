@@ -89,8 +89,38 @@ def test_a_leading_comment_stays_in_the_text_but_the_line_is_the_first_sql_line(
     assert (spans[1].line_start, spans[1].line_end) == (7, 7)
 
 
-def test_a_statement_that_is_only_a_comment_starts_on_its_first_line():
+def test_a_trailing_comment_after_the_last_statement_is_not_a_statement():
+    """A comment alone is not a statement. Emitted as one, it was classified
+    as a statement that could not be parsed, and it showed as pending work.
+    """
     spans = split_sql("SELECT 1;\n\n-- trailing note\n-- and more")
 
-    assert spans[1].text == "-- trailing note\n-- and more"
-    assert (spans[1].line_start, spans[1].line_end) == (3, 4)
+    assert [s.text for s in spans] == ["SELECT 1"]
+    assert (spans[0].line_start, spans[0].line_end) == (1, 1)
+
+
+def test_a_trailing_comment_after_a_statement_with_no_semicolon_stays_in_it():
+    """With no semicolon, the comment is inside the last statement's text,
+    and the last statement is still emitted."""
+    spans = split_sql("SELECT 1;\nSELECT 2 -- the last one")
+
+    assert [s.text for s in spans] == ["SELECT 1", "SELECT 2 -- the last one"]
+
+
+def test_input_of_only_comments_yields_no_spans():
+    assert split_sql("-- one note\n/* and a block\n comment */\n") == []
+
+
+def test_a_comment_before_an_empty_statement_is_not_a_statement():
+    """`;` with only a comment before it closes nothing. The statements on
+    each side are kept, at their own lines."""
+    spans = split_sql("SELECT 1;\n-- stray\n;\nSELECT 2;")
+
+    assert [s.text for s in spans] == ["SELECT 1", "SELECT 2"]
+    assert (spans[1].line_start, spans[1].line_end) == (4, 4)
+
+
+def test_a_comment_inside_a_statement_is_kept_in_its_text():
+    spans = split_sql("SELECT 1 -- one\nFROM t /* note */;\n-- lead\nSELECT 2")
+
+    assert [s.text for s in spans] == ["SELECT 1 -- one\nFROM t /* note */", "-- lead\nSELECT 2"]

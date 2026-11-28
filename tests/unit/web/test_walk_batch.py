@@ -237,7 +237,9 @@ def test_a_name_dbt_cannot_give_a_model_is_refused_and_says_which_names_work(
     assert f'value="{name}"' in refused.get_data(as_text=True), "the typed name is kept"
 
 
-@pytest.mark.parametrize("sql", ["-- just a comment\n", "/* nothing */\n", ";\n"])
+@pytest.mark.parametrize(
+    "sql", ["-- just a comment\n", "/* nothing */\n", ";\n", "-- one\n;\n/* two */\n"]
+)
 def test_a_paste_with_no_statement_in_it_is_refused_like_an_empty_one(unstarted, sql: str) -> None:  # type: ignore[no-untyped-def]
     client, source, project_dir = unstarted
 
@@ -245,6 +247,21 @@ def test_a_paste_with_no_statement_in_it_is_refused_like_an_empty_one(unstarted,
 
     assert refused.status_code == 400
     assert source.session is None
+    assert "contains no statement, only comments" in refused.get_data(as_text=True)
+
+
+def test_a_paste_the_tokenizer_cannot_read_is_not_refused_as_empty(unstarted) -> None:  # type: ignore[no-untyped-def]
+    """It holds something, so the walk starts and the caveats screen says
+    what was wrong with it. Only a paste of comments is empty."""
+    client, source, project_dir = unstarted
+
+    started = client.post(
+        "/source",
+        data={"project": str(project_dir), "pasted": "-- note\nSELECT 'unterminated", "name": "q"},
+    )
+
+    assert started.status_code == 302
+    assert source.session is not None
 
 
 def test_a_refused_empty_paste_keeps_the_previous_conversation(unstarted) -> None:  # type: ignore[no-untyped-def]
