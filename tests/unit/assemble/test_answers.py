@@ -15,6 +15,11 @@ TWO_APPENDS = (
     "INSERT INTO page_views SELECT order_id, ts FROM stg_views;\n"
 )
 ONE_APPEND = "INSERT INTO revenue_events SELECT order_id, amount FROM stg_orders;\n"
+# `amount * 2` has no output name, so the SQL text does not give every column
+# of this model. A typed key that matches no named column is accepted here and
+# declined with a Decision. Where every column is knowable, `assemble` refuses
+# such a key instead -- see test_decisions_follow_the_answers.py.
+UNNAMED_APPEND = "INSERT INTO revenue_events SELECT order_id, amount * 2 FROM stg_orders;\n"
 ONE_MERGE = (
     "MERGE INTO dim_c AS t USING stg_c AS s ON t.id = s.id "
     "WHEN MATCHED THEN UPDATE SET t.* = s.* WHEN NOT MATCHED THEN INSERT *;\n"
@@ -354,10 +359,15 @@ def test_columns_on_an_option_that_cannot_use_them_are_refused():
 def test_a_merge_answer_naming_a_column_the_model_does_not_select_is_declined():
     """The body check that guards --unique-key guards an answer too: forcing a
     key the model never projects would fail at dbt run time whichever input
-    asked for it. Declined with a Decision, not applied and not silent."""
-    key = _question_for(convert(ONE_APPEND), "revenue_events").key
+    asked for it. Declined with a Decision, not applied and not silent.
 
-    answered = convert(ONE_APPEND, answers={key: Answer("merge on a unique key", ("customer_id",))})
+    Only where the columns are not all knowable. Where they are, the answer
+    is refused before anything is applied."""
+    key = _question_for(convert(UNNAMED_APPEND), "revenue_events").key
+
+    answered = convert(
+        UNNAMED_APPEND, answers={key: Answer("merge on a unique key", ("customer_id",))}
+    )
     (model,) = answered.models
     assert model.incremental_strategy == "append"
     assert model.unique_key == ()
@@ -424,10 +434,10 @@ def test_a_displaced_flag_and_a_declined_answer_are_both_reported_honestly():
     read "was answered 'merge on customer_id' instead" beside a model that
     came out a keyless append. A Decision that contradicts the file written
     next to it is the one thing this project does not ship."""
-    key = _question_for(convert(ONE_APPEND), "revenue_events").key
+    key = _question_for(convert(UNNAMED_APPEND), "revenue_events").key
 
     both = convert(
-        ONE_APPEND,
+        UNNAMED_APPEND,
         unique_key=("order_id",),
         answers={key: Answer("merge on a unique key", ("customer_id",))},
     )

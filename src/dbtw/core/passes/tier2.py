@@ -32,6 +32,20 @@ from dbtw.core.passes.types import (
 )
 from dbtw.core.projections import known_projections
 
+# The name of every caveat `_merge_caveats` records. Each one describes what
+# dbt's merge strategy does, so each one is true only of a model that still
+# merges. An answer or a materialization choice in `assemble` can leave the
+# model as something else, and `assemble` then removes these caveats. It finds
+# them by this list, so a new caveat name goes here too.
+MERGE_CAVEATS = (
+    "merge.no_insert_branch",
+    "merge.no_update_branch",
+    "merge.update_columns",
+    "merge.insert_columns",
+    "merge.assigned_values",
+    "merge.branch_condition",
+)
+
 
 def _projected_columns(body: str, dialect: str | None) -> tuple[str, ...]:
     """The output column names a model body projects, for `Subject.candidates`

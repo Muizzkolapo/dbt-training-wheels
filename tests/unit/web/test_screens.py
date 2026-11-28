@@ -127,6 +127,9 @@ def _engine(page: Page) -> set[str]:
 # evaluated in the one state where it cannot fail. "downgraded" is the answer the engine
 # accepts and then does not apply -- a key the model does not select -- which
 # is the state that puts a Decision on the page that no pristine run carries.
+# The engine accepts such a key only where the columns of the model are not all
+# knowable: where they are, it refuses the answer and names the columns. So
+# that state is built on `_unknowable`, a copy of the walk script.
 #
 # The last two are the states a reader is in once they have pressed the one
 # control in the walk that touches their disk. They are here because the
@@ -193,6 +196,23 @@ _STATES = (
 # description that happened to contain no dbt word, that marking would be
 # unfalsifiable: every state would pass with it and without it.
 _DESCRIPTION = "One row per revenue event, at the grain the incremental load writes it."
+
+
+def _unknowable(walk_sql: Path) -> str:
+    """The walk script, with a third column that has no output name in the
+    events append. Then the SQL text does not give every column of that model.
+    A typed key that matches no named column is accepted there, and the engine
+    declines it with a Decision that says why. The rest of the script stays,
+    so this state has every screen that the walk script has.
+    """
+    walked = walk_sql.read_text(encoding="utf-8")
+    named = "SELECT event_id, occurred_at FROM raw.events"
+    assert walked.count(named) == 1, "the walk script changed shape"
+    return walked.replace(
+        named,
+        "SELECT event_id, occurred_at, CASE WHEN occurred_at > '2024-01-01' THEN 1 END "
+        "FROM raw.events",
+    )
 
 
 def _append_key(session: Session) -> str:
@@ -281,6 +301,12 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         assert delivered.status_code == (200 if state == _DELIVERED else 409)
         return app, client, session, out_dir, frozenset()
 
+    if state == _DOWNGRADED:
+        app, client, session = walk(sql_script(_unknowable(walk_sql)))
+        answer = {"key": _append_key(session), "kind": "merge", "typed": "evnt_id"}
+        assert client.post("/answer", data=answer).status_code == 302
+        return app, client, session, out_dir, frozenset()
+
     app, client, session = walk(walk_sql)
     if state == _DESCRIBED:
         described = client.post(
@@ -290,9 +316,6 @@ def _walk_in(walk: Walk, sql_script, walk_sql: Path, state: str, project_dir: Pa
         assert described.status_code == 302
     elif state == _ANSWERED:
         answer = {"key": _append_key(session), "kind": "merge_checked", "typed": "event_id"}
-        assert client.post("/answer", data=answer).status_code == 302
-    elif state == _DOWNGRADED:
-        answer = {"key": _append_key(session), "kind": "merge", "typed": "evnt_id"}
         assert client.post("/answer", data=answer).status_code == 302
     elif state == _WRITTEN:
         assert client.post("/write", follow_redirects=True).status_code == 200
@@ -1284,10 +1307,14 @@ def test_the_start_screen_names_what_is_being_converted(walk: Walk, walk_sql: Pa
 
 
 def test_an_answer_the_engine_did_not_apply_is_explained_beside_the_question(
-    walk: Walk, walk_sql: Path
+    walk: Walk, sql_script, walk_sql: Path
 ) -> None:
-    """Name a key the model does not select and the engine accepts the answer,
-    refuses to apply it, and records why. Before this, the screen the reader
+    """Name a key that matches no named column of a model whose columns are
+    not all knowable, and the engine accepts the answer, refuses to apply it,
+    and records why. Where the columns are all knowable, the engine refuses
+    the answer itself -- see the test after this one.
+
+    Before this, the screen the reader
     was redirected to showed "append every row -- chosen" and said nothing;
     the explanation was on the caveats screen, two screens away, in dbt's
     words only.
@@ -1296,7 +1323,7 @@ def test_an_answer_the_engine_did_not_apply_is_explained_beside_the_question(
     take effect. When it does not take effect, that is the thing to show, and
     it is shown where the answer was given.
     """
-    app, client, session = walk(walk_sql)
+    app, client, session = walk(sql_script(_unknowable(walk_sql)))
     key = _append_key(session)
     index = [d.key for d in session.view().questions].index(key)
     before = {d.key for d in _pristine_decisions(session)}
@@ -1327,6 +1354,27 @@ def test_an_answer_the_engine_did_not_apply_is_explained_beside_the_question(
         if url != here and normalised(downgrade.action) in _engine(page)
     ]
     assert elsewhere == [], f"it is also on {elsewhere}"
+
+
+def test_a_key_a_fully_known_model_does_not_select_is_refused_and_not_held(
+    walk: Walk, walk_sql: Path
+) -> None:
+    """The walk script's events model selects event_id and occurred_at, and
+    nothing else. A typed evnt_id is a mistake the reader can correct, so the
+    engine refuses it, names the column and lists the columns the model
+    selects. Accepting it put "append every row" on the screen as Chosen, an
+    answer the reader did not give.
+    """
+    app, client, session = walk(walk_sql)
+    key = _append_key(session)
+
+    refused = client.post("/answer", data={"key": key, "kind": "merge", "typed": "evnt_id"})
+
+    assert refused.status_code == 400
+    page = normalised(refused.get_data(as_text=True))
+    assert "evnt_id" in page
+    assert "event_id, occurred_at" in page
+    assert key not in session.answers, "a refused answer is not held"
 
 
 def test_an_answer_the_engine_applied_as_given_says_nothing_extra(
@@ -1662,22 +1710,21 @@ def test_the_picker_ticks_the_key_the_reader_already_gave(walk: Walk, walk_sql: 
     assert again.status_code == 302
 
 
-def test_a_typed_key_the_picker_does_not_list_comes_back_in_the_typed_field(
-    walk: Walk, walk_sql: Path
-) -> None:
+def test_a_typed_key_the_picker_lists_comes_back_ticked(walk: Walk, walk_sql: Path) -> None:
     app, client, session = walk(walk_sql)
     key = next(d.key for d in session.view().questions if ".append." in d.key)
     index = [d.key for d in session.view().questions].index(key)
+    # The engine refuses a typed column that this model does not select, so
+    # the typed column here is one that the model selects and that is not
+    # ticked: the picker lists it, and the typed field still carries it back.
     answered = client.post(
-        "/answer", data={"key": key, "kind": "merge", "typed": "event_id, region"}
+        "/answer", data={"key": key, "kind": "merge", "typed": "event_id, occurred_at"}
     )
     assert answered.status_code == 302
 
     html = client.get(f"/questions/{index}").get_data(as_text=True)
 
-    assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": False}
-    merge_form = next(f for f in html.split("<form")[1:] if 'name="kind" value="merge"' in f)
-    assert 'name="typed" value="region"' in merge_form.split("</form>")[0]
+    assert _boxes(html, "merge", key) == {"event_id": True, "occurred_at": True}
 
 
 def test_the_one_screen_walk_ticks_the_key_the_reader_already_gave(
