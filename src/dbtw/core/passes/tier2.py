@@ -28,6 +28,7 @@ from dbtw.core.passes.types import (
     Tier,
     append_option,
     merge_option,
+    unique_key_config,
     verify_option,
 )
 from dbtw.core.projections import known_projections
@@ -1560,7 +1561,7 @@ def merge_pass(state: PassState) -> PassState:
                 2,
                 action=(
                     f"MERGE INTO {table.name} became an incremental model "
-                    f"(incremental_strategy='merge', unique_key={list(keys)!r})"
+                    f"(incremental_strategy='merge', {unique_key_config(keys)})"
                 ),
                 reason=(
                     "dbt's merge incremental strategy updates a row that matches unique_key "

@@ -131,7 +131,7 @@ def test_reading_another_projects_model_records_what_dbt_needs_to_resolve_it() -
     caveats = _dependency_caveats(change)
 
     assert [d.key for d in caveats] == [
-        "assemble.cross_dependency.stg_revenue_events.core_platform.dim_customers"
+        "assemble.cross_dependency.revenue_events.core_platform.dim_customers"
     ]
     caveat = caveats[0]
     assert caveat.tier == 2
@@ -170,10 +170,10 @@ def test_declaring_the_table_here_records_no_dependency_caveat() -> None:
 def test_the_rewrite_record_counts_the_cross_project_ref() -> None:
     change = _cross_ref_taken()
 
-    rewrite = next(d for d in change.decisions if d.key == "assemble.rewrite.stg_revenue_events")
+    rewrite = next(d for d in change.decisions if d.key == "assemble.rewrite.revenue_events")
 
-    assert "1 reference(s) rewritten to another project's ref()" in rewrite.action
-    assert "1 reference(s) rewritten to source()" in rewrite.action
+    assert "1 reference rewritten to another project's ref()" in rewrite.action
+    assert "1 reference rewritten to source()" in rewrite.action
     assert "dim_customers: read from the core_platform project's own model" in rewrite.chosen
 
 
@@ -194,7 +194,7 @@ def test_the_report_names_the_cross_project_dependency_and_what_to_add() -> None
 
     report = render_report(change, read_project(FIXTURES / "jaffle_shop"))
 
-    row = next(line for line in report.splitlines() if line.startswith("| stg_revenue_events |"))
+    row = next(line for line in report.splitlines() if line.startswith("| revenue_events |"))
     assert row.endswith("| core_platform.dim_customers |")
     assert DEPENDENCY_YAML in report
     assert "access: public" in report

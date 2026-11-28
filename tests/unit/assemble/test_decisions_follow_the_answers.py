@@ -126,7 +126,7 @@ def test_the_incremental_question_says_the_build_choice_replaced_it(chosen: str)
     rewritten = next(d for d in change.decisions if d.key == question.key)
     assert "became an incremental model" not in rewritten.action
     assert f"built as {chosen}" in rewritten.action
-    assert "unique_key=['order_id']" in rewritten.action, "the replaced config is named"
+    assert "unique_key='order_id'" in rewritten.action, "the replaced config is named"
     assert chosen in rewritten.reason
     # The question stays a question: the answer is still the reader's, and it
     # applies again when the build choice is removed.

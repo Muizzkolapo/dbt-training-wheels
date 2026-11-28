@@ -153,7 +153,7 @@ def test_two_catalogs_of_the_same_table_do_not_collapse_into_one_source():
         _state("SELECT a FROM prod.raw.orders AS a JOIN dev.raw.orders AS b ON 1 = 1"), ctx
     )
     assert change.sources == ()
-    unresolved = [d for d in change.decisions if "left as written" in d.action]
+    unresolved = [d for d in change.decisions if d.key.startswith("assemble.rewrite_unresolved.")]
     assert len(unresolved) == 2
     assert all("database" in d.reason.lower() for d in unresolved)
     body = change.models[0].body

@@ -410,6 +410,20 @@ class Answer:
     columns: tuple[str, ...] = ()
 
 
+def unique_key_config(keys: tuple[str, ...]) -> str:
+    """`unique_key=...` as the config of a model file writes it.
+
+    One key is written as a string and several as a list, which is how
+    `emit.render` writes the config and how dbt's own docs spell it. A
+    Decision that quotes the config spells it this way too, so the text on the
+    screen and the line in the file are the same characters. The first shape
+    of the Decisions wrote every key as a list, and `unique_key=['order_id']`
+    sat beside a file that said `unique_key='order_id'`.
+    """
+    key: str | list[str] = keys[0] if len(keys) == 1 else list(keys)
+    return f"unique_key={key!r}"
+
+
 def answer_for(decision: Decision, kind: str, columns: tuple[str, ...] = ()) -> Answer:
     """The `Answer` naming this Decision's option of `kind`.
 
