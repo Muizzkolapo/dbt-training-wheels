@@ -342,9 +342,10 @@ def emit(
         tests_by_model.setdefault(test.model, []).append(test)
     orphans = sorted(set(tests_by_model) - {model.name for model in change.models})
     if orphans:
+        models = "that model" if len(orphans) == 1 else "those models"
         raise OrphanSchemaTestError(
             f"change.tests names {_listed(orphans)}, but change.models does not "
-            "carry that model. So emit would write no file for the tests of that model, "
+            f"carry {models}. So emit would write no file for the tests of {models}, "
             "and the report would still count those tests. Each test is recorded against "
             "the model that it was chosen for. A test that names no model in the change "
             "is a dbtw bug."
@@ -358,9 +359,10 @@ def emit(
     described = {entry.model: entry.text for entry in change.descriptions}
     undescribable = sorted(set(described) - {model.name for model in change.models})
     if undescribable:
+        models = "that model" if len(undescribable) == 1 else "those models"
         raise OrphanModelDescriptionError(
             f"change.descriptions names {_listed(undescribable)}, but change.models "
-            "does not carry that model. So emit would lose the reader's own words. "
+            f"does not carry {models}. So emit would lose the reader's own words. "
             "Emit would write no file for those words and would tell nobody. Each "
             "description is written against a model that the walk showed. A description "
             "that names no model in the change is a dbtw bug."
@@ -468,7 +470,7 @@ def _unreadable(record_path: Path, why: str) -> StaleOutputError:
         f"into this directory produced. {why}. Without the record, a file that the "
         "previous write produced and this write does not produce would stay beside the "
         "files of this conversion. Delivery would then copy that file with them. "
-        f"Delete {WRITE_RECORD_NAME} and all files of the previous conversion from the "
+        f"Delete {WRITE_RECORD_NAME} and any files of the previous conversion from the "
         "directory. Then write again."
     )
 
@@ -823,11 +825,13 @@ def _sources_placement(
             "conversion's sources are in a separate file. When you copy the directory, "
             "the two files go into the project together. dbt reads both files."
         )
-    if stepped_over:
-        also = _listed(
-            [f"{path} ({_holds(path, declared_at, model_yml_at)})" for path in stepped_over]
+    # One sentence for each alternative name, so the text stays short for any
+    # number of names that were taken.
+    for path in stepped_over:
+        why += (
+            f" The alternative name {path} was also taken: "
+            f"{_holds(path, declared_at, model_yml_at)}."
         )
-        why += f" Each alternative name before {landing} was also taken: {also}."
     return landing, (
         _decision(
             "sources_placed",
