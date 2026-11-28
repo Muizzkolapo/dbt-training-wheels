@@ -338,7 +338,7 @@ def test_terms_in_finds_only_the_terms_a_string_uses():
     # One assertion, not two: the membership check this replaced -- `"dbt
     # build" not in _names(...)` -- is a logical consequence of the exact list
     # above it, and no implementation can fail one while passing the other.
-    assert _names("this model is materialized as a table") == ["materialized"]
+    assert _names("this model is materialized as a table") == ["model", "materialized"]
 
 
 def test_terms_in_finds_a_term_by_the_spelling_it_actually_appears_as():
@@ -351,12 +351,12 @@ def test_terms_in_finds_a_term_by_the_spelling_it_actually_appears_as():
 def test_terms_in_is_case_insensitive():
     """The report writes "Incremental models" at the start of a sentence and
     "dbt Jinja" mid-sentence. Same word, same definition."""
-    assert _names("Incremental models remain deferred") == ["incremental"]
+    assert _names("Incremental models remain deferred") == ["incremental", "model"]
     assert _names("so the body runs as dbt Jinja") == ["Jinja"]
 
 
 def test_terms_in_returns_each_term_once():
-    assert _names("staging models live in the staging folder") == ["staging"]
+    assert _names("staging models live in the staging folder") == ["staging", "model"]
 
 
 def test_terms_in_orders_terms_by_where_they_first_appear():
@@ -392,9 +392,11 @@ def test_no_term_is_named_a_word_that_occurs_inside_other_words():
     matching does return `incremental` for "incrementally", `Jinja` for
     "Jinja2" and `staging` for "restaging". Those are the same word or a
     near-enough one, so they are wanted; a bare `run` inside "rerun" is a
-    different word, and that is what the naming rule refuses.
+    different word, and that is what the naming rule refuses. `model` is the
+    one term named with a bare word, and it is found inside "models", which
+    is the same word.
     """
-    assert _names("rerun the staging models") == ["staging"]
+    assert _names("rerun the staging models") == ["staging", "model"]
     assert _names("a nightly job that is still running") == []
     assert _names("the team builds and tests every night") == []
 
@@ -431,3 +433,20 @@ def test_the_commands_are_the_four_dbt_commands():
     for any subset and any order.
     """
     assert COMMANDS == ("dbt compile", "dbt run", "dbt test", "dbt build")
+
+
+def test_model_is_defined_as_a_saved_select_and_not_a_machine_learning_model():
+    """The plain register says "model" on almost every screen. A persona who
+    has never used dbt read it as a machine-learning model, and the glossary
+    had no entry to correct that."""
+    by_name = _by_name()
+    assert "model" in by_name
+    plain = by_name["model"].plain
+    assert "SELECT" in plain
+    assert _mentions(plain, "file")
+    assert _mentions(plain, "table") and _mentions(plain, "view")
+    assert re.search(r"\bnot an?\s+[^.]{0,30}machine learning\b", plain), plain
+
+
+def test_terms_in_finds_model_where_the_plain_register_says_it():
+    assert _names("A model here does the work") == ["model"]
