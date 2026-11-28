@@ -1936,7 +1936,7 @@ def _materialized(
                     "So this conversion removed both, rather than write them where dbt "
                     "would ignore them",
                     plain_reason=(
-                        f"You asked to rebuild this model as {chosen}. The settings about "
+                        f"You chose {chosen!r} as the way to build this model. The settings about "
                         "adding rows to the rows already there mean something only when "
                         "the model adds rows and does not rebuild. So this tool removed "
                         "those settings."
