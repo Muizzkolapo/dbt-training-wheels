@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble
+from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble, clean_tags
 from dbtw.core.context import read_project
 from dbtw.core.deliver import Push
 from dbtw.core.ingest import classify_statements, ingest
@@ -364,7 +364,7 @@ class Session:
         Applied before it is kept, like every other answer here, so a refused
         list is not held and the next render does not raise for it.
         """
-        cleaned = tuple(tag.strip() for tag in tags if tag.strip())
+        cleaned = clean_tags(tags)
         previous = dict(self.tags)
         if cleaned:
             self.tags[model] = cleaned
