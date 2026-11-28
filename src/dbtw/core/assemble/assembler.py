@@ -27,6 +27,7 @@ from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry,
 from dbtw.core.assemble.variables import Variable, extract_variables
 from dbtw.core.context import Detection, LayerInfo, ModelInfo, ProjectContext
 from dbtw.core.naming import is_qualified, qualified_name, same_identifier
+from dbtw.core.passes import tier1, tier2
 from dbtw.core.passes.tier2 import MERGE_CAVEATS
 from dbtw.core.passes.types import (
     Answer,
@@ -1736,7 +1737,9 @@ def _refuse_unselected_key(
     if not missing:
         return
     table = dec.subject.table if dec.subject is not None else model.name
-    selected = _keys_str(tuple(name for name, _ in projections))
+    # Once each, in the order of the SELECT: `SELECT order_id, amount AS
+    # order_id` has two projections and one name to answer with.
+    selected = _keys_str(tuple(dict.fromkeys(name for name, _ in projections)))
     raise UnknownAnswerError(
         f"{dec.key} was answered {answer.label!r} with {_keys_str(keys)}. The model "
         f"{table} does not select {_keys_str(tuple(missing))}. The columns that {table} "
@@ -2037,6 +2040,7 @@ def _follow_final_models(
     final: Sequence[AssembledModel],
     question_keys: Mapping[str, str],
     final_to_draft_name: Mapping[str, str],
+    drafted_materialization: Mapping[str, str],
 ) -> tuple[Decision, ...]:
     """The Decisions, each made true of the model as this run writes it.
 
@@ -2060,6 +2064,10 @@ def _follow_final_models(
     3. The incremental question of a model that the reader built as
        something else stays, because the reader's answer stays held. Its
        action and reason then say that the build choice replaced it.
+    4. A tier-1 or tier-2 Decision that records the materialization of the
+       draft (`DRAFT_MATERIALIZATION_RECORDS` in each pass module) stays. If
+       the reader chose another materialization, its action, reason and
+       plain reason then say that the choice replaced the drafted one.
 
     `before` is the models as the answers left them, in the order that
     `final` has them: `_materialized` keeps the order.
@@ -2085,7 +2093,72 @@ def _follow_final_models(
             and model.incremental_strategy is None
         ):
             rewritten[key] = _replaced_by_build_choice(by_key[key], draft_name, prior, model)
+        drafted = drafted_materialization[model.name]
+        chosen = model.materialization
+        # A model with no choice carries the drafted materialization, or None
+        # where it matches the layer default. A choice equal to the draft
+        # changes nothing that these Decisions say.
+        if chosen is not None and chosen != drafted:
+            rewritten.update(
+                (d.key, _drafted_materialization_replaced(d, model.name, drafted, chosen))
+                for d in decisions
+                if _records_drafted_materialization(d)
+                and statement_index(d) in model.source_indices
+            )
     return tuple(rewritten.get(d.key, d) for d in decisions if d.key not in removed)
+
+
+def _records_drafted_materialization(dec: Decision) -> bool:
+    """Whether `dec` is one of the pass Decisions that record the
+    materialization of the draft they create.
+
+    The key is compared whole, as `<tier>.<name>.<source_file>:<index>`. A
+    prefix test would also take `tier1.build.collision.<...>`, which says
+    nothing about a materialization.
+    """
+    index = statement_index(dec)
+    return any(
+        dec.key == f"{tier}.{name}.{dec.source_file}:{index}"
+        for tier, names in (
+            ("tier1", tier1.DRAFT_MATERIALIZATION_RECORDS),
+            ("tier2", tier2.DRAFT_MATERIALIZATION_RECORDS),
+        )
+        for name in names
+    )
+
+
+def _drafted_materialization_replaced(
+    dec: Decision, model_name: str, drafted: str, chosen: str
+) -> Decision:
+    """A pass Decision that recorded the drafted materialization, once the
+    reader chose another one.
+
+    The record of the draft stays, because it says what the script became.
+    Each register then says that the choice replaced it, so no sentence
+    describes the drafted materialization as the one this run writes.
+    """
+    replaced = (
+        f"The choice of how to build {model_name} replaced materialized='{drafted}' "
+        f"with materialized='{chosen}'"
+    )
+    return dataclasses.replace(
+        dec,
+        action=f"{dec.action}. {replaced}",
+        reason=(
+            f"{dec.reason.rstrip('.')}. {replaced}. So the config of {model_name} says "
+            f"materialized='{chosen}'. The text above about {drafted} describes the draft "
+            "before that choice"
+        ),
+        plain_reason=" ".join(
+            text
+            for text in (
+                dec.plain_reason,
+                f"You chose {chosen!r} as the way to build {model_name}. That choice "
+                f"replaces what this note says about how {model_name} is built.",
+            )
+            if text
+        ),
+    )
 
 
 def _replaced_by_build_choice(
@@ -2564,6 +2637,10 @@ def assemble(
     # Step 8: translate dependency names to final names now that every draft has one.
     models: list[AssembledModel] = []
     final_to_draft_name: dict[str, str] = {}
+    # The materialization each kept draft carried, keyed by final name. The
+    # Decisions that recorded it are rewritten if a reader chooses another
+    # one -- see `_follow_final_models`.
+    drafted_materialization: dict[str, str] = {}
     for draft_index, draft in enumerate(drafts):
         if draft_index in dropped_indices:
             continue
@@ -2571,6 +2648,7 @@ def assemble(
         depends_on = tuple(sorted({final_names[dep] for dep in deps[draft.name]}))
         models.append(dataclasses.replace(model, depends_on=depends_on))
         final_to_draft_name[model.name] = draft.name
+        drafted_materialization[model.name] = draft.materialization
 
     ordered, cycle_decisions = _topological(models)
     new_decisions.extend(cycle_decisions)
@@ -2936,6 +3014,7 @@ def assemble(
         final_models,
         question_keys,
         final_to_draft_name,
+        drafted_materialization,
     )
 
     # Validated last, once answerable_decisions is complete: an answer names

@@ -25,6 +25,13 @@ from dbtw.core.naming import (
 from dbtw.core.passes.collisions import replace_draft
 from dbtw.core.passes.types import Decision, ModelDraft, PassState
 
+# The name of every Decision here that records the materialization of the
+# draft it creates ("created model x (materialized='table')"). A reader can
+# choose another materialization later, in `assemble`, and `assemble` then
+# rewrites these Decisions to state the final one. It finds them by this
+# list, so a new Decision that names a materialization goes here too.
+DRAFT_MATERIALIZATION_RECORDS = ("build", "truncate_insert", "select")
+
 
 def _parse(stmt: ClassifiedStatement, dialect: str | None) -> exp.Expr:
     return sqlglot.parse_one(stmt.raw.text, read=dialect)

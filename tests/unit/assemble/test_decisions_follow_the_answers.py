@@ -15,7 +15,7 @@ import pytest
 from tests.unit.assemble.helpers import convert
 
 from dbtw.core.assemble import UnknownAnswerError
-from dbtw.core.passes import Answer, Decision, answer_for
+from dbtw.core.passes import Answer, Decision, answer_for, statement_index
 
 THREE = "three_layers"
 
@@ -328,3 +328,90 @@ def test_a_layer_answer_and_a_build_choice_on_one_model_both_reach_the_decision(
     assert all("materialized as view" in option.effect for option in answered.options)
     (model,) = [m for m in change.models if m.name == "revenue_daily"]
     assert model.materialization == "view"
+
+
+# --- the Decisions that record a model's materialization when it is drafted
+
+# Each script drafts one model, and one tier-1 or tier-2 Decision records the
+# materialization of that draft in its action: (script, the Decision name, the
+# drafted materialization, a "Built as" choice that differs from it).
+DRAFTED = {
+    "build": ("CREATE TABLE dim_people AS SELECT id, name FROM raw.people;\n", "table", "view"),
+    "select": ("SELECT id, name FROM raw.people;\n", "view", "table"),
+    "truncate_insert": (
+        "TRUNCATE TABLE daily;\nINSERT INTO daily SELECT id, SUM(x) AS t FROM raw.e GROUP BY id;\n",
+        "table",
+        "ephemeral",
+    ),
+    "truncate_insert_columns": (
+        "TRUNCATE TABLE daily;\n"
+        "INSERT INTO daily (day, total) SELECT id, SUM(x) FROM raw.e GROUP BY id;\n",
+        "table",
+        "view",
+    ),
+}
+
+
+def _drafted_record(change, name: str) -> Decision:  # type: ignore[no-untyped-def]
+    (record,) = [
+        d
+        for d in change.decisions
+        if d.key == f"{d.key.split('.')[0]}.{name}.{d.source_file}:{statement_index(d)}"
+    ]
+    return record
+
+
+@pytest.mark.parametrize("name", sorted(DRAFTED))
+def test_a_build_choice_reaches_the_decision_that_recorded_the_draft(name: str) -> None:
+    sql, drafted, chosen = DRAFTED[name]
+    pristine = convert(sql)
+    (model,) = pristine.models
+    before = _drafted_record(pristine, name)
+    assert f"materialized='{drafted}'" in before.action
+
+    change = convert(sql, materializations={model.name: chosen})
+
+    (built,) = change.models
+    assert built.materialization == chosen
+    after = _drafted_record(change, name)
+    assert f"materialized='{chosen}'" in after.action
+    assert "choice" in after.action
+    assert chosen in after.reason
+    assert chosen in after.plain_reason
+
+
+@pytest.mark.parametrize("name", sorted(DRAFTED))
+def test_a_build_choice_equal_to_the_draft_leaves_the_decision_alone(name: str) -> None:
+    sql, drafted, _ = DRAFTED[name]
+    pristine = convert(sql)
+    (model,) = pristine.models
+
+    change = convert(sql, materializations={model.name: drafted})
+
+    assert _drafted_record(change, name) == _drafted_record(pristine, name)
+
+
+def test_the_refusal_names_each_selected_column_once() -> None:
+    sql = "INSERT INTO revenue_events SELECT order_id, amount AS order_id, note FROM stg_orders;\n"
+    question = _question(convert(sql), "revenue_events")
+
+    with pytest.raises(UnknownAnswerError) as refused:
+        convert(sql, answers={question.key: Answer("merge on a unique key", ("no_such_col",))})
+
+    assert "are order_id, note." in str(refused.value)
+
+
+def test_every_pass_decision_that_names_a_materialization_is_a_record_assemble_rewrites() -> None:
+    """`assemble` finds these Decisions by the `DRAFT_MATERIALIZATION_RECORDS`
+    lists. A Decision that names a materialization and is missing from them
+    keeps the drafted value beside a model that the reader built otherwise."""
+    from dbtw.core.assemble.assembler import _records_drafted_materialization
+
+    named = [
+        d
+        for sql, _, _ in DRAFTED.values()
+        for d in convert(sql).decisions
+        if d.key.startswith("tier") and "materialized='" in d.action
+    ]
+    assert len(named) == len(DRAFTED)
+    assert all(_records_drafted_materialization(d) for d in named), [d.key for d in named]
