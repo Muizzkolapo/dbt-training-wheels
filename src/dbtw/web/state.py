@@ -11,9 +11,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import sqlglot
-from sqlglot.errors import SqlglotError
-
 from dbtw.core.assemble import ProjectChange, UnknownAnswerError, assemble, clean_tags
 from dbtw.core.context import NotADbtProjectError, read_project
 from dbtw.core.deliver import Push
@@ -734,17 +731,6 @@ def pasted_file_name(name: str) -> str:
     return f"{stem}.sql"
 
 
-def _holds_sql(text: str, dialect: str | None) -> bool:
-    """Whether `text` holds at least one SQL token, or cannot be tokenized.
-
-    See `Source._refuse_without_statements`.
-    """
-    try:
-        return bool(sqlglot.tokenize(text, read=dialect))
-    except SqlglotError:
-        return True
-
-
 @dataclass
 class Source:
     """Where this walk's SQL comes from, and the conversation over it.
@@ -900,18 +886,15 @@ class Source:
         a scratch copy, because the staging directory still holds the
         previous source, and a refusal must not take that with it.
 
-        `ingest` hands back a comment with no SQL after it as a statement of
-        its own: its splitter keeps every non-blank span. So each one is
-        also asked whether it holds a token. The tokenizer reads a comment as
-        part of the token after it, and a span with no token is comments
-        only. A span the tokenizer cannot read is not empty: it holds
-        something, and the caveats screen says what was wrong with it.
+        `ingest` emits no statement for text that is only comments, so any
+        statement it gives holds SQL. A span the tokenizer cannot read is
+        still a statement: it holds something, and the caveats screen says
+        what was wrong with it.
         """
         with tempfile.TemporaryDirectory(prefix="dbtw-check-") as scratch:
             for name, text in files.items():
                 (Path(scratch) / name).write_text(text, encoding="utf-8")
-            result = ingest(Path(scratch), self.dialect)
-            if any(_holds_sql(raw.text, result.dialect) for raw in result.statements):
+            if ingest(Path(scratch), self.dialect).statements:
                 return
         raise EmptySourceError(
             "Nothing to convert. The SQL that you gave contains no statement, only comments "

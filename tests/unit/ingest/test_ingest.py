@@ -88,3 +88,20 @@ def test_unknown_dialect_message_keeps_every_name_in_one_code_span():
     names = sorted(k for k in Dialect.classes if k)
     assert f"`{', '.join(names)}`" in message
     assert findings(message) == []
+
+
+def test_a_file_of_only_comments_gives_no_statement(tmp_path):
+    (tmp_path / "notes.sql").write_text("-- nothing here yet\n/* still nothing */\n")
+
+    result = ingest(tmp_path, dialect="duckdb")
+
+    assert result.statements == ()
+
+
+def test_a_trailing_comment_gives_no_statement_and_keeps_the_indexes(tmp_path):
+    """The index is part of a statement's key, so it counts statements only."""
+    (tmp_path / "a.sql").write_text("SELECT 1;\nSELECT 2;\n-- end of the load\n")
+
+    result = ingest(tmp_path, dialect="duckdb")
+
+    assert [(s.index, s.text) for s in result.statements] == [(0, "SELECT 1"), (1, "SELECT 2")]

@@ -5,6 +5,12 @@ tokens), and BEGIN/CASE...END depth tracking keeps procedure bodies whole.
 Comments occupy the raw text between statements, so slicing between
 semicolon offsets attaches leading comments to the following statement.
 
+A piece with no token is not a statement, and it is not emitted. The
+tokenizer gives a comment no token, so such a piece is only comments: the
+text after the last statement, a file of only comments, or the text before
+a `;` that closes nothing. Emitted, it was classified as a statement that
+could not be parsed, and it showed as pending work.
+
 A span's text keeps those leading comments, because they become the leading
 comments of the model. Its `line_start` is the line of its first SQL token,
 because that is the line a reader looks for: a Decision that cites the
@@ -61,23 +67,25 @@ def split_sql(text: str, dialect: str | None = None) -> list[Span]:
         elif tok.token_type == TokenType.END:
             depth = max(0, depth - 1)
         elif tok.token_type == TokenType.SEMICOLON and depth == 0:
-            span = _span_between(text, start, tok.start, first)
-            if span:
-                spans.append(span)
+            if first is not None:
+                span = _span_between(text, start, tok.start, first)
+                if span:
+                    spans.append(span)
             start = tok.end + 1
             first = None
-    tail = _span_between(text, start, len(text), first)
-    if tail:
-        spans.append(tail)
+    if first is not None:
+        tail = _span_between(text, start, len(text), first)
+        if tail:
+            spans.append(tail)
     return spans
 
 
 def _span_between(text: str, begin: int, end: int, first: int | None = None) -> Span | None:
     """The statement in `text[begin:end]`, or None when it is only whitespace.
 
-    `first` is the offset of its first SQL token. It is None when the piece
-    has no token: a piece that is only a comment, or input that could not be
-    tokenized. Then the statement starts where its text starts.
+    `first` is the offset of its first SQL token. It is None only for input
+    that could not be tokenized: `split_sql` emits no piece that tokenized to
+    nothing. Then the statement starts where its text starts.
     """
     piece = text[begin:end]
     stripped = piece.strip()
