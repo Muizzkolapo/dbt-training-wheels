@@ -241,24 +241,32 @@ def test_an_unparseable_reason_keeps_the_detail_from_sqlglot():
 def test_an_unparseable_reason_names_the_dialect_option_when_no_dialect_was_given():
     reason = _unparseable()
 
-    assert "--dialect" in reason
+    assert "start dbtw again with the --dialect option" in reason, "convert and web both take it"
     assert "`--dialect postgres`" in reason
     assert "may use the syntax of one database" in reason
+
+
+def test_the_dialect_advice_does_not_claim_the_dialect_is_the_cause():
+    # A plain typo fails to parse too. The advice is a condition, not a cause.
+    reason = _unparseable("SELECT 1 FROM")
+
+    assert "If the SQL is correct, it may use the syntax of one database." in reason
+    assert "The SQL may use" not in reason
 
 
 def test_an_unparseable_reason_names_the_dialect_that_was_given():
     reason = _unparseable(dialect="tsql")
 
-    assert "tsql" in reason
+    assert "as the tsql dialect" in reason
     assert "`--dialect postgres`" not in reason, "the example is for a run with no dialect"
-    assert "--dialect" in reason
+    assert "start dbtw again with its name in the --dialect option" in reason
 
 
 def test_a_statement_sqlglot_cannot_tokenize_still_gets_a_clean_reason():
     # An unterminated string fails in the tokenizer, with no line or token.
     reason = _unparseable("SELECT 'abc")
 
-    assert "could not parse" in reason
+    assert "could not parse the statement that starts at line 30" in reason
     assert "\x1b" not in reason
     assert "\n" not in reason
     assert "--dialect" in reason
@@ -273,6 +281,24 @@ def test_a_token_object_in_the_sqlglot_detail_is_shown_as_its_text():
     assert "the end of the statement" in reason
 
 
+def test_a_python_class_in_the_sqlglot_detail_is_shown_as_its_name():
+    # sqlglot writes "missing for <class 'sqlglot.expressions.core.EQ'>".
+    reason = _unparseable("SELECT * FROM t WHERE a = = 1")
+
+    assert "<class" not in reason
+    assert "sqlglot.expressions" not in reason
+    assert "`Required keyword: 'expression' missing for EQ`" in reason
+
+
+def test_an_escape_byte_in_the_token_does_not_reach_the_reason():
+    # The token is the SQL text of the reader. An ESC byte in it would be a
+    # terminal code on the screen, the same as the codes sqlglot adds.
+    reason = _unparseable("SELECT a FROM t WHERE \x1b[4m\x1b")
+
+    assert "\x1b" not in reason
+    assert "line 30" in reason
+
+
 @pytest.mark.parametrize(
     ("text", "dialect"),
     [
@@ -281,6 +307,7 @@ def test_a_token_object_in_the_sqlglot_detail_is_shown_as_its_text():
         ("SELECT a FROM t WHERE x !~ 'y'", None),
         ("SELECT 'abc", None),
         ("SELECT 1 FROM", None),
+        ("SELECT * FROM t WHERE a = = 1", None),
     ],
 )
 def test_an_unparseable_reason_follows_the_structural_rules_of_ste(text, dialect):
