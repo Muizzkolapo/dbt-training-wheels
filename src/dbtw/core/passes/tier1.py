@@ -170,6 +170,18 @@ def build_models_pass(state: PassState) -> PassState:
     )
 
 
+def handover_key(source_file: str, index: int) -> str:
+    """The key of the Decision `truncate_insert_pass` leaves when it hands a
+    column-list pair to tier 2.
+
+    One function rather than one f-string in each pass: tier 2 removes this
+    Decision once it has claimed the pair, and a spelling that drifted
+    between the two would leave the handover note standing beside the
+    conversion it promised -- silently, since nothing else reads it.
+    """
+    return f"tier1.truncate_insert.{source_file}:{index}"
+
+
 def truncate_insert_pass(state: PassState) -> PassState:
     pending = list(state.pending)
     drafts = state.drafts
@@ -203,7 +215,7 @@ def truncate_insert_pass(state: PassState) -> PassState:
         if isinstance(node.this, exp.Schema):
             decisions.append(
                 Decision(
-                    key=f"tier1.truncate_insert.{stmt.raw.source_file}:{index}",
+                    key=handover_key(stmt.raw.source_file, index),
                     tier=2,
                     action=(
                         f"deferred: TRUNCATE+INSERT into {table.name} has an explicit column list"

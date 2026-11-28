@@ -1159,21 +1159,21 @@ def test_the_engine_refuses_an_example_for_every_caveat_so_the_screen_shows_none
     `worked_example`'s first refusal is `not decision.question or
     decision.subject is None`, and every Decision that asks nothing carries
     both. **Dropping that refusal and handing every caveat a subject closes
-    none of the eleven** -- measured, not reasoned about. Three further
+    none of the ten** -- measured, not reasoned about. Three further
     blockers stand behind it, and they are independent of each other:
 
-    * seven of the eleven are `assemble.*` Decisions whose keys carry no
+    * seven of the ten are `assemble.*` Decisions whose keys carry no
       statement index, so `statement_index(d) is None` and the pairing
       `worked_example` uses to find the model returns nothing. Pairing them
       needs a channel the `Decision` contract does not have;
-    * two are `truncate_insert` Decisions over a model that is not
+    * one is a `truncate_insert` Decision over a model that is not
       incremental at all, and `worked_example` has two branches -- merge and
       append -- neither of which describes a full rebuild;
     * two are over a `SELECT *`, whose output columns are not knowable at
       convert time, and those are never closable by anything.
 
     And the shape is wrong for most of them regardless: `Example` models one
-    row before and after, while seven of the eleven are not row-shaped. A
+    row before and after, while seven of the ten are not row-shaped. A
     rename's honest picture is two tables, not two rows.
 
     So this is not a two-line fix waiting to be scoped. It is a core change
@@ -1186,7 +1186,7 @@ def test_the_engine_refuses_an_example_for_every_caveat_so_the_screen_shows_none
     app, client, session = walk(walk_sql)
     view = session.view()
     silent = [d for d in view.change.decisions if not d.question]
-    assert len(silent) == 11, "this conversion records eleven decisions it asks nothing about"
+    assert len(silent) == 10, "this conversion records ten decisions it asks nothing about"
 
     for decision in silent:
         assert decision.subject is None, f"{decision.key} now carries a subject"
@@ -1572,3 +1572,28 @@ def test_the_describe_step_asks_until_every_model_has_a_description(
         assert saved.status_code == 302
 
     assert _described_state(session.view().change) == "ok"
+
+
+@pytest.mark.parametrize("url", ["/questions/0", "/everything"])
+def test_a_proposal_nobody_has_taken_is_marked_proposed_not_chosen(
+    walk: Walk, sql_script, url: str
+) -> None:
+    """The rail's red dot says the question wants an answer, and the option
+    the engine proposed said "Chosen" beside it -- two marks on one screen
+    disagreeing about whether anybody had decided. Nobody had. The proposal
+    is the engine's reading of the SQL, which is exactly what the question
+    exists to put to the reader.
+    """
+    app, client, session = walk(sql_script(ONE_APPEND))
+    client.post("/mode", data={"mode": "direct" if url == "/everything" else "guided"})
+
+    before = client.get(url).get_data(as_text=True)
+    assert '<p class="mark">Proposed</p>' in before
+    assert '<p class="mark">Chosen</p>' not in before
+
+    key = _append_key(session)
+    assert client.post("/answer", data={"key": key, "kind": "append"}).status_code == 302
+    after = client.get(url).get_data(as_text=True)
+
+    assert '<p class="mark">Chosen</p>' in after
+    assert '<p class="mark">Proposed</p>' not in after

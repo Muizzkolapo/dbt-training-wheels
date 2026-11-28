@@ -79,7 +79,7 @@
       </fieldset>
       {%- endif %}
       <button type="submit"><span data-engine>{{ choice.option.label }}</span></button>
-      {%- if choice.chosen %}<p class="mark">Chosen</p>{% endif %}
+      {%- if choice.chosen %}<p class="mark">{% if choice.answered %}Chosen{% else %}Proposed{% endif %}</p>{% endif %}
     </form>
   </li>
   {%- endfor %}
@@ -91,6 +91,7 @@
 {%- if example.key %}
 <p class="matched"><span data-engine>{{ example.key }}</span></p>
 {%- endif %}
+<div class="scroll">
 <table>
   <thead>
     <tr>
@@ -119,5 +120,6 @@
     {%- endfor %}
   </tbody>
 </table>
+</div>
 {%- endif %}
 {% endblock %}

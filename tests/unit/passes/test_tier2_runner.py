@@ -261,3 +261,41 @@ def test_a_tier1_draft_at_a_later_index_supersedes_an_earlier_tier2_candidate():
     assert draft.incremental_strategy is None
     assert "raw_e" not in draft.body  # the earlier append candidate's body does not survive
     assert any("superseded" in d.action for d in out.decisions)
+
+
+def _about(out, line_text: str):  # type: ignore[no-untyped-def]
+    return [d for d in out.decisions if line_text in d.action]
+
+
+def test_a_column_list_pair_tier2_converts_leaves_no_promise_that_it_would() -> None:
+    """Tier 1 records "deferred ... left for that pass" when it hands a
+    column-list pair to tier 2. Once tier 2 has converted the pair, that
+    record is a promise already kept, and the reader was shown both: a
+    "deferred" line directly above the line saying the same statements
+    became a model.
+    """
+    stmts = (
+        _stmt("TRUNCATE TABLE stg_b", "truncate"),
+        _stmt("INSERT INTO stg_b (a, b) SELECT x, y FROM raw_b", "insert_select"),
+    )
+    out = run_passes(stmts, dialect=None)
+
+    assert not [d for d in out.decisions if d.action.startswith("deferred")]
+    (made,) = _about(out, "became one model")
+    assert "stg_b" in made.action
+
+
+def test_a_column_list_pair_tier2_refuses_says_why_once() -> None:
+    """The control: tier 2 claims the pair and refuses it. Its own refusal
+    says why; tier 1's handover note beside it would be a second "deferred"
+    line about the same statement, saying less.
+    """
+    stmts = (
+        _stmt("TRUNCATE TABLE stg_c", "truncate"),
+        _stmt("INSERT INTO stg_c (a, b) SELECT * FROM raw_c", "insert_select"),
+    )
+    out = run_passes(stmts, dialect=None)
+
+    deferred = [d for d in out.decisions if d.action.startswith("deferred")]
+    assert len(deferred) == 1
+    assert "selects *" in deferred[0].action

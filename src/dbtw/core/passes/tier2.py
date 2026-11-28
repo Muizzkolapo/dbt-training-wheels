@@ -18,6 +18,7 @@ from sqlglot import exp
 from dbtw.core.ingest.types import ClassifiedStatement
 from dbtw.core.naming import compare_targets, qualified_name, same_identifier, target_key
 from dbtw.core.passes.collisions import replace_draft, written_earlier
+from dbtw.core.passes.tier1 import handover_key
 from dbtw.core.passes.types import (
     Decision,
     ModelDraft,
@@ -311,6 +312,12 @@ def truncate_insert_columns_pass(state: PassState) -> PassState:
         # INSERT. Removing it here, before any branch below, means a truncate
         # can be claimed at most once — see the docstring.
         del truncates[key]
+        # Claimed, so tier 1's handover note is a promise kept. Every branch
+        # below records this pass's own Decision about the pair -- converted,
+        # or refused with the reason -- so leaving the note would show the
+        # reader "deferred ... left for that pass" beside what that pass did.
+        handover = handover_key(stmt.raw.source_file, index)
+        decisions = [d for d in decisions if d.key != handover]
         columns = node.this.expressions
         select = node.expression
         projections = select.expressions if isinstance(select, exp.Select) else []
