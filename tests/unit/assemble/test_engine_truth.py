@@ -367,3 +367,92 @@ def test_layer_option_texts_are_sentences() -> None:
             for text in (option.effect, option.plain):
                 assert text[0].isupper(), text
                 assert text.endswith("."), text
+
+
+# --- review of #58: cross-project wording, the read count, the fallback
+
+ONLY_CROSS = "INSERT INTO revenue_events SELECT c.name FROM analytics.dim_customers AS c;\n"
+
+
+def _answered_cross(sql: str):  # type: ignore[no-untyped-def]
+    elsewhere = (context_for("core_platform"),)
+    pristine = convert(sql, project=THREE, elsewhere=elsewhere)
+    (question,) = [d for d in pristine.decisions if d.key == "assemble.cross_ref.dim_customers"]
+    return convert(
+        sql,
+        project=THREE,
+        elsewhere=elsewhere,
+        answers={question.key: answer_for(question, "cross_ref")},
+    )
+
+
+def test_a_rewrite_to_another_project_only_does_not_claim_this_project() -> None:
+    change = _answered_cross(ONLY_CROSS)
+
+    (rewrite,) = [d for d in change.decisions if d.key.startswith("assemble.rewrite.")]
+    assert "of this project" not in rewrite.reason, rewrite.reason
+    assert "a model of another project" in rewrite.reason, rewrite.reason
+
+
+def test_a_rewrite_to_both_projects_names_both() -> None:
+    change = _answered_cross(NIGHTLY)
+
+    (rewrite,) = [d for d in change.decisions if d.key == "assemble.rewrite.revenue_events"]
+    assert "a model or a source of this project" in rewrite.reason, rewrite.reason
+    assert "a model of another project" in rewrite.reason, rewrite.reason
+
+
+def test_a_self_join_of_one_raw_table_is_not_placed_in_staging() -> None:
+    """A staging model uses no join, as the glossary says. Two reads of one
+    table are a join, so the rule counts reads, not only distinct tables."""
+    sql = (
+        "CREATE TABLE order_pairs AS SELECT a.id, b.id AS parent_id FROM raw.orders AS a "
+        "JOIN raw.orders AS b ON b.id = a.parent_id;\n"
+    )
+    change = convert(sql, project=THREE)
+
+    assert _model(change, "order_pairs").layer != "staging"
+    question = _layer(change, "order_pairs")
+    assert "reads one table from outside this conversion 2 times" in question.plain_reason, (
+        question.plain_reason
+    )
+
+
+def test_a_union_of_two_raw_tables_is_worded_as_combining_not_joining() -> None:
+    sql = "CREATE TABLE all_orders AS SELECT id FROM raw.web UNION ALL SELECT id FROM raw.shop;\n"
+    change = convert(sql, project=THREE)
+
+    question = _layer(change, "all_orders")
+    assert "join" not in question.reason.lower(), question.reason
+    assert "combines" in question.reason, question.reason
+    assert "all_orders combines 2 tables" in question.plain_reason, question.plain_reason
+
+
+def test_a_join_model_that_falls_back_to_staging_says_why_to_the_reader() -> None:
+    """sources_at_root has only a staging layer. A model that combines two
+    tables is not staging, and lands there only because nothing else exists.
+    The reader sees that, in both registers, as a tier-2 Decision."""
+    change = convert(JOINED_ALONE, project="sources_at_root")
+
+    assert _model(change, "revenue_events").layer == "staging"
+    (record,) = [d for d in change.decisions if d.key == "assemble.layer_fallback.revenue_events"]
+    assert record.tier == 2
+    assert "is not a staging model" in record.reason, record.reason
+    assert "revenue_events combines 2 tables" in record.plain_reason, record.plain_reason
+    assert "no folder" in record.plain_reason, record.plain_reason
+
+
+def test_the_fallback_of_a_placement_that_is_a_fact_stays_mechanical() -> None:
+    """The middle model of a chain is intermediate by what reads it. With no
+    intermediate layer it falls back, and that record stays tier 1: the rule
+    was not a guess, and the reader has nothing to decide."""
+    chain = (
+        "INSERT INTO a_events SELECT id FROM raw_orders;\n"
+        "CREATE TABLE b_events AS SELECT id FROM a_events;\n"
+        "CREATE TABLE c_events AS SELECT id FROM b_events;\n"
+    )
+    change = convert(chain, project="sources_at_root")
+
+    (middle,) = [d for d in change.decisions if d.key == "assemble.layer_fallback.b_events"]
+    assert middle.tier == 1
+    assert not middle.plain_reason

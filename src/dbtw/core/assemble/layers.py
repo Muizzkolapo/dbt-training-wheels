@@ -46,9 +46,14 @@ def layer_roles(ctx: ProjectContext) -> dict[str, LayerInfo | None]:
 # like the end of the pipeline, and it is equally what an intermediate model
 # looks like on the day before the mart that will read it is written. A guess.
 #
-# `joins_read` and `joins_unread`: the model reads no model of ours but two or
-# more tables from outside this conversion. It combines tables, so it is not a
-# one-for-one staging model, whatever else the graph says about its inputs.
+# `joins_read` and `joins_unread`: the model reads no model of ours, but it
+# reads tables from outside this conversion two or more times. A join of two
+# tables, a UNION of two, an `IN (SELECT ...)` against a second table and a
+# self-join of one table all qualify: each combines rows from two reads. So it
+# is not a one-for-one staging model, whatever else the graph says about its
+# inputs. Reads are counted, not only distinct tables, because a self-join
+# reads one table and still joins -- and the glossary says that a staging
+# model uses no joins.
 # Placing it in staging was the first shape of this, and it put a join into
 # the layer that the glossary tells the reader holds no joins. The proposal is
 # the layer after staging that the graph supports: intermediate when other
@@ -72,14 +77,17 @@ class Placement:
     """The role the dependency graph proposes for one model, and the rule
     that proposed it.
 
-    `outside` is how many distinct tables the model reads that this
-    conversion does not build, not counting its own target. The reason names
-    it, so it is carried rather than counted twice.
+    `tables` is how many distinct tables the model reads that this
+    conversion does not build, not counting its own target. `reads` is how
+    many times the body reads such a table: a self-join is one table and two
+    reads. The rule decides on `reads`, and the reason names both, so they
+    are carried rather than counted twice.
     """
 
     role: str
     rule: Rule
-    outside: int
+    tables: int
+    reads: int
 
     @property
     def asked(self) -> bool:
@@ -91,18 +99,19 @@ def placement_for(
     name: str,
     deps: Mapping[str, frozenset[str]],
     dependents: Mapping[str, frozenset[str]],
-    outside: int,
+    tables: int,
+    reads: int,
 ) -> Placement:
     read_by_ours = bool(dependents.get(name))
     if not deps.get(name):
-        if outside < 2:
-            return Placement("staging", "one_table", outside)
+        if reads < 2:
+            return Placement("staging", "one_table", tables, reads)
         if read_by_ours:
-            return Placement("intermediate", "joins_read", outside)
-        return Placement("mart", "joins_unread", outside)
+            return Placement("intermediate", "joins_read", tables, reads)
+        return Placement("mart", "joins_unread", tables, reads)
     if read_by_ours:
-        return Placement("intermediate", "read_by_models", outside)
-    return Placement("mart", "end_of_chain", outside)
+        return Placement("intermediate", "read_by_models", tables, reads)
+    return Placement("mart", "end_of_chain", tables, reads)
 
 
 def placement_reason(name: str, placement: Placement) -> str:
@@ -113,10 +122,16 @@ def placement_reason(name: str, placement: Placement) -> str:
     """
     graph = "this conversion reads its own dependency graph"
     if placement.rule in ("joins_read", "joins_unread"):
+        if placement.tables > 1:
+            read = f"{name} reads {placement.tables} tables that this conversion does not build"
+        else:
+            read = (
+                f"{name} reads one table that this conversion does not build "
+                f"{placement.reads} times"
+            )
         combined = (
-            f"{name} reads {placement.outside} tables that this conversion does not build, "
-            "and no model of this conversion. A staging model tidies one raw table and uses "
-            f"no join, so {name} is not a staging model"
+            f"{read}, and no model of this conversion. A staging model reads one raw table "
+            f"one time and combines nothing, so {name} is not a staging model"
         )
         if placement.rule == "joins_read":
             proposal = (
@@ -149,14 +164,41 @@ def _refuse_unasked(name: str, placement: Placement) -> None:
 
 def placement_plain(name: str, placement: Placement) -> str:
     """The rule that placed `name`, for a reader who has never used dbt."""
+    guess = (
+        f"That place is a guess about how you will use {name}. You know that better than "
+        "this tool does."
+    )
+    return f"{_rule_plain(name, placement)} {guess}"
+
+
+def fallback_plain(name: str, placement: Placement, layer: LayerInfo) -> str:
+    """The rule that placed `name`, and why the model is somewhere else.
+
+    The project has no layer for the place the rule proposed, so there was no
+    question to ask. Without this the reader saw a model that combines tables
+    sitting in staging, which the glossary says holds no joins, and nothing
+    on the screen said why.
+    """
+    return (
+        f"{_rule_plain(name, placement)} Your project has no folder for that kind of "
+        f"model. So this tool put {name} in {layer.path}/. To use another place, add "
+        "that folder to the project and move the file there."
+    )
+
+
+def _rule_plain(name: str, placement: Placement) -> str:
     found = "This tool found the place from what reads what."
     end = f"So {name} looks like the end of the chain, where people query the result."
     middle = f"So {name} looks like a step in the middle of the chain."
     if placement.rule in ("joins_read", "joins_unread"):
-        why = (
-            f"{name} combines {placement.outside} tables from outside this conversion. A "
-            "model that only tidies one table does not combine tables."
-        )
+        if placement.tables > 1:
+            read = f"{name} combines {placement.tables} tables from outside this conversion."
+        else:
+            read = (
+                f"{name} reads one table from outside this conversion {placement.reads} "
+                "times, and combines the rows."
+            )
+        why = f"{read} A model that only tidies one table does not combine rows."
         if placement.rule == "joins_read":
             where = f"Other models here read {name}. {middle}"
         else:
@@ -165,11 +207,7 @@ def placement_plain(name: str, placement: Placement) -> str:
         _refuse_unasked(name, placement)
         why = f"{name} reads other models from this conversion."
         where = f"Nothing here reads {name}. {end}"
-    guess = (
-        f"That place is a guess about how you will use {name}. You know that better than "
-        "this tool does."
-    )
-    return f"{found} {why} {where} {guess}"
+    return f"{found} {why} {where}"
 
 
 def layer_options(

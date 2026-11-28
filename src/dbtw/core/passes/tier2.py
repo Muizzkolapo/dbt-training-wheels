@@ -1568,7 +1568,7 @@ def merge_pass(state: PassState) -> PassState:
                     "with every column that the model selects, and inserts a row that "
                     f"matches none. This MERGE {performed}"
                 ),
-                question=f"does {key_list} uniquely identify a row in {table.name}?",
+                question=f"Does {key_list} uniquely identify a row in {table.name}?",
                 plain_question=(
                     f"In {table.name}, is there only ever one row for each {key_list}?"
                 ),

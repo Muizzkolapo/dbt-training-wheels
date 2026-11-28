@@ -268,6 +268,10 @@ def _texts(tmp: Path) -> dict[str, set[str]]:
     for decision in _conversions(tmp):
         for text in _decision_texts(decision):
             add(_origin(decision), text)
+        # Kept apart as well, because a question has one more rule than the
+        # rest: the report renders it as "Question: <text>", alone.
+        for text in (decision.question, decision.plain_question):
+            add(QUESTIONS, text)
     for text in _refusals(tmp):
         add("refusals", text)
     return by_origin
@@ -364,6 +368,20 @@ def texts(tmp_path_factory: pytest.TempPathFactory) -> dict[str, set[str]]:
     return _texts(tmp_path_factory.mktemp("ste"))
 
 
+# Not an origin: every question and plain question, whatever made it.
+QUESTIONS = "questions"
+
+
+def question_findings(text: str) -> list[str]:
+    """How `text` fails to read as one question on its own."""
+    found: list[str] = []
+    if not text[:1].isupper():
+        found.append(f"starts lower-case: {text}")
+    if not text.endswith("?"):
+        found.append(f"does not end with '?': {text}")
+    return found
+
+
 ORIGINS = ("teach", "intro", "report", "tier1", "tier2", "assemble", "emit", "refusals")
 
 
@@ -429,3 +447,20 @@ def test_the_check_catches_each_rule(text: str, rule: str) -> None:
 )
 def test_the_check_passes_text_that_keeps_the_rules(text: str) -> None:
     assert findings(text) == []
+
+
+def test_every_question_is_a_sentence_that_asks(texts) -> None:  # type: ignore[no-untyped-def]
+    """A screen shows a question alone, and the report renders it as
+    "Question: <text>". So each one starts with a capital and ends with "?".
+    A merge question once read "Question: does order_id uniquely identify..."."""
+    asked = texts.get(QUESTIONS, set())
+    assert len(asked) > 5, "too few questions collected to check anything"
+    found = [f for text in sorted(asked) for f in question_findings(text)]
+
+    assert not found, "\n".join(found)
+
+
+def test_the_question_check_catches_each_rule() -> None:
+    assert question_findings("does order_id identify a row?")
+    assert question_findings("Does order_id identify a row.")
+    assert question_findings("Does order_id identify a row?") == []

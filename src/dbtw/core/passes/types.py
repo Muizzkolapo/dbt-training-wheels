@@ -22,12 +22,14 @@ OptionKind = Literal[
     "merge_checked",
     "inline",
     "var",
-    # The two sides of the one placement this engine guesses at: a model that
+    # The two sides of each placement this engine guesses at. A model that
     # reads our models and is read by none of them is either the end of the
-    # pipeline or the step before a mart that does not exist yet, and only
-    # the reader knows which. Staging is not here because it is never
-    # offered: a model that reads no model of ours is staging by what it
-    # reads, which is a fact rather than a reading of one.
+    # pipeline or the step before a mart that does not exist yet. A model
+    # that reads outside tables two or more times combines rows, and is
+    # either a step or a product. Only the reader knows which. Staging is not
+    # here because it is never offered: a model that reads no model of ours
+    # and reads one outside table one time is staging by what it reads, which
+    # is a fact rather than a reading of one. See `layers.Rule`.
     #
     # The *roles*, not the project's layer names: a project calls its mart
     # layer `marts` or `core` or `facts`, and `layer_roles` maps its own

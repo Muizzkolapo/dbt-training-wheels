@@ -15,6 +15,7 @@ from sqlglot.errors import SqlglotError
 from dbtw.core.assemble.layers import (
     Placement,
     cross_ref_option,
+    fallback_plain,
     layer_options,
     layer_question,
     layer_roles,
@@ -23,7 +24,7 @@ from dbtw.core.assemble.layers import (
     placement_reason,
     source_option,
 )
-from dbtw.core.assemble.refs import references_in
+from dbtw.core.assemble.refs import reads_in, references_in
 from dbtw.core.assemble.resolve import Resolution, resolve_references
 from dbtw.core.assemble.rewrite import rewrite_body
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
@@ -132,6 +133,30 @@ def _resolve_layer(
     reason = f"the model tree of the target project has no {role} layer and no other layer"
     action = f"could not place {name} in a {role} layer: no layer available at all"
     return None, [_decision("layer_fallback", name, action, reason)]
+
+
+def _guessed_fallback(
+    dec: Decision, name: str, placement: Placement, role: str, layer: LayerInfo
+) -> Decision:
+    """The fallback record of a guessed placement, as the reader sees it.
+
+    A guessed placement with no question is one where the project has a
+    layer for at most one side of the fork. The model then lands in a layer
+    the rule did not propose: a model that combines tables can land in
+    staging, which the glossary says holds no joins. A tier-1 note collapses
+    into a count, so the reader never saw why. This record is tier 2, names
+    the rule, and says what to do. The fallback of a placement that is a fact
+    stays tier 1: the reader has nothing to decide there.
+    """
+    return dataclasses.replace(
+        dec,
+        tier=2,
+        reason=(
+            f"{placement_reason(name, placement)}. The target project has no {role} layer, "
+            f"so this conversion placed {name} in the {layer.name} layer"
+        ),
+        plain_reason=fallback_plain(name, placement, layer),
+    )
 
 
 def _cross_ref_questions(
@@ -276,12 +301,14 @@ def _layer_choice(
 ) -> tuple[str, Decision | None]:
     """Which layer this model goes in, and the question that asked.
 
-    The engine's reading of the dependency graph is the proposal -- a model
-    nothing else reads looks like a mart, one that others read looks like
-    intermediate -- and it is a reading, not a fact. A table nobody else
-    reads yet is still intermediate if the mart that will read it is next
-    week's work, and the only person who knows that is the reader. So the
-    derived role is `chosen` and the question is asked anyway.
+    Called only for a guessed placement (`Placement.asked`), and there are
+    two kinds. A model that reads our models and that nothing reads looks
+    like a mart, and it is a reading, not a fact: a table nobody reads yet is
+    still intermediate if the mart that will read it is next week's work. A
+    model that reads outside tables two or more times combines rows, so it is
+    not staging, and nothing in the SQL says whether it is a step or a
+    product. Only the reader knows either, so the derived role is `chosen`
+    and the question is asked anyway. See `layers.Rule` for the other rules.
 
     `None` when the project has fewer than two layers to choose between:
     there is no choice to offer, and a screen asking one would be teaching a
@@ -2466,6 +2493,17 @@ def _rewrite_record(
     """
     resolved = (*refs, *cross, *sources)
     total = len(resolved) + len(unresolved)
+    # What the resolved references now point at. A reference answered "read it
+    # from <project>" points at a model of another project, and a sentence
+    # that put it in this project would be false.
+    here = "a model or a source of this project"
+    there = "a model of another project"
+    if cross and (refs or sources):
+        targets = f"{here}, or {there}"
+    elif cross:
+        targets = there
+    else:
+        targets = here
     parts = []
     if refs:
         parts.append(f"{_counted(len(refs), 'reference')} rewritten to ref()")
@@ -2485,14 +2523,14 @@ def _rewrite_record(
     elif not unresolved:
         action = f"rewrote {model_name}'s body: " + ", ".join(parts)
         reason = (
-            "this conversion mapped each table reference in the body to a model or a source "
-            "of this project, so the body runs as dbt Jinja"
+            f"this conversion rewrote each table reference in the body. Each one now names "
+            f"{targets}. So the body runs as dbt Jinja"
         )
     elif resolved:
         action = f"rewrote {model_name}'s body: " + ", ".join(parts)
         reason = (
             f"this conversion mapped {len(resolved)} of {total} table references in the body "
-            "to a model or a source of this project. dbt fills in the rewritten references. "
+            f"to {targets}. dbt fills in the rewritten references. "
             "Each reference left as written reaches the database exactly as the script "
             "wrote it"
         )
@@ -2562,28 +2600,31 @@ def assemble(
     # named "orders" either). An unqualified reference keeps matching by bare
     # draft name, as before.
     #
-    # The same walk counts the tables each draft reads that no draft builds:
-    # `placement_for` needs it, because a model that combines two of them is
+    # The same walk counts the tables each draft reads that no draft builds,
+    # and how many times it reads them: `placement_for` needs both, because a
+    # model that reads such tables two or more times combines rows, so it is
     # not a one-for-one staging model. A read of a draft's own target (an
     # incremental model reading the table it appends to) is neither a
-    # dependency nor an outside table.
+    # dependency nor an outside read.
     qualified_to_draft_name = {d.qualified_name: d.name for d in drafts}
+
+    def draft_read_by(r: TableRef) -> str | None:
+        if is_qualified(r):
+            return qualified_to_draft_name.get(qualified_name(r))
+        return r.name if r.name in draft_names else None
+
     deps: dict[str, frozenset[str]] = {}
+    outside_tables: dict[str, int] = {}
     outside_reads: dict[str, int] = {}
-    for name in refs:
-        dep_names: set[str] = set()
-        outside = 0
-        for r in refs[name]:
-            if is_qualified(r):
-                dep_draft_name = qualified_to_draft_name.get(qualified_name(r))
-            else:
-                dep_draft_name = r.name if r.name in draft_names else None
-            if dep_draft_name is None:
-                outside += 1
-            elif dep_draft_name != name:
-                dep_names.add(dep_draft_name)
-        deps[name] = frozenset(dep_names)
-        outside_reads[name] = outside
+    for draft in drafts:
+        name = draft.name
+        deps[name] = frozenset(
+            dep for dep in (draft_read_by(r) for r in refs[name]) if dep not in (None, name)
+        )
+        outside_tables[name] = sum(1 for r in refs[name] if draft_read_by(r) is None)
+        outside_reads[name] = sum(
+            1 for r in reads_in(draft.body, state.dialect) if draft_read_by(r) is None
+        )
     dependents: dict[str, set[str]] = {name: set() for name in refs}
     for name, deps_for_name in deps.items():
         for dep in deps_for_name:
@@ -2639,7 +2680,13 @@ def assemble(
 
     for draft_index, draft in enumerate(drafts):
         local_decisions: list[Decision] = []
-        placement = placement_for(draft.name, deps, dependents_frozen, outside_reads[draft.name])
+        placement = placement_for(
+            draft.name,
+            deps,
+            dependents_frozen,
+            outside_tables[draft.name],
+            outside_reads[draft.name],
+        )
         # The layer this conversion proposes, whose default the draft is
         # measured against. None when the project has no layer for the role;
         # the config check below then measures against the fallback layer.
@@ -2663,6 +2710,10 @@ def assemble(
             answers_map,
         )
         layer, layer_decisions = _resolve_layer(role, roles, ctx.layers, draft.name)
+        if placement.asked and layer_question_decision is None and layer is not None:
+            layer_decisions = [
+                _guessed_fallback(d, draft.name, placement, role, layer) for d in layer_decisions
+            ]
 
         final_name, name_decisions = _final_name(draft.name, layer, detections_by_key)
         final_names[draft.name] = final_name
