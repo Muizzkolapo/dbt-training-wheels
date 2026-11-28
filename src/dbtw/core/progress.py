@@ -163,20 +163,26 @@ def _stored_key(projects: Mapping[str, object], project: Path) -> str:
 
 
 def _fault(path: Path, detail: str) -> str:
-    return f"the record of what you have been shown ({path}) could not be read: {detail}"
+    # Two sentences, not one clause: the report splices this in as a sentence
+    # of its own, and the detail (a JSON error, an OS error) has no fixed
+    # length, so a single sentence holding both would pass the STE limit.
+    return (
+        f"this tool could not read the record of the words that it explained to you "
+        f"({path}). The reason: {detail}"
+    )
 
 
 def _counts_fault(shown: object) -> str:
     """Why `shown` is not a mapping of word to how often it was explained."""
     if not isinstance(shown, dict):
-        return f"a project's 'shown' holds {type(shown).__name__}, not an object"
+        return f"the 'shown' value of a project contains {type(shown).__name__}, not an object"
     for name, count in shown.items():
         if not isinstance(name, str):
-            return f"a word is recorded under {type(name).__name__}, not a name"
+            return f"the file records a word under {type(name).__name__}, not under a name"
         # `bool` is an `int` in Python, so True would pass a bare isinstance
         # check and count as one showing -- a record this tool never wrote.
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            return f"{name!r} was explained {count!r} times, which is not a count"
+            return f"the count for {name!r} is {count!r}, which is not a count"
     return ""
 
 
@@ -190,33 +196,38 @@ def _document_fault(loaded: object, path: Path) -> str:
     must not write over a file it did not understand.
     """
     if not isinstance(loaded, dict):
-        return _fault(path, f"it holds {type(loaded).__name__}, not an object")
+        return _fault(path, f"the file contains {type(loaded).__name__}, not an object")
     version = loaded.get("version")
     if version is not None:
         if isinstance(version, bool) or not isinstance(version, int):
-            return _fault(path, f"its version is {version!r}")
+            return _fault(path, f"the version of the file is {version!r}")
         if version > _FILE_VERSION:
             # Refused rather than half-read. A later version writing a field
             # this one does not understand, read for the parts it recognises
             # and then saved back, is how a whole curriculum disappears.
             return _fault(
                 path,
-                f"it was written by a newer version of this tool (format {version}, "
-                f"this one understands {_FILE_VERSION})",
+                f"a newer version of this tool wrote the file (format {version}, and "
+                f"this version reads format {_FILE_VERSION})",
             )
     projects = loaded.get("projects")
     if projects is None:
         return ""
     if not isinstance(projects, dict):
-        return _fault(path, f"its 'projects' holds {type(projects).__name__}, not an object")
+        return _fault(
+            path,
+            f"the 'projects' value of the file contains {type(projects).__name__}, not an object",
+        )
     for name, entry in projects.items():
         if not isinstance(name, str) or not isinstance(entry, dict):
-            return _fault(path, "a project is recorded in a shape this tool does not write")
+            return _fault(
+                path, "the file records a project in a shape that this tool does not write"
+            )
         conversions = entry.get("conversions")
         if conversions is not None and (
             isinstance(conversions, bool) or not isinstance(conversions, int) or conversions < 0
         ):
-            return _fault(path, f"a project records {conversions!r} conversions")
+            return _fault(path, f"the file records {conversions!r} conversions for a project")
         shown = entry.get("shown")
         if shown is not None:
             fault = _counts_fault(shown)

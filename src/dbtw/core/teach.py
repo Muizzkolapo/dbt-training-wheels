@@ -80,39 +80,42 @@ GLOSSARY: tuple[Term, ...] = (
     Term(
         name="dbt compile",
         plain=(
-            "Works out the SQL each model really stands for -- every filled-in name "
-            "replaced by the thing it names -- and writes that SQL to a file for you "
-            "to read. Nothing is sent to the database and no table changes: this is "
-            "the command for seeing exactly what run would send, before you send it."
+            "Creates the actual SQL that each model stands for, and writes that SQL to a "
+            "file for you to read. In that SQL, dbt replaces each filled-in name with "
+            "the thing that the name stands for. The command sends nothing to the "
+            "database, and no table changes. Use this command to see exactly what run "
+            "would send, before you send it."
         ),
     ),
     Term(
         name="dbt run",
         plain=(
-            "Sends each model's SQL to the database and creates or replaces the table "
-            "or view that model describes. This is the command that changes what is "
-            "stored. It checks nothing afterwards: compile shows you what it would "
-            "send, and build is this same command with the checks folded into it."
+            "Sends the SQL of each model to the database, and creates or replaces the "
+            "table or view that the model describes. This command is the one that "
+            "changes what the database stores. The command checks nothing after the "
+            "write. The compile command shows you what this command would send. The "
+            "build command is this same command, with the checks included."
         ),
     ),
     Term(
         name="dbt test",
         plain=(
-            "Evaluates the checks declared in the .yml files beside your models and "
-            "reports which ones failed. You invoke it yourself, and it reads tables "
-            "that have already been written: it tells you a table contains bad data "
-            "after that data is in it, and it cannot undo the write. build is the "
-            "command that does this alongside the writing, one model at a time."
+            "Evaluates the checks that the .yml files next to your models declare. Then "
+            "the command reports which checks failed. You start this command yourself. "
+            "The command reads tables that have already been written. The command tells "
+            "you that a table contains bad data after that data is in the table. The "
+            "command cannot undo the write. The build command does these checks during "
+            "the writing, one model at a time."
         ),
     ),
     Term(
         name="dbt build",
         plain=(
-            "Does the work of run and test together, one model at a time and in "
-            "dependency order: write a model, check it, then move on to the models "
-            "that read from it. If a check fails, dbt leaves the rest of that chain "
-            "alone -- and the table it had already written is still there, exactly "
-            "as it was written."
+            "Does the work of run and test together, one model at a time, in dependency "
+            "order. For each model, the command writes the model and then checks it. "
+            "Then the command goes to the models that read from that model. If a check "
+            "fails, dbt does not change the rest of that chain. The table that dbt "
+            "already wrote is still there, exactly as dbt wrote it."
         ),
     ),
     Term(
@@ -123,103 +126,110 @@ GLOSSARY: tuple[Term, ...] = (
         # idea, free to drift -- the thing this module exists to prevent.
         seen_as=("materialization",),
         plain=(
-            "A setting at the top of a model saying what dbt should create in the "
-            "database for it. `table` means the rows are worked out once and stored; "
-            "`view` means only the query is stored, and the rows are worked out again "
-            "every time something reads them. It is set per model, and a project can "
-            "set a default for a whole folder of them."
+            "A setting at the top of a model. The setting tells dbt what to create in "
+            "the database for that model. The value `table` means that the database "
+            "calculates the rows one time and stores them. The value `view` means that "
+            "the database stores only the query. Then the database calculates the rows "
+            "again each time something reads them. The setting applies to one model, and "
+            "a project can set a default for a whole folder of models."
         ),
     ),
     Term(
         name="incremental",
         plain=(
-            "A way of bringing a table up to date by adding to what is in it rather "
-            "than building it again from nothing. The first time, dbt writes the "
-            "whole table; after that it writes only the rows the model's own filter "
-            "selects, adding them or updating the rows they match. Quicker on a large "
-            "table, and it means the table's contents depend on every earlier update "
-            "rather than on the last one alone."
+            "A way to update a table by adding to the rows in it, not by creating the "
+            "table again from nothing. The first time, dbt writes the "
+            "whole table. After that, dbt writes only the rows that the model's own "
+            "filter selects. Each such row goes into the table as a new row, or updates "
+            "the row that it matches. This method is quicker on a large table. With "
+            "this method, the contents of the table also depend on every earlier "
+            "update, not on the last update alone."
         ),
     ),
     Term(
         name="unique_key",
         plain=(
-            "The column dbt matches rows on when it updates a table in place. A row "
-            "the model produces whose value in that column is already in the table "
-            "replaces the row that has it; a row whose value is not there is added. "
-            "Name a column whose values repeat and rows that should have stayed "
-            "separate overwrite one another."
+            "The column that dbt uses to match rows when it updates a table in place. "
+            "For each row that the model produces, dbt examines the value in that column. "
+            "If the table already has that value, the new row replaces the row that has "
+            "it. If the table does not have that value, dbt adds the new row. If you "
+            "name a column whose values repeat, rows that should stay separate "
+            "overwrite one another."
         ),
     ),
     Term(
         name="staging",
         plain=(
-            "A layer of models, not a deployment environment. `staging` here is the "
-            "folder of models that tidy raw tables one for one -- renamed "
-            "columns, corrected types, no joins -- so that the models built after "
-            "them start from something clean. It has nothing to do with "
-            "staging-versus-production: the same folder exists wherever the project "
-            "is deployed."
+            "A layer of models, not a deployment environment. Here, `staging` is the "
+            "folder of models that tidy raw tables one for one, so that later models "
+            "start from something clean. These models rename columns and correct types, and "
+            "they do not use joins. The word has no relation to "
+            "staging versus production. The same folder exists in each place where "
+            "the project is deployed."
         ),
     ),
     Term(
         name="{{ }}",
         seen_as=("{{",),
         plain=(
-            "The double curly brackets in a model file mark something dbt fills in "
-            "before the SQL is sent. What sits inside them is not SQL -- it is an "
-            "instruction to dbt, and the database receives the result of it in that "
-            "place. Everything outside them is ordinary SQL and reads as SQL."
+            "The double curly brackets in a model file mark a part that dbt replaces "
+            "before dbt sends the SQL. The text inside the brackets is not SQL. That "
+            "text is an instruction to dbt, and the database receives the result of "
+            "the instruction in that place. Everything outside the brackets is "
+            "ordinary SQL and reads as SQL."
         ),
     ),
     Term(
         name="Jinja",
         plain=(
-            "The templating language the double curly brackets in a model file "
-            "belong to. It is what lets a model file carry instructions to dbt "
-            "beside its SQL; dbt works through them first and hands the database "
-            "plain SQL. You do not have to write any of it to read a converted "
-            "model -- the only parts it fills in are the ones inside double brackets."
+            "The templating language that the double curly brackets in a model file "
+            "belong to. This language lets a model file contain instructions to dbt "
+            "next to its SQL. First, dbt processes these instructions. Then dbt gives "
+            "plain SQL to the database. You do not have to write any of this language "
+            "to read a converted model. The only parts that this language changes are "
+            "the parts inside double brackets."
         ),
     ),
     Term(
         name="ref()",
         seen_as=("ref(",),
         plain=(
-            "How a model names another model instead of naming the table that model "
-            "writes. dbt reads the name out of it, works out that the model named has "
-            "to be written first, and puts the real table name into the SQL. Rename a "
-            "model and every one of these follows it; a table name typed in by hand "
-            "would not."
+            "How a model names another model, in place of the table that the other "
+            "model writes. From this call, dbt reads the name of the other model. Then "
+            "dbt finds that it must write the other model first, and puts the real "
+            "table name into the SQL. If you rename a model, dbt uses the new table name "
+            "in place of each of these calls. A table name that you type by hand would "
+            "not follow the rename."
         ),
     ),
     Term(
         name="source()",
         seen_as=("source(",),
         plain=(
-            "How a model names a table dbt did not create -- one that something else "
-            "loaded into the database. The names come from a .yml file mapping a "
-            "short name onto a real schema and table, so when that table moves you "
-            "change the .yml file rather than every model. The same idea as naming "
-            "another model, for tables from outside the project."
+            "How a model names a table that dbt did not create. Something else loaded "
+            "that table into the database. The names come from a .yml file that maps a "
+            "short name to a real schema and table. When that table moves, you change "
+            "the .yml file, not every model. The idea is the same as naming another "
+            "model, but for tables from outside the project."
         ),
     ),
     Term(
         name="config()",
         seen_as=("config(",),
         plain=(
-            "The settings at the top of a model file, written as a call rather than "
-            "as SQL: what dbt should create for the model, how it should be brought "
-            "up to date, and so on. dbt reads them and takes them out before the "
-            "query is sent, so they never reach the database."
+            "The settings at the top of a model file, written as a call and not as SQL. "
+            "For example, the settings tell dbt what to create for the model and how to "
+            "update the model. Before dbt sends the query, dbt reads these "
+            "settings and removes them. So the settings never reach the database."
         ),
     ),
     Term(
         name="warehouse",
         plain=(
-            "The database the SQL actually runs in -- Snowflake, BigQuery, Redshift, "
-            "Postgres and so on. dbt stores no data of its own: it sends SQL to the "
-            "warehouse, and every table this conversion talks about lives there."
+            "The database where the SQL actually runs. Examples are Snowflake, "
+            "BigQuery, Redshift, Postgres and other databases. dbt stores no data of its "
+            "own. dbt sends SQL to the warehouse. Every table that this conversion "
+            "mentions is in the warehouse."
         ),
     ),
 )

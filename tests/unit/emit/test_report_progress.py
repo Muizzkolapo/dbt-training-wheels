@@ -12,10 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.unit.emit.test_report import _change
+from tests.unit.test_ste_wording import findings
 
 from dbtw.core.context import read_project
 from dbtw.core.emit.report import MET_HEADING, render_report
-from dbtw.core.progress import FULL_SHOWINGS, NOTHING_EXPLAINED, Progress
+from dbtw.core.progress import FULL_SHOWINGS, NOTHING_EXPLAINED, Progress, load_progress
 from dbtw.core.teach import GLOSSARY, terms_in
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "projects"
@@ -144,7 +145,7 @@ def test_a_report_where_every_word_is_folded_is_a_pointer_not_an_empty_promise()
 
     glossary = report.split(GLOSSARY_HEADING)[1].split("\n## ")[0]
     assert "- **" not in glossary, "nothing is defined here, so nothing should look defined"
-    assert "none is repeated here" in glossary
+    assert "repeats none of them here" in glossary
     assert "ref()" in glossary, "the words are still named, so the reader sees what was skipped"
     assert MET_HEADING in report
 
@@ -157,3 +158,20 @@ def test_every_folded_word_is_defined_below_however_many_there_are() -> None:
     below = report.split(MET_HEADING)[1]
     for term in terms_in(report.split(MET_HEADING)[0]):
         assert f"- **{term.name}** — {term.plain}" in below
+
+
+def test_the_unreadable_record_notice_keeps_the_ste_rules(tmp_path: Path) -> None:
+    """The notice splices in a path and an error text of no fixed length, so
+    the static report constants alone cannot show that it stays within the
+    sentence limit. Rendered from a real damaged record, the way the reader
+    meets it.
+    """
+    store = tmp_path / "learned.json"
+    store.write_text("{not json at all", encoding="utf-8")
+    progress = load_progress(tmp_path / "analytics", path=store)
+
+    glossary = _report(progress).split(GLOSSARY_HEADING)[1].split("\n## ")[0]
+    notice = glossary.split("\n\n")[1]
+
+    assert str(store) in notice, "the notice names the record it could not read"
+    assert findings(notice) == []

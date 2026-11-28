@@ -1847,7 +1847,7 @@ def create_app(source: Source) -> Flask:
             # these words, and the reader is told in the terminal they started
             # the server from.
             print(
-                f"warning: could not record which words were explained: {failure}",
+                f"warning: this tool could not record which words it explained: {failure}",
                 file=sys.stderr,
             )
 

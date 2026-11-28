@@ -46,8 +46,8 @@ class Pillar:
 HEADLINE = "Turn the SQL you already run into dbt."
 
 LEDE = (
-    "Bring in a query. It proposes the layers, you supply the judgement, "
-    "and it puts the result on a branch of your own repository."
+    "Bring a query to this tool. The tool proposes the layers, and you supply the "
+    "judgement. Then the tool puts the result on a branch of your own repository."
 )
 
 PILLARS: tuple[Pillar, ...] = (
@@ -79,6 +79,6 @@ PILLARS: tuple[Pillar, ...] = (
 # conversion runs in this process, on this machine, and `emit` refuses to
 # write inside the project at all until the write action is pressed.
 PRIVACY = (
-    "Your SQL is read on this machine and goes nowhere else. "
-    "Nothing is written until you press the button that writes it."
+    "This tool reads your SQL on this machine, and your SQL goes nowhere else. "
+    "This tool writes nothing until you press the button that writes it."
 )

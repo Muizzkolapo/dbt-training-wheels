@@ -43,7 +43,7 @@ def test_no_dialect_is_a_recorded_warning(tmp_path):
     (tmp_path / "q.sql").write_text("SELECT 1")
     result = ingest(tmp_path)
     assert result.dialect is None
-    assert any("no dialect specified" in w for w in result.warnings)
+    assert any("no dialect was specified" in w for w in result.warnings)
 
 
 def test_non_utf8_file_skipped_with_warning(tmp_path):

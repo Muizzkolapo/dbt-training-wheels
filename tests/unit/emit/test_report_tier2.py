@@ -100,7 +100,7 @@ def test_no_default_variable_renders_placeholder_comment():
             ),
         )
     )
-    assert "  region:  # no default in the source; set one" in out
+    assert "  region:  # no default in the source. Set one." in out
 
 
 def test_question_bearing_decision_renders_question_chosen_and_every_effect():
@@ -174,7 +174,7 @@ def test_old_reference_sentence_is_gone_and_new_sentence_names_incrementals():
     out = _report()
     assert "Table references are not yet rewritten as ref() or source() calls." not in out
     assert "incremental" in out.lower()
-    assert "rewritten" in out.lower()
+    assert "rewrote" in out.lower()
 
 
 def test_vars_block_stays_parseable_yaml_for_awkward_defaults():

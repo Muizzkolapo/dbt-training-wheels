@@ -99,7 +99,7 @@ def test_a_damaged_record_is_reported_and_never_written_over(tmp_path: Path) -> 
 
     assert store.read_text(encoding="utf-8") == "{ this is not json", "left exactly as found"
     report = (tmp_path / "one" / "CONVERSION_REPORT.md").read_text(encoding="utf-8")
-    assert "could not be read" in report
+    assert "could not read" in report
     assert "- **ref()**" in _glossary(tmp_path / "one")
 
 

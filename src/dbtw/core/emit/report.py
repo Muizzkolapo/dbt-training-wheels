@@ -35,24 +35,27 @@ from dbtw.core.teach import COMMANDS, GLOSSARY, terms_in
 _NOT_DONE_YET = """\
 ## Not done yet
 
-This report describes a mechanical conversion only. No validation has run —
-dbt was not invoked, nothing was compiled, and nothing was run against a
-warehouse.
+This report describes a mechanical conversion only. This tool did no
+validation. This tool did not start dbt, compiled nothing, and ran nothing
+against a warehouse.
 
-Table references and script variables have been rewritten as ref(), source(),
-and var() calls. Incremental models, temporary tables, and UPDATE or other
-multi-statement rewrites remain deferred. Tests, documentation blocks, and
-exposures were not generated. Review the model bodies and the decisions above
-before treating any of this as final.\
+This tool rewrote table references and script variables as ref(), source() and
+var() calls. This tool still leaves these items for later:
+incremental models, temporary tables, and UPDATE or other rewrites of more
+than one statement. This tool did not create tests, documentation blocks or
+exposures.
+Before you accept any of this as final, review the model bodies and the
+decisions above.\
 """
 
 
 MODEL_HEADING = "## One model, as dbt reads it"
 
 _MODEL_INTRO = (
-    "This is `{path}` as it was written. It is the same SELECT a model file always "
-    "is; anything inside double curly brackets is an instruction to dbt, filled in "
-    "before the SQL is sent. The other model files read the same way."
+    "Below is `{path}`, exactly as this tool wrote it. The file is a SELECT, the "
+    "same as every model file. Anything inside double curly brackets is an "
+    "instruction to dbt. Before dbt sends the SQL, dbt replaces that instruction "
+    "with its result. The other model files read the same way."
 )
 
 
@@ -110,14 +113,15 @@ NEXT_HEADING = "## Then, in your project"
 _NEXT = f"""\
 {NEXT_HEADING}
 
-Nothing here ran dbt. These are the commands that do, in the order a first run
-goes — see what would be sent, send it, check it, and the one that does both.
-What each of them does is defined in this report.
+This tool did not run dbt. The commands below run dbt, in the order of a first
+run. The first command shows the SQL that dbt would send. The second command
+sends that SQL. The third command checks the result. The fourth command does
+both. This report defines each command.
 
 {{commands}}
 
-Nothing schedules them. dbt builds when something runs it, and that something
-is you, or whatever you already use to run things on a schedule.\
+Nothing schedules these commands. dbt builds when something runs it. That
+something is you, or the tool that you already use to run things on a schedule.\
 """
 
 
@@ -218,8 +222,8 @@ def _render_summary(change: ProjectChange) -> str:
 
 _GLOSSARY_HEADING = "## Words this report uses"
 _GLOSSARY_INTRO = (
-    "Each dbt word this report uses, in the order it first appears. "
-    "A word the report does not use is not listed here."
+    "Below is each dbt word that this report uses, in the order of first use. "
+    "This list does not include a word that the report does not use."
 )
 
 
@@ -252,10 +256,11 @@ def _render_glossary(teaching: Teaching, progress: Progress) -> str:
         # Said here rather than swallowed: a damaged record and a first
         # conversion produce the same full glossary, and only one of them is
         # a reason to say nothing.
+        why = progress.unreadable[0].upper() + progress.unreadable[1:]
         lines += [
-            f"Everything is explained in full below, because {progress.unreadable}. "
-            "Nothing is wrong with this conversion. Every word will go on being "
-            "explained in full until that file can be read again, or is deleted.",
+            f"This report explains every word in full below. {why}. Nothing is wrong "
+            "with this conversion. This tool will continue to explain every word in "
+            "full until it can read that file again, or until that file is deleted.",
             "",
         ]
     named = ", ".join(f"`{term.name}`" for term in teaching.met)
@@ -265,22 +270,22 @@ def _render_glossary(teaching: Teaching, progress: Progress) -> str:
         # else, rather than an intro promising definitions under no
         # definitions -- which is what a tenth conversion of a project would
         # otherwise open with.
-        lines += [f"{_ALL_MET_INTRO} They are: {named}. {below}"]
+        lines += [f"{_ALL_MET_INTRO} The words are: {named}. {below}"]
         return "\n".join(lines)
     lines += [_GLOSSARY_INTRO, ""]
     lines += [f"- **{term.name}** — {term.plain}" for term in teaching.full]
     if teaching.met:
         lines += [
             "",
-            f"Already explained in earlier conversions of this project, so not "
-            f"repeated here: {named}. {below}",
+            f"Earlier conversions of this project explained these words, so this "
+            f"report does not repeat them here: {named}. {below}",
         ]
     return "\n".join(lines)
 
 
 _ALL_MET_INTRO = (
-    "Every dbt word this report uses was explained in earlier conversions of "
-    "this project, so none is repeated here."
+    "Earlier conversions of this project explained every dbt word that this "
+    "report uses, so this report repeats none of them here."
 )
 
 
@@ -295,14 +300,16 @@ def _render_met(teaching: Teaching) -> str:
         [
             MET_HEADING,
             "",
-            f"Explained in full the first {FULL_SHOWINGS} times you met them, and kept "
-            "here so nothing is only in a report you no longer have.",
+            f"This tool explained these words in full the first {FULL_SHOWINGS} times "
+            "that you met them. This section keeps their meanings here, so that nothing "
+            "is only in a report that you no longer have.",
             "",
             *(f"- **{term.name}** — {term.plain}" for term in teaching.met),
             "",
-            f"Which words you have met is recorded in {state_path()}. It holds nothing "
-            "about your SQL -- only these names and how often each was explained -- and "
-            "deleting it starts the count again.",
+            f"This tool records in {state_path()} which words you have met. That file "
+            "contains nothing about your SQL. The file contains only these names, and "
+            "how many times this tool explained each name. If you delete the file, the "
+            "count starts again.",
         ]
     )
 
@@ -310,7 +317,7 @@ def _render_met(teaching: Teaching) -> str:
 def _render_conventions(ctx: ProjectContext) -> str:
     lines = ["## Your project's conventions", ""]
     if not ctx.detections:
-        lines.append("No conventions were detected.")
+        lines.append("This tool found no conventions.")
         return "\n".join(lines)
     for d in ctx.detections:
         value = d.value if d.value is not None else "undetermined"
@@ -321,7 +328,7 @@ def _render_conventions(ctx: ProjectContext) -> str:
 def _render_models(change: ProjectChange) -> str:
     lines = ["## Models", ""]
     if not change.models:
-        lines.append("No models were produced.")
+        lines.append("This tool produced no models.")
         return "\n".join(lines)
     lines.append("| Model | Layer | Materialization | Depends on |")
     lines.append("| --- | --- | --- | --- |")
@@ -390,16 +397,16 @@ def _render_vars(change: ProjectChange) -> str:
     lines = [
         "## Add to your dbt_project.yml",
         "",
-        "These are the script variables the conversion turned into `var()` calls. "
-        "This is a fragment to merge into your project's existing `dbt_project.yml`, "
-        "not a replacement for it.",
+        "The conversion changed these script variables into `var()` calls. This "
+        "fragment is for you to merge into the existing `dbt_project.yml` of your "
+        "project. The fragment does not replace that file.",
         "",
         "```yaml",
         "vars:",
     ]
     for v in change.variables:
         if v.default_sql is None:
-            lines.append(f"  {v.name}:  # no default in the source; set one")
+            lines.append(f"  {v.name}:  # no default in the source. Set one.")
         else:
             value = _parenthesized_if_compound(v.default_sql, change.dialect)
             lines.append(f"  {v.name}: {_yaml_double_quoted(value)}")
@@ -486,7 +493,7 @@ def _render_example(example: Example) -> list[str]:
     # `worked_example` is the only thing that can vouch for any of them.
     lines = [f"  - Worked example. {PLACEHOLDER_NOTICE}"]
     if example.key:
-        lines.append(f"    Rows are matched on {example.key}.")
+        lines.append(f"    dbt matches the rows on {example.key}.")
     lines.extend(
         [
             "",

@@ -368,7 +368,7 @@ def test_a_merge_example_names_the_key_it_matches_on():
     look arbitrary: nothing on the page says why one row's first cell held
     its value and the other's did not."""
     out = _hand_report(_model(), _decision())
-    assert "matched on customer_id" in out
+    assert "matches the rows on customer_id" in out
     assert "`<customer_id>` | `<email-new>`" in out  # the row found by its key and updated
     assert "`<customer_id-new>` | `<email-new>`" in out  # the row matching nothing, inserted
 
@@ -458,7 +458,7 @@ def test_an_example_that_ends_the_section_leaves_no_gap_behind_it():
         variables=(),
     )
     out = render_report(change, _CTX)
-    assert "matched on customer_id" in out  # the example really is the last thing
+    assert "matches the rows on customer_id" in out  # the example really is the last thing
     assert "\n\n\n" not in out
 
 

@@ -153,7 +153,7 @@ def test_a_damaged_record_is_never_written_over(tmp_path: Path) -> None:
     store = tmp_path / "learned.json"
     store.write_text("{not json at all", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="could not be read"):
+    with pytest.raises(ValueError, match="could not read"):
         save_progress(tmp_path / "analytics", Progress(conversions=1), path=store)
 
     assert store.read_text(encoding="utf-8") == "{not json at all"
