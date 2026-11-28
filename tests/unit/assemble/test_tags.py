@@ -56,6 +56,34 @@ def test_blanks_are_dropped_and_a_repeat_is_kept_once() -> None:
     assert change.models[0].tags == ("finance", "daily")
 
 
+@pytest.mark.parametrize(
+    ("typed", "written"),
+    [
+        (["finance, nightly"], ("finance", "nightly")),
+        (["a,b"], ("a", "b")),
+        (["a , b"], ("a", "b")),
+        (["finance,"], ("finance",)),
+        (["a,,b"], ("a", "b")),
+        (["finance, nightly finance,nightly"], ("finance", "nightly")),
+        (["finance,", "nightly"], ("finance", "nightly")),
+        ([",", " , "], ()),
+    ],
+)
+def test_commas_and_whitespace_both_separate_tags(
+    typed: list[str], written: tuple[str, ...]
+) -> None:
+    """A reader types `finance, nightly` as often as `finance nightly`, and
+    dbt reads `tags=['finance,']` as a tag named `finance,` that no
+    `--select tag:finance` will ever match."""
+    change = convert(ONE, tags={MODEL: typed})
+
+    assert change.models[0].tags == written
+    if written:
+        assert f"tags={list(written)!r}" in render_model(change.models[0])
+    else:
+        assert "tags" not in render_model(change.models[0])
+
+
 def test_a_tag_naming_a_model_this_conversion_does_not_build_is_refused() -> None:
     """Refused rather than dropped, for the reason a description naming one
     is: the walk would have shown the reader their own words on a screen,

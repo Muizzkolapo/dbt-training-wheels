@@ -7,6 +7,7 @@ from dbtw.core.assemble.assembler import (
     UnknownModelError,
     UnsupportedMaterializationError,
     assemble,
+    clean_tags,
 )
 from dbtw.core.assemble.refs import references_in
 from dbtw.core.assemble.types import AssembledModel, ProjectChange, SourceEntry, TableRef
@@ -26,5 +27,6 @@ __all__ = [
     "UnsupportedMaterializationError",
     "Variable",
     "assemble",
+    "clean_tags",
     "references_in",
 ]

@@ -1354,11 +1354,11 @@ def create_app(source: Source) -> Flask:
         model = request.form.get("model", "")
         try:
             session.describe(model, request.form.get("text", ""))
-            # Split on whitespace, because that is how people type a list of
-            # short labels and a dbt tag has none in it. The engine strips,
-            # drops blanks and removes repeats, so "finance  daily finance"
-            # is two tags however it was typed.
-            session.tag(model, request.form.get("tags", "").split())
+            # The box goes to the engine as typed. `clean_tags` is the one
+            # place a tag list is split -- on commas and whitespace, blanks
+            # dropped, repeats removed -- so "finance, daily finance" is two
+            # tags however it was typed.
+            session.tag(model, (request.form.get("tags", ""),))
             session.materialize(model, request.form.get("materialization", ""))
         except (UnknownModelError, ValueError) as refusal:
             # 400 and this screen, not a redirect: the reader is mid-action

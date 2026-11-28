@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import heapq
+import re
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
@@ -1815,10 +1816,11 @@ def _tagged(
 ) -> tuple[AssembledModel, ...]:
     """The models with the reader's tags on them, in the order they came.
 
-    Each tag is stripped, blanks are dropped, and a tag repeated on one model
-    is kept once -- `tags=['finance', 'finance']` is a list dbt reads twice
-    and a reader wrote once. The first spelling wins, because the order a
-    reader typed them in is the order they meant.
+    Each entry is split on commas and whitespace (`clean_tags`), blanks are
+    dropped, and a tag repeated on one model is kept once --
+    `tags=['finance', 'finance']` is a list dbt reads twice and a reader
+    wrote once. The first spelling wins, because the order a reader typed
+    them in is the order they meant.
 
     A tag naming a model this change does not carry is refused, for the
     reason a description naming one is: the walk would have shown the reader
@@ -1834,17 +1836,29 @@ def _tagged(
             "the walk showed; one naming another is a caller bug"
         )
     return tuple(
-        dataclasses.replace(model, tags=_clean(asked.get(model.name, ()))) for model in models
+        dataclasses.replace(model, tags=clean_tags(asked.get(model.name, ()))) for model in models
     )
 
 
-def _clean(tags: Sequence[str]) -> tuple[str, ...]:
-    """`tags` stripped, blanks dropped, repeats removed, order kept."""
+_TAG_SEPARATOR = re.compile(r"[\s,]+")
+
+
+def clean_tags(typed: Sequence[str]) -> tuple[str, ...]:
+    """The tags in `typed`: split on commas and whitespace, blanks dropped,
+    repeats removed, order kept.
+
+    The one place a tag list is split, so every front end reads
+    `finance, nightly` and `finance nightly` as the same two tags. Commas
+    separate as well as whitespace because that is how people write a list,
+    and a tag kept as `finance,` is one dbt reads literally and no
+    `--select tag:finance` matches. A dbt tag holds neither, so splitting on
+    both takes nothing a reader could have meant.
+    """
     seen: list[str] = []
-    for tag in tags:
-        stripped = tag.strip()
-        if stripped and stripped not in seen:
-            seen.append(stripped)
+    for entry in typed:
+        for tag in _TAG_SEPARATOR.split(entry):
+            if tag and tag not in seen:
+                seen.append(tag)
     return tuple(seen)
 
 

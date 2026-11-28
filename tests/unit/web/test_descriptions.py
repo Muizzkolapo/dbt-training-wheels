@@ -473,6 +473,38 @@ def test_tags_written_on_the_describe_screen_reach_the_model(walk: Walk, walk_sq
     assert "finance daily" in page.engine
 
 
+def test_tags_typed_with_commas_reach_the_model_without_them(walk: Walk, walk_sql: Path) -> None:
+    """`finance, nightly` is two tags, and the screen reads them back as the
+    two tags the model now carries -- not `finance,` with a comma in it."""
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+
+    saved = client.post(
+        "/describe",
+        data={"model": name, "text": "One row.", "tags": "finance, nightly,finance ,"},
+    )
+
+    assert saved.status_code == 302
+    assert session.tags[name] == ("finance", "nightly")
+    (model,) = [m for m in session.view().change.models if m.name == name]
+    assert model.tags == ("finance", "nightly")
+    page = read(client.get("/describe").get_data(as_text=True))
+    assert "finance nightly" in page.engine
+    assert "finance," not in page.engine
+
+
+def test_a_tag_box_of_only_commas_holds_no_tags(walk: Walk, walk_sql: Path) -> None:
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+
+    saved = client.post("/describe", data={"model": name, "text": "One row.", "tags": " , ,"})
+
+    assert saved.status_code == 302
+    assert name not in session.tags
+    (model,) = [m for m in session.view().change.models if m.name == name]
+    assert model.tags == ()
+
+
 def test_clearing_the_tag_box_removes_the_tags(walk: Walk, walk_sql: Path) -> None:
     app, client, session = walk(walk_sql)
     name = session.view().change.models[0].name
