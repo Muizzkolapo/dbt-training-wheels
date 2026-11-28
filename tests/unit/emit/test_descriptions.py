@@ -150,3 +150,71 @@ def test_a_doc_reference_in_a_description_is_written_as_it_was_typed() -> None:
 
     (described,) = change.descriptions
     assert described.text == "See {{ doc('orders') }}."
+
+
+# What a description may carry of Jinja is exactly what dbt documents for the
+# field: a `{{ doc('name') }}` reference to a docs block. Anything else between
+# the braces is code dbt runs while it reads the project -- an undefined
+# `var('x')` stops `dbt parse` for every model, and a defined one still makes a
+# sentence about a model into something executed.
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ("Daily totals {{ var('x') }} here", "{{ var('x') }}"),
+        ("See {{ doc(name) }}.", "{{ doc(name) }}"),
+        ("See {{ doc('orders') | upper }}.", "{{ doc('orders') | upper }}"),
+        ("See {{ doc('my-block') }}.", "{{ doc('my-block') }}"),
+        ("See {{ doc('orders\") }}.", "{{ doc('orders\") }}"),
+        ("{% if fresh %}Fresh{% endif %} events", "{% if fresh %}"),
+        ("Events {# note #} by day", "{# note #}"),
+        ("See {{ doc('orders') }} and {{ this }}", "{{ this }}"),
+        ("See {{ doc('orders')", "{{"),
+        ("See doc('orders') }} here", "}}"),
+    ],
+)
+def test_jinja_other_than_a_doc_reference_is_refused_and_quoted(text: str, found: str) -> None:
+    with pytest.raises(JinjaInDescriptionError) as refused:
+        convert(ONE_MODEL, descriptions={"stg_revenue_events": text})
+
+    message = str(refused.value)
+    assert "stg_revenue_events" in message
+    assert found in message, "the refusal does not show the reader what it refused"
+    assert "plain text" in message, "the refusal does not say what to write instead"
+
+
+def test_a_refusal_points_at_doc_for_a_docs_block() -> None:
+    """The one form that is allowed is the one a reader reaching for Jinja most
+    likely wanted, so the refusal names it."""
+    with pytest.raises(JinjaInDescriptionError) as refused:
+        convert(ONE_MODEL, descriptions={"stg_revenue_events": "{{ var('x') }}"})
+
+    assert "{{ doc('" in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "See {{ doc('orders') }}.",
+        'See {{doc("orders")}}.',
+        "{{   doc('orders_v2')   }} then {{ doc(\"_base\") }}",
+    ],
+)
+def test_a_doc_reference_is_written_verbatim(text: str, tmp_path: Path) -> None:
+    change, name = _described(text)
+
+    (described,) = change.descriptions
+    assert described.text == text
+
+    emit(change, context_for("jaffle_shop"), tmp_path)
+    doc = yaml.safe_load((tmp_path / "models" / "staging" / f"{name}.yml").read_text())
+    assert doc["models"][0]["description"] == text
+
+
+@pytest.mark.parametrize(
+    "text", ["Totals per {region} } today", "A lone { brace", "A lone } brace", "100% sure"]
+)
+def test_single_braces_in_plain_text_are_accepted(text: str) -> None:
+    change, _ = _described(text)
+
+    (described,) = change.descriptions
+    assert described.text == text

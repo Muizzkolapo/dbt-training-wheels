@@ -417,6 +417,44 @@ def test_the_screen_refuses_a_description_dbt_could_not_render(walk: Walk, walk_
     assert any(name in run for run in page.engine), "the refusal does not name the model"
 
 
+@pytest.mark.parametrize("direct", [False, True])
+def test_the_screen_refuses_balanced_jinja_that_is_not_a_doc_reference(
+    walk: Walk, walk_sql: Path, direct: bool
+) -> None:
+    """Balanced is not safe. `{{ var('x') }}` closes every brace it opens and
+    still stops `dbt parse`, because dbt runs it and the var is not defined.
+    Refused with a 400 on the screen the reader typed it on, in either mode,
+    in the engine's words -- and nothing is held.
+    """
+    app, client, session = walk(walk_sql)
+    if direct:
+        assert client.post("/mode", data={"mode": "direct", "back": "/"}).status_code == 302
+        assert client.get("/describe").status_code == 302, "direct mode did not take"
+    name = session.view().change.models[0].name
+
+    refused = client.post(
+        "/describe", data={"model": name, "text": "Daily totals {{ var('x') }} here"}
+    )
+
+    assert refused.status_code == 400
+    assert session.descriptions == {}
+    assert session.view().change.descriptions == ()
+    page = read(refused.get_data(as_text=True))
+    assert any(name in run and "{{ var('x') }}" in run for run in page.engine), (
+        "the refusal does not reach the screen in the engine's words"
+    )
+
+
+def test_the_screen_saves_a_doc_reference_as_typed(walk: Walk, walk_sql: Path) -> None:
+    app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+
+    saved = client.post("/describe", data={"model": name, "text": 'See {{doc("orders")}}.'})
+
+    assert saved.status_code == 302
+    assert session.descriptions[name] == 'See {{doc("orders")}}.'
+
+
 def test_a_description_is_validated_against_the_run_that_applies_the_answers(
     sql_file: Path, project_dir: Path, pipeline_runs: list[Path]
 ) -> None:
