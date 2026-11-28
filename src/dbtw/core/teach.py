@@ -77,6 +77,26 @@ COMMANDS: tuple[str, ...] = ("dbt compile", "dbt run", "dbt test", "dbt build")
 
 
 GLOSSARY: tuple[Term, ...] = (
+    # First, because every other definition here leans on it. The plain
+    # register says "model" on almost every screen, and a persona who had
+    # never used dbt read it as a machine-learning model. The word is not on
+    # the JARGON list -- the plain register needs it -- so it is defined here
+    # rather than banned there.
+    #
+    # Named with a bare common word, which `terms_in` matches as a substring.
+    # That is safe for this word: it occurs inside "models" and "modeled",
+    # which are the same word, and inside no different word that this tool
+    # prints.
+    Term(
+        name="model",
+        plain=(
+            "A SELECT query saved in a file of its own in the project. dbt creates a table "
+            "or a view in the database from that query. The name of the file, without "
+            ".sql, is the name of the model. A model is not a machine learning model "
+            "and not a statistical model. One setting tells dbt to create nothing for a "
+            "model. Then dbt puts the query inside each model that reads it."
+        ),
+    ),
     Term(
         name="dbt compile",
         plain=(
