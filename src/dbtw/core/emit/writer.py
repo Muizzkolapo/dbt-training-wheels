@@ -477,12 +477,23 @@ def _stale(out_dir: Path, previous: Mapping[str, str], produced: set[str]) -> tu
     it is refused -- see `StaleOutputError`. Every path is put through
     `_safe_join` first: the record is a file on disk, and a path in it that
     escapes out_dir was never written there by this tool.
+
+    A recorded path can name the same file as a produced path by another
+    spelling. On a filesystem that folds case, `Foo.sql` and `foo.sql` are
+    one file. Such a path is not stale: this write writes that file again.
+    Removing it would remove the new file. The test is file identity
+    (`_identity`), not spelling, so it is correct on both kinds of
+    filesystem. It runs before the write, while the file is there.
     """
+    identities = (_identity(out_dir / relative) for relative in produced)
+    taken = {identity for identity in identities if identity is not None}
     stale: list[str] = []
     edited: list[str] = []
     for relative in sorted(set(previous) - produced):
         path = _safe_join(out_dir, relative)
         if not path.exists() and not path.is_symlink():
+            continue
+        if not path.is_symlink() and _identity(path) in taken:
             continue
         if path.is_symlink() or not path.is_file() or _digest(path) != previous[relative]:
             edited.append(relative)
@@ -499,6 +510,16 @@ def _stale(out_dir: Path, previous: Mapping[str, str], produced: set[str]) -> tu
             f"the directory, or delete {it}, then write again"
         )
     return tuple(stale)
+
+
+def _identity(path: Path) -> tuple[int, int] | None:
+    """The (device, inode) pair of the file at `path`, or None when no file
+    is there. Two paths with one pair are one file, whatever their spelling.
+    """
+    if not path.exists():
+        return None
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino)
 
 
 def _removed(relative: str) -> Decision:

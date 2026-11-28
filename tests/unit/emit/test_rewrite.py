@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from tests.unit.assemble.helpers import context_for, convert
 
+from dbtw.core.assemble import AssembledModel, ProjectChange
 from dbtw.core.emit import (
     REPORT_NAME,
     WRITE_RECORD_NAME,
@@ -201,3 +202,56 @@ def test_a_record_naming_a_path_outside_out_dir_is_refused(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="victim"):
         emit(_in_intermediate(), ctx, out)
     assert victim.read_text(encoding="utf-8") == "keep\n"
+
+
+def _one_model(name: str) -> ProjectChange:
+    return ProjectChange(
+        models=(
+            AssembledModel(
+                name=name,
+                path=f"models/staging/{name}.sql",
+                body="SELECT 1 AS a",
+                materialization="table",
+                grants=(),
+                layer="staging",
+                depends_on=(),
+                leading_comments=(),
+                source_indices=(0,),
+            ),
+        ),
+        sources=(),
+        decisions=(),
+        pending=(),
+        dialect=None,
+        project_name="jaffle_shop",
+    )
+
+
+def _folds_case(directory: Path) -> bool:
+    probe = directory / "case_probe"
+    probe.write_text("", encoding="utf-8")
+    try:
+        return (directory / "CASE_PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+def test_a_name_that_changes_only_in_case_keeps_its_new_file(tmp_path: Path) -> None:
+    """On a filesystem that folds case, `Stg_Orders.sql` and `stg_orders.sql`
+    are one file. The old path is not a path this write produces, by its
+    spelling. But removing it removes the file this write just wrote.
+    """
+    if not _folds_case(tmp_path):
+        pytest.skip("the test filesystem is case-sensitive, so the two names are two files")
+    out = tmp_path / "out"
+    ctx = context_for("jaffle_shop")
+    emit(_one_model("Stg_Orders"), ctx, out)
+
+    result = emit(_one_model("stg_orders"), ctx, out)
+
+    new = out / "models" / "staging" / "stg_orders.sql"
+    assert new.is_file(), "the write removed its own new file"
+    assert "SELECT 1 AS a" in new.read_text(encoding="utf-8")
+    assert result.removed == ()
+    assert not [d for d in result.decisions if d.key.startswith("emit.removed.")]
+    assert "models/staging/stg_orders.sql" in written_by_last_emit(out)
