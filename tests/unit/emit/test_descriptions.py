@@ -150,3 +150,152 @@ def test_a_doc_reference_in_a_description_is_written_as_it_was_typed() -> None:
 
     (described,) = change.descriptions
     assert described.text == "See {{ doc('orders') }}."
+
+
+# What a description may carry of Jinja is exactly what dbt documents for the
+# field: a `{{ doc('name') }}` reference to a docs block. Anything else between
+# the braces is code dbt runs while it reads the project -- an undefined
+# `var('x')` stops `dbt parse` for every model, and a defined one still makes a
+# sentence about a model into something executed.
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ("Daily totals {{ var('x') }} here", "{{ var('x') }}"),
+        ("See {{ doc(name) }}.", "{{ doc(name) }}"),
+        ("See {{ doc('orders') | upper }}.", "{{ doc('orders') | upper }}"),
+        ("See {{ doc('my-block') }}.", "{{ doc('my-block') }}"),
+        ("See {{ doc('orders\") }}.", "{{ doc('orders\") }}"),
+        ("{% if fresh %}Fresh{% endif %} events", "{% if fresh %}"),
+        ("Events {# note #} by day", "{# note #}"),
+        ("See {{ doc('orders') }} and {{ this }}", "{{ this }}"),
+        ("See {{ doc('orders')", "{{"),
+        ("Events {% if fresh", "{%"),
+        ("Events {# note", "{#"),
+        ("See {{ doc('pkg', name) }}.", "{{ doc('pkg', name) }}"),
+        ("See {{ doc('a', 'b', 'c') }}.", "{{ doc('a', 'b', 'c') }}"),
+        ("See {{ doc('pkg' 'orders') }}.", "{{ doc('pkg' 'orders') }}"),
+    ],
+)
+def test_jinja_other_than_a_doc_reference_is_refused_and_quoted(text: str, found: str) -> None:
+    """The quote is checked in its delimiters, which the fixed parts of the
+    message never use -- so a refusal that quoted the wrong part of what the
+    reader typed, or nothing, fails here."""
+    with pytest.raises(JinjaInDescriptionError) as refused:
+        convert(ONE_MODEL, descriptions={"stg_revenue_events": text})
+
+    message = str(refused.value)
+    assert message.startswith(f"The description of stg_revenue_events has “{found}”")
+
+
+def test_the_refusal_of_an_expression_says_what_why_and_what_to_do() -> None:
+    """Exact, because this is the text the reader meets on the describe screen."""
+    with pytest.raises(JinjaInDescriptionError) as refused:
+        convert(ONE_MODEL, descriptions={"stg_revenue_events": "Totals {{ var('x') }}"})
+
+    assert str(refused.value) == (
+        "The description of stg_revenue_events has “{{ var('x') }}”. "
+        "dbt reads the text between {{ and }} as code. "
+        "dbt runs this code when it reads the project. "
+        "Code that dbt cannot run stops dbt for the whole project, not only for this model. "
+        "Two examples are a var() that has no value and a name that dbt does not know. "
+        "Write the description as plain text, without the braces. "
+        "To show a docs block, write {{ doc('block_name') }} with no other text between "
+        "the braces. A docs block is a longer description in a .md file in the project."
+    )
+
+
+def test_the_refusal_of_an_unclosed_tag_says_it_is_not_closed() -> None:
+    with pytest.raises(JinjaInDescriptionError) as refused:
+        convert(ONE_MODEL, descriptions={"stg_revenue_events": "Events {% if fresh"})
+
+    assert str(refused.value) == (
+        "The description of stg_revenue_events has “{%”, and no “%}” closes it. "
+        "dbt reads the text between {% and %} as an instruction, for example an if "
+        "or a loop. dbt runs the instruction when it reads the project. "
+        "An instruction that dbt cannot run stops dbt for the whole project, not only "
+        "for this model. "
+        "Write the description as plain text, without the braces. "
+        "To show a docs block, write {{ doc('block_name') }} with no other text between "
+        "the braces. A docs block is a longer description in a .md file in the project."
+    )
+
+
+def test_the_refusal_of_a_comment_says_the_words_would_not_show() -> None:
+    with pytest.raises(JinjaInDescriptionError) as refused:
+        convert(ONE_MODEL, descriptions={"stg_revenue_events": "Events {# note #}"})
+
+    assert str(refused.value) == (
+        "The description of stg_revenue_events has “{# note #}”. "
+        "dbt reads the text between {# and #} as a hidden note. "
+        "dbt deletes the note, so the words do not show in the documentation. "
+        "A note that is not closed stops dbt for the whole project. "
+        "Write the description as plain text, without the braces. "
+        "To show a docs block, write {{ doc('block_name') }} with no other text between "
+        "the braces. A docs block is a longer description in a .md file in the project."
+    )
+
+
+ACCEPTED_DOC_REFERENCES = [
+    "See {{ doc('orders') }}.",
+    'See {{doc("orders")}}.',
+    "{{   doc('orders_v2')   }} then {{ doc(\"_base\") }}",
+    "See {{ doc( 'orders' ) }}.",
+    "See {{- doc('orders') -}}.",
+    "See {{ doc('my_package', 'orders') }}.",
+    'See {{ doc("my_package","orders") }}.',
+]
+
+
+@pytest.mark.parametrize("text", ACCEPTED_DOC_REFERENCES)
+def test_a_doc_reference_is_written_verbatim(text: str, tmp_path: Path) -> None:
+    change, name = _described(text)
+
+    (described,) = change.descriptions
+    assert described.text == text
+
+    emit(change, context_for("jaffle_shop"), tmp_path)
+    doc = yaml.safe_load((tmp_path / "models" / "staging" / f"{name}.yml").read_text())
+    assert doc["models"][0]["description"] == text
+
+
+@pytest.mark.parametrize("text", ACCEPTED_DOC_REFERENCES)
+def test_every_accepted_doc_reference_renders_under_jinja(text: str) -> None:
+    """Accepted means dbt can render it: checked against Jinja itself, with a
+    `doc` that takes the one-name and the package-and-name forms dbt takes."""
+    import jinja2
+
+    def doc(*names: str) -> str:
+        assert len(names) in (1, 2)
+        return "DOC"
+
+    rendered = jinja2.Environment().from_string(text).render(doc=doc)
+    assert "DOC" in rendered
+    assert "{{" not in rendered
+
+
+PLAIN_TEXT = [
+    "Totals per {region} } today",
+    "A lone { brace",
+    "A lone } brace",
+    "100% sure",
+    'Payload: {"a": {"b": 1}}',
+    "Ends with }} here",
+    "Up 50%} on last week",
+    "Issue #} closed",
+]
+
+
+@pytest.mark.parametrize("text", PLAIN_TEXT)
+def test_plain_text_with_braces_and_stray_closers_is_accepted(text: str) -> None:
+    change, _ = _described(text)
+
+    (described,) = change.descriptions
+    assert described.text == text
+
+
+@pytest.mark.parametrize("text", PLAIN_TEXT)
+def test_accepted_plain_text_renders_unchanged_under_jinja(text: str) -> None:
+    """The reason a stray closer is accepted: Jinja reads it as plain text."""
+    import jinja2
+
+    assert jinja2.Environment().from_string(text).render() == text
