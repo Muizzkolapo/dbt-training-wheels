@@ -174,7 +174,9 @@ def test_old_reference_sentence_is_gone_and_new_sentence_names_incrementals():
     out = _report()
     assert "Table references are not yet rewritten as ref() or source() calls." not in out
     assert "incremental" in out.lower()
-    assert "rewrote" in out.lower()
+    # `SELECT 1 AS a` reads no table, so the report claims no rewrite.
+    assert "found no table reference to rewrite" in out
+    assert "rewrote" not in out.lower()
 
 
 def test_vars_block_stays_parseable_yaml_for_awkward_defaults():

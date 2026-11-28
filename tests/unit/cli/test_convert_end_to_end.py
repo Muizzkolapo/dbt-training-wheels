@@ -51,7 +51,7 @@ def test_report_records_the_variable_as_a_var_and_the_dropped_use(tmp_path):
     assert "start_date" in report  # the DECLARE was extracted and rewritten to a dbt var
     assert "Nothing — every statement was handled." in report  # no longer pending
     assert "profiles.yml" in report  # the USE was dropped with its reason
-    assert "This tool rewrote table references and script variables" in report
+    assert "This tool rewrote script variables as var() calls." in report
 
 
 def test_unknown_dialect_exits_two(tmp_path, capsys):

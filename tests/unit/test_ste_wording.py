@@ -25,6 +25,7 @@ rewrites run in parallel, and each removes only its own line.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -32,11 +33,11 @@ from pathlib import Path
 import pytest
 
 from dbtw.core import intro, teach
-from dbtw.core.assemble import CHOOSABLE, assemble
+from dbtw.core.assemble import CHOOSABLE, AssembledModel, ProjectChange, Variable, assemble
 from dbtw.core.context import read_project
 from dbtw.core.emit import emit, report
 from dbtw.core.ingest import classify_statements, ingest
-from dbtw.core.passes import Answer, Decision, answer_for, run_passes
+from dbtw.core.passes import Answer, Decision, SchemaTest, answer_for, run_passes
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 PROJECTS = FIXTURES / "projects"
@@ -189,6 +190,62 @@ def _conversions(tmp: Path) -> Iterator[Decision]:
                 ).decisions
 
 
+def _closing_changes() -> tuple[ProjectChange, ProjectChange]:
+    """Two changes for the "Not done yet" section, which is built per change.
+
+    The first has no incremental model, no test, no table reference and no
+    variable. The second has two of each, with two references rewritten and
+    two left as written, so the plural forms are checked as the reader sees
+    them.
+    """
+
+    def model(
+        name: str, materialization: str | None, body: str = "SELECT 1 AS id"
+    ) -> AssembledModel:
+        return AssembledModel(
+            name=name,
+            path=f"models/{name}.sql",
+            body=body,
+            materialization=materialization,
+            grants=(),
+            layer="marts",
+            depends_on=(),
+            leading_comments=(),
+            source_indices=(0,),
+        )
+
+    def unresolved(table: str) -> Decision:
+        return Decision(
+            key=f"assemble.rewrite_unresolved.fct_a.{table}",
+            tier=2,
+            action=f"{table} in fct_a left as written",
+            reason="no model or source matches this name",
+            source_file="",
+            line_start=0,
+            line_end=0,
+        )
+
+    bare = ProjectChange(
+        models=(model("stg_a", None),),
+        sources=(),
+        decisions=(),
+        pending=(),
+        dialect=None,
+        project_name="p",
+    )
+    full = dataclasses.replace(
+        bare,
+        models=(
+            model("fct_a", "incremental", "SELECT id FROM {{ ref('stg_a') }}"),
+            model("fct_b", "incremental", "SELECT id FROM {{ source('raw', 'b') }}"),
+        ),
+        decisions=(unresolved("legacy.a"), unresolved("legacy.b")),
+        tests=(SchemaTest("fct_a", "id"), SchemaTest("fct_b", "id")),
+        variables=(Variable("cutoff", None, "etl.sql", 1),),
+    )
+    return bare, full
+
+
 def _texts(tmp: Path) -> dict[str, set[str]]:
     by_origin: dict[str, set[str]] = {}
 
@@ -206,6 +263,8 @@ def _texts(tmp: Path) -> dict[str, set[str]]:
         value = getattr(report, name)
         if name.startswith("_") and isinstance(value, str) and len(value.split()) > 6:
             add("report", value)
+    for change in _closing_changes():
+        add("report", report._render_not_done_yet(change))
     for decision in _conversions(tmp):
         for text in _decision_texts(decision):
             add(_origin(decision), text)
@@ -321,6 +380,19 @@ def test_the_text_follows_the_structural_rules_of_ste(origin: str, texts) -> Non
     found = [f for text in sorted(texts.get(origin, ())) for f in findings(text)]
 
     assert not found, f"{len(found)} STE findings in {origin}:\n" + "\n".join(found)
+
+
+def test_both_forms_of_the_closing_section_are_checked(texts) -> None:  # type: ignore[no-untyped-def]
+    """The section is built per change, so no module constant holds it whole.
+    Each form must reach the rule test as the reader sees it."""
+    checked = " ".join(texts["report"])
+
+    assert "This conversion built no incremental models." in checked
+    assert "This conversion found no table reference to rewrite" in checked
+    assert "This tool rewrote 2 table references as ref() or source() calls." in checked
+    assert "This conversion built 2 incremental models: fct_a, fct_b." in checked
+    assert "This tool left 2 table references as written" in checked
+    assert "the tests that your answers asked for: 2." in checked
 
 
 def test_every_origin_has_text_to_check(texts) -> None:  # type: ignore[no-untyped-def]

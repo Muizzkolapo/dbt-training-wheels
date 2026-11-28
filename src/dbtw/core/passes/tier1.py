@@ -749,15 +749,21 @@ def select_pass(state: PassState) -> PassState:
                 action=f"created model {name} (materialized='view')",
                 reason=(
                     "a dbt model is a SELECT in a file, and the model takes its name from "
-                    f"that file. This query is in {filename}, so the model is {name}. This "
-                    "conversion does not change the query. The script stored nothing, and "
-                    "materialized='view' keeps that true. The query runs each time that "
-                    "something reads the model."
+                    f"that file. This query is in {filename}, so the model is {name}. The "
+                    "model has the same logic and the same columns as the query. This "
+                    "conversion writes the SQL text again in a standard layout. For example, "
+                    "function names can become upper case, and != can become <>. Later, this "
+                    "conversion rewrites each table name that it can resolve as a source() "
+                    "or ref() call. The script stored nothing, and materialized='view' keeps "
+                    "that true. The query runs each time that something reads the model."
                 ),
                 plain_reason=(
                     f"Your file has the name {filename}, so this model now has the name "
-                    f"{name}. That one fact is the full naming rule. The query is the one that you "
-                    "wrote, with no changes. The model saves no rows, the same as when you "
+                    f"{name}. That one fact is the full naming rule. The model has the same "
+                    "logic and the same columns as the query that you wrote. This tool writes "
+                    "the text of the query again in a standard layout. For example, != can "
+                    "become <>. Later, this tool replaces each table name that it can match "
+                    "with a link to that table. The model saves no rows, the same as when you "
                     "run the query by hand. Each thing that reads the model runs the query."
                 ),
             )

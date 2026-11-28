@@ -32,21 +32,112 @@ from dbtw.core.progress import (
 )
 from dbtw.core.teach import COMMANDS, GLOSSARY, terms_in
 
-_NOT_DONE_YET = """\
-## Not done yet
+_NOT_DONE_INTRO = (
+    "This report describes a mechanical conversion only. This tool did no "
+    "validation. This tool did not start dbt, compiled nothing, and ran nothing "
+    "against a warehouse."
+)
+_REFERENCES_REWRITTEN = "This tool rewrote {count} as ref() or source() calls."
+_REFERENCES_LEFT = (
+    "This tool left {count} as written, because it could not resolve {them} to "
+    "ref() or source(). The decisions above name each one."
+)
+_NO_REFERENCES = "This conversion found no table reference to rewrite as a ref() or source() call."
+_VARIABLES_REWRITTEN = "This tool rewrote script variables as var() calls."
+_INCREMENTAL_BUILT = "This conversion built {count}: {names}."
+_NO_INCREMENTAL = (
+    'This conversion built no incremental models. The "Still pending" section above lists '
+    "each statement that this tool did not convert."
+)
+_STILL_LATER = (
+    "This tool still leaves these items for later: temporary tables, and UPDATE or "
+    "other rewrites of more than one statement."
+)
+_TESTS_ASKED_FOR = (
+    "This tool created only the tests that your answers asked for: {count}. This "
+    "tool did not create documentation blocks or exposures."
+)
+_NO_TESTS = "This tool did not create tests, documentation blocks or exposures."
+_REVIEW = "Before you accept any of this as final, review the model bodies and the decisions above."
 
-This report describes a mechanical conversion only. This tool did no
-validation. This tool did not start dbt, compiled nothing, and ran nothing
-against a warehouse.
+# The key prefix of the Decision `assemble` records for each table reference it
+# could not resolve and so left as the script wrote it.
+_UNRESOLVED_KEY = "assemble.rewrite_unresolved."
 
-This tool rewrote table references and script variables as ref(), source() and
-var() calls. This tool still leaves these items for later:
-incremental models, temporary tables, and UPDATE or other rewrites of more
-than one statement. This tool did not create tests, documentation blocks or
-exposures.
-Before you accept any of this as final, review the model bodies and the
-decisions above.\
-"""
+# One ref() or source() call that `assemble.rewrite` wrote into a model body.
+_RESOLVED_CALL = re.compile(r"\{\{\s*(?:ref|source)\(.*?\)\s*\}\}")
+
+
+def _counted(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def _references(change: ProjectChange) -> str:
+    """What happened to the table references, counted, with no claim the run
+    does not support.
+
+    A rewritten reference is counted from the body that was written, once for
+    each distinct call in each model. An unresolved one is counted from its
+    Decision, which `assemble` records once for each table in each model, so
+    the two counts measure the same thing. A change with neither -- no models,
+    or models that read no table -- rewrote nothing, and says so.
+    """
+    resolved = sum(len(set(_RESOLVED_CALL.findall(m.body))) for m in change.models)
+    unresolved = sum(1 for d in change.decisions if d.key.startswith(_UNRESOLVED_KEY))
+    said: list[str] = []
+    if resolved:
+        said.append(
+            _REFERENCES_REWRITTEN.format(
+                count=_counted(resolved, "table reference", "table references")
+            )
+        )
+    if unresolved:
+        said.append(
+            _REFERENCES_LEFT.format(
+                count=_counted(unresolved, "table reference", "table references"),
+                them="it" if unresolved == 1 else "them",
+            )
+        )
+    return " ".join(said) if said else _NO_REFERENCES
+
+
+def _render_not_done_yet(change: ProjectChange) -> str:
+    """What this conversion left undone, read off the change itself.
+
+    Fixed text here said the opposite of the run in three places: that
+    incremental models were left for later when this run built them, that no
+    test was created when an answer declared one and the summary counted it,
+    and that every table reference became ref() or source() when `assemble`
+    left some as written -- or when there was no reference to rewrite. Each
+    claim is now built from the record it is about.
+
+    Every form still names `warehouse`, `ref()`, `source()` and `incremental`,
+    so the glossary always has words to define -- see
+    test_the_closing_section_alone_guarantees_the_glossary_is_never_empty.
+    """
+    rewritten = [_references(change)]
+    if change.variables:
+        rewritten.append(_VARIABLES_REWRITTEN)
+
+    incremental = [m.name for m in change.models if m.materialization == "incremental"]
+    if incremental:
+        built = _INCREMENTAL_BUILT.format(
+            count=_counted(len(incremental), "incremental model", "incremental models"),
+            names=", ".join(incremental),
+        )
+    else:
+        built = _NO_INCREMENTAL
+    tests = _TESTS_ASKED_FOR.format(count=len(change.tests)) if change.tests else _NO_TESTS
+
+    return "\n\n".join(
+        [
+            "## Not done yet",
+            _NOT_DONE_INTRO,
+            " ".join(rewritten),
+            " ".join([built, _STILL_LATER, tests]),
+            _REVIEW,
+        ]
+    )
 
 
 MODEL_HEADING = "## One model, as dbt reads it"
@@ -152,7 +243,7 @@ def render_report(
         [
             _render_decisions(change),
             _render_pending(change),
-            _NOT_DONE_YET,
+            _render_not_done_yet(change),
             # After the caveats and last: "dbt was not invoked" is the
             # sentence above it, and this is what invoking it looks like.
             _render_next(),
@@ -245,7 +336,7 @@ def _render_glossary(teaching: Teaching, progress: Progress) -> str:
     forgot the word -- and because seeing the list grow is the only way the
     progression is visible at all.
 
-    There is no empty case to handle for the words in play: `_NOT_DONE_YET`
+    There is no empty case to handle for the words in play: "Not done yet"
     is rendered by every report and names four of these on its own -- see
     test_the_closing_section_alone_guarantees_the_glossary_is_never_empty.
     Every one of them being folded is a real case though, and then this
