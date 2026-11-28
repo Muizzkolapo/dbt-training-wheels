@@ -41,8 +41,7 @@ from dbtw.core.passes import Answer, Decision, answer_for, run_passes
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 PROJECTS = FIXTURES / "projects"
 
-PENDING = {
-}
+PENDING: set[str] = set()
 
 # Scripts that reach the Decisions the fixtures alone do not: a bare query, a
 # file with two queries, a MERGE, a read of another project's model, a GRANT,
