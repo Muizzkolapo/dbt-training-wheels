@@ -13,7 +13,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from tests.unit.web.conftest import PROJECTS, Walk
+from tests.unit.web.conftest import PROJECTS, SQL, Walk
 from tests.unit.web.engine_strings import engine_strings
 from tests.unit.web.helpers import CHAINED_INSERTS, NO_QUESTIONS, ONE_APPEND
 from tests.unit.web.page import normalised, read
@@ -365,6 +365,71 @@ def test_two_questions_about_one_model_have_two_labels(tmp_path: Path, out_dir: 
         assert sum(1 for label in labels if label.startswith(table)) == tables.count(table)
 
 
+# Every script the tests converse over, beside the fixture corpus. Together
+# they make the engine ask each kind of question it can ask: append, merge,
+# layer, variable, and -- with another project named -- cross_ref.
+_CROSS = (
+    "INSERT INTO revenue_events SELECT c.name, o.amount "
+    "FROM analytics.dim_customers AS c JOIN analytics.orders AS o ON o.cid = c.customer_id;\n"
+    "INSERT INTO revenue_daily SELECT name, amount FROM revenue_events;\n"
+)
+
+
+def _every_question(tmp_path: Path) -> list:  # type: ignore[type-arg]
+    from tests.unit.web import helpers
+
+    scripts = [path.read_text(encoding="utf-8") for path in sorted(SQL.glob("*.sql"))]
+    scripts += [value for name, value in vars(helpers).items() if name.isupper()]
+    scripts.append(_CROSS)
+    questions = []
+    for number, text in enumerate(scripts):
+        sql = tmp_path / f"script{number}" / "in.sql"
+        sql.parent.mkdir()
+        sql.write_text(text, encoding="utf-8")
+        for project in ("jaffle_shop", "three_layers"):
+            # T-SQL too: a DECLARE is a script variable only in that dialect.
+            for dialect in (None, "tsql"):
+                session = Session(
+                    project=PROJECTS / project,
+                    sql=sql,
+                    dialect=dialect,
+                    elsewhere=(PROJECTS / "core_platform",),
+                )
+                questions.extend(session.view().questions)
+    return questions
+
+
+def test_every_question_the_corpus_asks_has_a_plain_kind_word(tmp_path: Path) -> None:
+    """Review finding: the rail showed raw key words such as `cross_ref`, and a
+    key of an unexpected shape raised on every screen. Every question the
+    engine asks over the whole corpus gets a word from the closed list.
+    """
+    from dbtw.web.app import _KIND_WORDS, _kind
+
+    questions = _every_question(tmp_path)
+    kinds = {question.key.split(".")[1] for question in questions}
+    assert {"append", "merge", "layer", "variable", "cross_ref"} <= kinds, kinds
+
+    for question in questions:
+        word = _kind(question)
+        assert word in _KIND_WORDS.values(), (question.key, word)
+    assert _KIND_WORDS["cross_ref"] == "another project"
+
+
+def test_a_question_key_of_no_known_shape_names_no_kind() -> None:
+    """Total: a key the list does not know gives no word, and the screen
+    still renders. The corpus test above is where an unknown kind fails.
+    """
+    from dbtw.core.passes import Decision
+    from dbtw.web.app import _kind
+
+    for key in ("odd", "tier2.", "assemble.newkind.x", ""):
+        decision = Decision(
+            key=key, tier=2, action="a", reason="r", source_file="", line_start=0, line_end=0
+        )
+        assert _kind(decision) == "", key
+
+
 # 6. A save comes back to the row it saved ----------------------------------
 
 
@@ -598,6 +663,63 @@ def test_a_refusal_on_the_one_screen_goes_back_to_its_question(walk: Walk, walk_
     assert page.named_links["back"] == f"/everything#question-{index}"
 
 
+# A held refusal lives for one request -----------------------------------------
+
+
+def test_a_refused_answer_not_followed_does_not_come_back_later(walk: Walk, walk_sql: Path) -> None:
+    """Review finding: a refusal whose redirect was never followed stayed
+    held, and came back with a 400 on a later, unrelated visit.
+    """
+    _app, client, session = walk(walk_sql)
+    client.post("/answer", data={"key": _append_key(session), "kind": "merge"})
+
+    assert client.get("/caveats").status_code == 200
+    later = client.get("/refused")
+
+    assert later.status_code == 302
+
+
+def test_a_refused_save_not_followed_does_not_come_back_later(walk: Walk, walk_sql: Path) -> None:
+    _app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+    client.post("/describe", data={"model": name, "text": _JINJA})
+
+    assert client.get("/files").status_code == 200
+    later = client.get("/describe")
+
+    assert later.status_code == 200
+    assert 'class="refusal"' not in later.get_data(as_text=True)
+
+
+def test_a_refused_save_does_not_survive_a_successful_one(walk: Walk, walk_sql: Path) -> None:
+    _app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+    client.post("/describe", data={"model": name, "text": _JINJA})
+
+    saved = client.post("/describe", data={"model": name, "text": "One row per event."})
+    landed = client.get(saved.headers["Location"])
+
+    assert landed.status_code == 200
+    assert 'class="refusal"' not in landed.get_data(as_text=True)
+
+
+def test_a_refused_save_does_not_survive_a_new_conversation(
+    walk: Walk, walk_sql: Path, project_dir: Path
+) -> None:
+    _app, client, session = walk(walk_sql)
+    name = session.view().change.models[0].name
+    client.post("/describe", data={"model": name, "text": _JINJA})
+
+    started = client.post(
+        "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": name}
+    )
+    assert started.status_code == 302
+    landed = client.get("/describe")
+
+    assert landed.status_code == 200
+    assert 'class="refusal"' not in landed.get_data(as_text=True)
+
+
 # 11. A long output path wraps at its separators ------------------------------
 
 
@@ -615,3 +737,22 @@ def test_the_output_path_wraps_at_its_separators(walk: Walk, walk_sql: Path, url
     assert destination.count("/</span><wbr>") == out.count("/")
     page = read(html)
     assert out in {normalised(run) for run in page.engine}
+
+
+def test_a_reload_of_an_old_refusal_in_a_new_conversation_goes_to_the_start(
+    walk: Walk, walk_sql: Path, project_dir: Path
+) -> None:
+    """The old question may not exist in the new conversation, so a reload
+    of the refusal page goes to the start rather than to the old question.
+    """
+    _app, client, session = walk(walk_sql)
+    client.post("/answer", data={"key": _append_key(session), "kind": "merge"})
+    assert client.get("/refused").status_code == 400
+    started = client.post(
+        "/source", data={"project": str(project_dir), "pasted": ONE_APPEND, "name": "q"}
+    )
+    assert started.status_code == 302
+
+    reloaded = client.get("/refused")
+
+    assert reloaded.headers["Location"] == "/"

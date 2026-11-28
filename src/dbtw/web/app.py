@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, abort, redirect, render_template, request, url_for
+from flask import Flask, abort, g, redirect, render_template, request, url_for
 from markupsafe import Markup, escape
 from werkzeug.wrappers.response import Response
 
@@ -815,22 +815,37 @@ def _screens(
     )
 
 
-def _kind(decision: Decision) -> str:
-    """The pass that asks `decision`, read off its key: "append" for
-    "tier2.append.<file>:<n>", "layer" for "assemble.layer.<model>".
+# The word the rail shows for each kind of question, keyed by the pass that
+# asks it. A closed list: every question the engine can ask comes from one of
+# these five passes -- `tier2.append.`, `tier2.merge.`, `assemble.layer.`,
+# `assemble.variable.` and `assemble.cross_ref.` are the only keys built with
+# `question=`. The raw pass name is not a reader's word: `cross_ref` named a
+# key, and the question is about a table in another project.
+# `test_every_question_the_corpus_asks_has_a_plain_kind_word` walks every
+# question the test corpus asks and fails on a kind that is not here.
+_KIND_WORDS = {
+    "append": "append",
+    "merge": "merge",
+    "layer": "layer",
+    "variable": "variable",
+    "cross_ref": "another project",
+}
 
-    The second segment of the documented key shape, which every pass and
-    `assemble` build as "<stage>.<pass>.<subject>" -- the same contract
-    `_RENAME` reads. A key without that shape is a key this module does not
-    know how to name, and it says so rather than labelling a step "".
+
+def _kind(decision: Decision) -> str:
+    """The word for the kind of question `decision` asks, or "".
+
+    Read off the second segment of the documented key shape,
+    "<stage>.<pass>.<subject>" -- the same contract `_RENAME` reads -- and
+    looked up in `_KIND_WORDS`. Total over every key: a key of another shape,
+    or a pass the list does not name, gives no word, so the step is labelled
+    by its table alone and every screen still renders. The corpus test is
+    where such a pass fails, loudly, before it reaches a reader.
     """
     parts = decision.key.split(".", 2)
-    if len(parts) < 3 or not parts[1]:
-        raise ValueError(
-            f"{decision.key!r} is not a '<stage>.<pass>.<subject>' key, so the rail "
-            "cannot name the kind of question it asks"
-        )
-    return parts[1]
+    if len(parts) < 3:
+        return ""
+    return _KIND_WORDS.get(parts[1], "")
 
 
 def _code_spans(text: str) -> Markup:
@@ -1015,10 +1030,25 @@ def create_app(source: Source) -> Flask:
     # on, so the reader lands back beside the row with what they typed.
     drafted: Draft | None = None
 
+    @app.before_request
+    def _hand_over() -> None:
+        """Give each held refusal to the one request after the POST that made
+        it, and to no later one.
+
+        The POST redirects, and the GET it redirects to is the next request.
+        Moving both slots onto that request -- and emptying them -- means a
+        refusal is shown by the first page that renders, or by none. Held
+        until its own screen rendered, a refusal whose redirect was never
+        followed came back with a 400 on a later, unrelated visit: after a
+        successful save, or in a new conversation.
+        """
+        nonlocal refused, drafted
+        g.refused, refused = refused, None
+        g.drafted, drafted = drafted, None
+
     def _take_draft() -> Draft | None:
-        """The held draft, once. The next render is a fresh look."""
-        nonlocal drafted
-        draft, drafted = drafted, None
+        """The draft handed to this request, if any. See `_hand_over`."""
+        draft: Draft | None = g.drafted
         return draft
 
     def _conversation() -> Session:
@@ -1181,6 +1211,7 @@ def create_app(source: Source) -> Flask:
         reader is mid-action and the thing they need is on the page they were
         already on.
         """
+        nonlocal refused_back
         project = request.form.get("project", "")
         pasted = request.form.get("pasted", "")
         uploaded = {
@@ -1219,6 +1250,9 @@ def create_app(source: Source) -> Flask:
         ) as refusal:
             typed = {"project": project, "elsewhere": elsewhere, "pasted": pasted, "name": name}
             return _entry_page(refusal=str(refusal), typed=typed), 400
+        # A new conversation has none of the old one's questions, so a reload
+        # of an old refusal page goes to the start, not to an old question.
+        refused_back = url_for("start")
         return redirect(url_for("start"))
 
     @app.get("/project")
@@ -2014,10 +2048,9 @@ def create_app(source: Source) -> Flask:
         next is answer that question again. With nothing ever refused it goes
         to the start, the screen `_question_url` names for no question.
         """
-        nonlocal refused
-        if refused is None:
+        shown: Refused | None = g.refused
+        if shown is None:
             return redirect(refused_back)
-        shown, refused = refused, None
         return _refused(shown), 400
 
     @app.post("/stale")
