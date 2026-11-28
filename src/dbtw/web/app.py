@@ -173,6 +173,11 @@ class Column:
 
     name: str
     tick: bool
+    # Ticked already, because it is in the answer the reader gave with this
+    # option. Without it the picker came back empty under a button that
+    # names the key -- "merge on event_id" -- and pressing that button sent
+    # no columns and was refused.
+    checked: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +198,10 @@ class Choice:
     # "Chosen" contradicted the rail's dot, which says the question still
     # wants an answer.
     answered: bool
+    # The part of the reader's own answer the picker does not list -- a key
+    # they typed that this model's projections do not name -- so the free-text
+    # field holds it too, and the answer on screen is the whole answer given.
+    typed: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,29 +380,41 @@ class Written:
     change: ProjectChange
 
 
-def _columns(candidates: Sequence[str]) -> tuple[Column, ...]:
+def _columns(candidates: Sequence[str], given: Sequence[str]) -> tuple[Column, ...]:
     seen: set[str] = set()
     rows: list[Column] = []
     for name in candidates:
-        rows.append(Column(name=name, tick=name not in seen))
+        tick = name not in seen
+        rows.append(Column(name=name, tick=tick, checked=tick and name in given))
         seen.add(name)
     return tuple(rows)
 
 
 def _choices(
-    decision: Decision, prompts: dict[str, str], answered: Container[str]
+    decision: Decision,
+    prompts: dict[str, str],
+    given: tuple[str, tuple[str, ...]] | None,
 ) -> tuple[Choice, ...]:
+    """The answers on one question's screen, with the reader's own answer in
+    its picker. `given` is what `Session.answers` holds for this question --
+    `(Option.kind, columns)` -- or None while it is unanswered.
+    """
     candidates = decision.subject.candidates if decision.subject is not None else ()
-    return tuple(
-        Choice(
-            option=option,
-            chosen=option.label == decision.chosen,
-            prompt=prompts.get(option.kind, ""),
-            columns=_columns(candidates) if prompts.get(option.kind) else (),
-            answered=decision.key in answered,
+    choices: list[Choice] = []
+    for option in decision.options:
+        mine = given[1] if given is not None and given[0] == option.kind else ()
+        asks = bool(prompts.get(option.kind))
+        choices.append(
+            Choice(
+                option=option,
+                chosen=option.label == decision.chosen,
+                prompt=prompts.get(option.kind, ""),
+                columns=_columns(candidates, mine) if asks else (),
+                typed=", ".join(c for c in mine if c not in candidates) if asks else "",
+                answered=given is not None,
+            )
         )
-        for option in decision.options
-    )
+    return tuple(choices)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1148,7 +1169,9 @@ def create_app(source: Source) -> Flask:
             Asking(
                 decision=decision,
                 choices=_choices(
-                    decision, view.prompts.get(decision.key, {}), _conversation().answers
+                    decision,
+                    view.prompts.get(decision.key, {}),
+                    _conversation().answers.get(decision.key),
                 ),
                 index=index,
             )
@@ -1196,7 +1219,9 @@ def create_app(source: Source) -> Flask:
         if not 0 <= index < len(view.questions):
             abort(404)
         decision = view.questions[index]
-        choices = _choices(decision, view.prompts.get(decision.key, {}), _conversation().answers)
+        choices = _choices(
+            decision, view.prompts.get(decision.key, {}), _conversation().answers.get(decision.key)
+        )
         example = _example_for(decision, view.change)
         produced = _produced_by(_conversation(), view.change, decision.key)
         spoken = _spoken(
