@@ -37,12 +37,12 @@ _NOT_DONE_INTRO = (
     "validation. This tool did not start dbt, compiled nothing, and ran nothing "
     "against a warehouse."
 )
-_ALL_REFERENCES_REWRITTEN = "This tool rewrote table references as ref() and source() calls."
-_SOME_REFERENCES_LEFT = (
-    "This tool rewrote table references as ref() and source() calls where it could "
-    "resolve them. This tool left {count} as written, because it could not resolve "
-    "{them} to ref() or source(). The decisions above name each one."
+_REFERENCES_REWRITTEN = "This tool rewrote {count} as ref() or source() calls."
+_REFERENCES_LEFT = (
+    "This tool left {count} as written, because it could not resolve {them} to "
+    "ref() or source(). The decisions above name each one."
 )
+_NO_REFERENCES = "This conversion found no table reference to rewrite as a ref() or source() call."
 _VARIABLES_REWRITTEN = "This tool rewrote script variables as var() calls."
 _INCREMENTAL_BUILT = "This conversion built {count}: {names}."
 _NO_INCREMENTAL = (
@@ -64,9 +64,41 @@ _REVIEW = "Before you accept any of this as final, review the model bodies and t
 # could not resolve and so left as the script wrote it.
 _UNRESOLVED_KEY = "assemble.rewrite_unresolved."
 
+# One ref() or source() call that `assemble.rewrite` wrote into a model body.
+_RESOLVED_CALL = re.compile(r"\{\{\s*(?:ref|source)\(.*?\)\s*\}\}")
+
 
 def _counted(n: int, singular: str, plural: str) -> str:
     return f"{n} {singular if n == 1 else plural}"
+
+
+def _references(change: ProjectChange) -> str:
+    """What happened to the table references, counted, with no claim the run
+    does not support.
+
+    A rewritten reference is counted from the body that was written, once for
+    each distinct call in each model. An unresolved one is counted from its
+    Decision, which `assemble` records once for each table in each model, so
+    the two counts measure the same thing. A change with neither -- no models,
+    or models that read no table -- rewrote nothing, and says so.
+    """
+    resolved = sum(len(set(_RESOLVED_CALL.findall(m.body))) for m in change.models)
+    unresolved = sum(1 for d in change.decisions if d.key.startswith(_UNRESOLVED_KEY))
+    said: list[str] = []
+    if resolved:
+        said.append(
+            _REFERENCES_REWRITTEN.format(
+                count=_counted(resolved, "table reference", "table references")
+            )
+        )
+    if unresolved:
+        said.append(
+            _REFERENCES_LEFT.format(
+                count=_counted(unresolved, "table reference", "table references"),
+                them="it" if unresolved == 1 else "them",
+            )
+        )
+    return " ".join(said) if said else _NO_REFERENCES
 
 
 def _render_not_done_yet(change: ProjectChange) -> str:
@@ -76,21 +108,14 @@ def _render_not_done_yet(change: ProjectChange) -> str:
     incremental models were left for later when this run built them, that no
     test was created when an answer declared one and the summary counted it,
     and that every table reference became ref() or source() when `assemble`
-    left some as written. Each claim is now built from the record it is about.
+    left some as written -- or when there was no reference to rewrite. Each
+    claim is now built from the record it is about.
 
     Every form still names `warehouse`, `ref()`, `source()` and `incremental`,
     so the glossary always has words to define -- see
     test_the_closing_section_alone_guarantees_the_glossary_is_never_empty.
     """
-    unresolved = sum(1 for d in change.decisions if d.key.startswith(_UNRESOLVED_KEY))
-    if unresolved:
-        references = _SOME_REFERENCES_LEFT.format(
-            count=_counted(unresolved, "table reference", "table references"),
-            them="it" if unresolved == 1 else "them",
-        )
-    else:
-        references = _ALL_REFERENCES_REWRITTEN
-    rewritten = [references]
+    rewritten = [_references(change)]
     if change.variables:
         rewritten.append(_VARIABLES_REWRITTEN)
 

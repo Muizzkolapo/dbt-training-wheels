@@ -149,11 +149,12 @@ def test_empty_pending_says_so():
 
 
 def test_not_done_yet_states_references_are_rewritten_and_names_deferred_work():
-    out = _report()
+    out = _report(models=(_incremental_model(),))
     assert "Table references are not yet rewritten as ref() or source() calls." not in out
     # No variable in this change, so the sentence names no var() call.
-    assert "This tool rewrote table references as ref() and source() calls." in out
-    assert "incremental models" in out
+    assert "This tool rewrote 2 table references as ref() or source() calls." in out
+    assert "var()" not in out.split("## Not done yet")[1]
+    assert "incremental model" in out
 
 
 def test_no_sources_says_none_to_declare():
@@ -275,7 +276,10 @@ def _incremental_model() -> AssembledModel:
     return AssembledModel(
         name="fct_events",
         path="models/marts/fct_events.sql",
-        body="SELECT 1 AS id",
+        # Two references that assemble resolved: one to a model, one to a source.
+        body=(
+            "SELECT id FROM {{ ref('stg_orders') }} JOIN {{ source('raw', 'events') }} USING (id)"
+        ),
         materialization="incremental",
         grants=(),
         layer="marts",
@@ -306,13 +310,26 @@ def _not_done_yet(**kw) -> str:
 
 
 # A conversion that built an incremental model, declared a test that an answer
-# asked for, left one table reference as written and kept a script variable.
+# asked for, rewrote two table references, left one as written and kept a
+# script variable.
 _EVERYTHING = dict(
     models=(_change().models[0], _incremental_model()),
     tests=(SchemaTest("fct_events", "id"),),
     decisions=(*_change().decisions, _unresolved("stg_orders", "legacy.orders")),
     variables=(Variable("cutoff", "'2024-01-01'", "etl.sql", 2),),
 )
+
+
+def _every_form() -> tuple[str, ...]:
+    """The section for each case of the references: none at all, no models,
+    every one unresolved, every one rewritten, and some of each."""
+    return (
+        _not_done_yet(),
+        _not_done_yet(models=()),
+        _not_done_yet(decisions=(_unresolved("stg_orders", "legacy.orders"),)),
+        _not_done_yet(models=(_incremental_model(),)),
+        _not_done_yet(**_EVERYTHING),
+    )
 
 
 def test_not_done_yet_names_the_incremental_models_this_run_built():
@@ -347,18 +364,41 @@ def test_not_done_yet_says_no_tests_were_created_when_none_were():
     assert "answers asked for" not in section
 
 
-def test_not_done_yet_counts_the_references_left_as_written():
+def test_not_done_yet_counts_both_the_rewritten_and_the_unresolved_references():
     section = _not_done_yet(**_EVERYTHING)
 
+    assert "This tool rewrote 2 table references as ref() or source() calls." in section
     assert "left 1 table reference as written" in section
-    assert "where it could resolve them" in section
 
 
 def test_not_done_yet_claims_every_reference_was_rewritten_only_when_it_was():
+    section = _not_done_yet(models=(_incremental_model(),))
+
+    assert "This tool rewrote 2 table references as ref() or source() calls." in section
+    assert "as written" not in section
+
+
+def test_not_done_yet_claims_no_rewrite_when_the_models_reference_no_table():
+    """`SELECT 1 AS a` reads no table, so nothing became ref() or source()."""
     section = _not_done_yet()
 
-    assert "This tool rewrote table references as ref() and source() calls." in section
-    assert "as written" not in section
+    assert "rewrote" not in section
+    assert "This conversion found no table reference to rewrite" in section
+
+
+def test_not_done_yet_claims_no_rewrite_when_there_are_no_models():
+    section = _not_done_yet(models=())
+
+    assert "rewrote" not in section
+    assert "This conversion found no table reference to rewrite" in section
+
+
+def test_not_done_yet_claims_no_rewrite_when_every_reference_was_unresolved():
+    section = _not_done_yet(decisions=(_unresolved("stg_orders", "legacy.orders"),))
+
+    assert "rewrote" not in section
+    assert "left 1 table reference as written" in section
+    assert "found no table reference" not in section
 
 
 def test_not_done_yet_names_var_calls_only_when_the_run_kept_a_variable():
@@ -367,7 +407,7 @@ def test_not_done_yet_names_var_calls_only_when_the_run_kept_a_variable():
 
 
 def test_not_done_yet_keeps_every_caveat_that_is_true_of_every_run():
-    for section in (_not_done_yet(), _not_done_yet(**_EVERYTHING)):
+    for section in _every_form():
         assert "This tool did no validation." in section
         assert "did not start dbt, compiled nothing" in section
         assert "ran nothing against a warehouse" in section
@@ -382,7 +422,7 @@ def test_the_closing_section_alone_guarantees_the_glossary_is_never_empty():
     these words by itself in each of its forms. If it is ever reworded past
     them, this fails here rather than leaving a heading with nothing under it
     in every report."""
-    for section in (_not_done_yet(), _not_done_yet(**_EVERYTHING)):
+    for section in _every_form():
         assert {t.name for t in terms_in(section)} >= {
             "warehouse",
             "ref()",

@@ -193,16 +193,19 @@ def _conversions(tmp: Path) -> Iterator[Decision]:
 def _closing_changes() -> tuple[ProjectChange, ProjectChange]:
     """Two changes for the "Not done yet" section, which is built per change.
 
-    The first has no incremental model, no test, no unresolved reference and
-    no variable. The second has two of each, so the plural forms are checked
-    as the reader sees them.
+    The first has no incremental model, no test, no table reference and no
+    variable. The second has two of each, with two references rewritten and
+    two left as written, so the plural forms are checked as the reader sees
+    them.
     """
 
-    def model(name: str, materialization: str | None) -> AssembledModel:
+    def model(
+        name: str, materialization: str | None, body: str = "SELECT 1 AS id"
+    ) -> AssembledModel:
         return AssembledModel(
             name=name,
             path=f"models/{name}.sql",
-            body="SELECT 1 AS id",
+            body=body,
             materialization=materialization,
             grants=(),
             layer="marts",
@@ -232,7 +235,10 @@ def _closing_changes() -> tuple[ProjectChange, ProjectChange]:
     )
     full = dataclasses.replace(
         bare,
-        models=(model("fct_a", "incremental"), model("fct_b", "incremental")),
+        models=(
+            model("fct_a", "incremental", "SELECT id FROM {{ ref('stg_a') }}"),
+            model("fct_b", "incremental", "SELECT id FROM {{ source('raw', 'b') }}"),
+        ),
         decisions=(unresolved("legacy.a"), unresolved("legacy.b")),
         tests=(SchemaTest("fct_a", "id"), SchemaTest("fct_b", "id")),
         variables=(Variable("cutoff", None, "etl.sql", 1),),
@@ -382,6 +388,8 @@ def test_both_forms_of_the_closing_section_are_checked(texts) -> None:  # type: 
     checked = " ".join(texts["report"])
 
     assert "This conversion built no incremental models." in checked
+    assert "This conversion found no table reference to rewrite" in checked
+    assert "This tool rewrote 2 table references as ref() or source() calls." in checked
     assert "This conversion built 2 incremental models: fct_a, fct_b." in checked
     assert "This tool left 2 table references as written" in checked
     assert "the tests that your answers asked for: 2." in checked
