@@ -261,3 +261,30 @@ def test_the_reader_s_dialect_decides_what_parses() -> None:
     """
     assert excerpt("DECLARE @d INT = 1", "tsql") == "DECLARE @d INTEGER = 1"
     assert excerpt("DECLARE @d INT = 1", None) == "DECLARE @d INT = 1"
+
+
+def test_the_line_gives_the_reason_the_statement_is_pending() -> None:
+    """The kind says what the statement is. The reason says why the tool
+    declined it, and for a statement that did not parse, what to do next.
+    """
+    from dbtw.core.ingest.classifier import classify
+
+    raw = RawStatement(
+        source_file="/home/priya/sql/users.sql",
+        index=0,
+        text="SELECT name FROM users WHERE name !~ '^x'",
+        line_start=4,
+        line_end=4,
+    )
+    statement = classify(raw, None)
+    report = render_report(
+        _change(pending=((0, statement),), dialect=None),
+        read_project(FIXTURES / "jaffle_shop"),
+    )
+    block = report.split("## Still pending")[1].split("\n## ")[0]
+
+    assert statement.reason in block
+    assert "`--dialect postgres`" in block
+    item, reason = (row for row in block.splitlines() if row.strip())
+    assert item.startswith("- **unsupported** — `users.sql:4` — ")
+    assert reason == f"  - {statement.reason}", "the reason is part of the same list item"

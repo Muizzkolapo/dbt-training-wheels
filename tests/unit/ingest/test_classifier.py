@@ -183,3 +183,134 @@ def test_totality_cases_cover_every_kind():
 
     covered = {expected for _, _, expected in _TOTALITY_CASES}
     assert covered == set(typing.get_args(StatementKind))
+
+
+# A Postgres regex match. With no dialect, sqlglot stops at the `!` of `!~`.
+# The statement starts on line 30 of its file, and the `!` is on its third
+# line, so the reader must look at line 32 of the file.
+_POSTGRES_ONLY = "-- users by name\nSELECT name\nFROM users WHERE name !~ '^x' AND id NOT IN (1, 2)"
+
+
+def _unparseable(text: str = _POSTGRES_ONLY, dialect: str | None = None) -> str:
+    raw = RawStatement(source_file="t.sql", index=3, text=text, line_start=30, line_end=32)
+    stmt = classify(raw, dialect)
+    assert stmt.kind == "unsupported"
+    return stmt.reason
+
+
+def test_an_unparseable_reason_has_no_terminal_colour_codes():
+    reason = _unparseable()
+
+    assert "\x1b" not in reason
+    assert "[4m" not in reason
+    assert "[0m" not in reason
+
+
+def test_an_unparseable_reason_gives_the_line_in_the_file_and_the_token():
+    reason = _unparseable()
+
+    assert "could not parse" in reason
+    assert "line 32" in reason, "the line is counted from the top of the file"
+    assert "line 3," not in reason, "not from the top of the statement"
+    assert "`!`" in reason
+
+
+def test_an_unparseable_reason_gives_the_column_when_the_line_is_not_the_first():
+    # Line 3 of the statement is all of line 32 of the file, so the column
+    # that sqlglot counts is also the column in the file. `!` is column 23.
+    assert "column 23" in _unparseable()
+
+
+def test_an_unparseable_reason_gives_no_column_on_the_first_line_of_the_statement():
+    # The statement can start after another statement on the same line of
+    # the file, so its column 1 is not always column 1 of the file.
+    reason = _unparseable("SELECT a FROM t WHERE x !~ 'y'")
+
+    assert "line 30" in reason
+    assert "column" not in reason
+    assert "`!`" in reason
+
+
+def test_an_unparseable_reason_keeps_the_detail_from_sqlglot():
+    reason = _unparseable()
+
+    assert "Invalid expression / Unexpected token" in reason
+    assert "Line 3, Col" not in reason, "the statement-relative position is not repeated"
+
+
+def test_an_unparseable_reason_names_the_dialect_option_when_no_dialect_was_given():
+    reason = _unparseable()
+
+    assert "start dbtw again with the --dialect option" in reason, "convert and web both take it"
+    assert "`--dialect postgres`" in reason
+    assert "may use the syntax of one database" in reason
+
+
+def test_the_dialect_advice_does_not_claim_the_dialect_is_the_cause():
+    # A plain typo fails to parse too. The advice is a condition, not a cause.
+    reason = _unparseable("SELECT 1 FROM")
+
+    assert "If the SQL is correct, it may use the syntax of one database." in reason
+    assert "The SQL may use" not in reason
+
+
+def test_an_unparseable_reason_names_the_dialect_that_was_given():
+    reason = _unparseable(dialect="tsql")
+
+    assert "as the tsql dialect" in reason
+    assert "`--dialect postgres`" not in reason, "the example is for a run with no dialect"
+    assert "start dbtw again with its name in the --dialect option" in reason
+
+
+def test_a_statement_sqlglot_cannot_tokenize_still_gets_a_clean_reason():
+    # An unterminated string fails in the tokenizer, with no line or token.
+    reason = _unparseable("SELECT 'abc")
+
+    assert "could not parse the statement that starts at line 30" in reason
+    assert "\x1b" not in reason
+    assert "\n" not in reason
+    assert "--dialect" in reason
+
+
+def test_a_token_object_in_the_sqlglot_detail_is_shown_as_its_text():
+    # sqlglot puts the repr of its Token object in some messages.
+    reason = _unparseable("SELECT 1 FROM")
+
+    assert "<Token" not in reason
+    assert "TokenType" not in reason
+    assert "the end of the statement" in reason
+
+
+def test_a_python_class_in_the_sqlglot_detail_is_shown_as_its_name():
+    # sqlglot writes "missing for <class 'sqlglot.expressions.core.EQ'>".
+    reason = _unparseable("SELECT * FROM t WHERE a = = 1")
+
+    assert "<class" not in reason
+    assert "sqlglot.expressions" not in reason
+    assert "`Required keyword: 'expression' missing for EQ`" in reason
+
+
+def test_an_escape_byte_in_the_token_does_not_reach_the_reason():
+    # The token is the SQL text of the reader. An ESC byte in it would be a
+    # terminal code on the screen, the same as the codes sqlglot adds.
+    reason = _unparseable("SELECT a FROM t WHERE \x1b[4m\x1b")
+
+    assert "\x1b" not in reason
+    assert "line 30" in reason
+
+
+@pytest.mark.parametrize(
+    ("text", "dialect"),
+    [
+        (_POSTGRES_ONLY, None),
+        (_POSTGRES_ONLY, "tsql"),
+        ("SELECT a FROM t WHERE x !~ 'y'", None),
+        ("SELECT 'abc", None),
+        ("SELECT 1 FROM", None),
+        ("SELECT * FROM t WHERE a = = 1", None),
+    ],
+)
+def test_an_unparseable_reason_follows_the_structural_rules_of_ste(text, dialect):
+    from tests.unit.test_ste_wording import findings
+
+    assert findings(_unparseable(text, dialect)) == []

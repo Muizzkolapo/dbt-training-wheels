@@ -19,7 +19,10 @@ _NO_DIALECT_WARNING = (
 def ingest(source: Path | str | Sequence[Path | str], dialect: str | None = None) -> IngestResult:
     if dialect is not None and dialect not in Dialect.classes:
         valid = ", ".join(sorted(k for k in Dialect.classes if k))
-        raise UnknownDialectError(f"unknown dialect {dialect!r}. The valid dialects are: {valid}")
+        raise UnknownDialectError(
+            f"This tool does not know the dialect {dialect!r}. "
+            f"Use one of these dialects: `{valid}`."
+        )
 
     files = _resolve_files(source)
     warnings: list[str] = [] if dialect is not None else [_NO_DIALECT_WARNING]

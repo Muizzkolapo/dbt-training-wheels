@@ -74,3 +74,17 @@ def test_unreadable_file_is_skipped_with_a_warning_naming_it(tmp_path):
         unreadable.chmod(0o644)
     assert result.statements == ()
     assert any(str(unreadable) in w for w in result.warnings)
+
+
+def test_unknown_dialect_message_keeps_every_name_in_one_code_span():
+    from sqlglot.dialects.dialect import Dialect
+    from tests.unit.test_ste_wording import findings
+
+    with pytest.raises(UnknownDialectError) as caught:
+        ingest(FIXTURES / "etl_script.sql", dialect="sqlserver")
+    message = str(caught.value)
+
+    assert "'sqlserver'" in message
+    names = sorted(k for k in Dialect.classes if k)
+    assert f"`{', '.join(names)}`" in message
+    assert findings(message) == []
