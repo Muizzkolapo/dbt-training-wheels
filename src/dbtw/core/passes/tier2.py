@@ -471,22 +471,36 @@ def _merge_unique_key(
     if next(on.find_all(exp.Or), None) is not None:
         return (), "disjunctive"
     keys: list[str] = []
-    for eq in on.find_all(exp.EQ):
-        if not (isinstance(eq.this, exp.Column) and isinstance(eq.expression, exp.Column)):
-            continue
-        this_is_target = _qualifies_to(eq.this, target)
-        expression_is_target = _qualifies_to(eq.expression, target)
-        if this_is_target and not expression_is_target:
-            key_column = eq.this
-        elif expression_is_target and not this_is_target:
-            key_column = eq.expression
-        else:
-            continue  # ambiguous: neither side (or both sides) qualify to the target
+    for key_column, _other in _key_equalities(node, target):
         if key_column.name not in keys:
             keys.append(key_column.name)
     if not keys:
         return (), "no_key"
     return tuple(keys), None
+
+
+def _key_equalities(
+    node: exp.Merge, target: tuple[str, bool]
+) -> list[tuple[exp.Column, exp.Column]]:
+    """Each usable ON-clause equality as `(target side, other side)`, in the
+    order written — see `_merge_unique_key` for which equalities are usable.
+
+    The other side is what the key column is matched against, so it is also
+    the value a row inserted for that key carries: `_merge_projection` reads
+    it as the key column's source.
+    """
+    pairs: list[tuple[exp.Column, exp.Column]] = []
+    for eq in node.args["on"].find_all(exp.EQ):
+        if not (isinstance(eq.this, exp.Column) and isinstance(eq.expression, exp.Column)):
+            continue
+        this_is_target = _qualifies_to(eq.this, target)
+        expression_is_target = _qualifies_to(eq.expression, target)
+        if this_is_target and not expression_is_target:
+            pairs.append((eq.this, eq.expression))
+        elif expression_is_target and not this_is_target:
+            pairs.append((eq.expression, eq.this))
+        # else ambiguous: neither side (or both sides) qualify to the target
+    return pairs
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,6 +520,10 @@ class _MergeBranches:
     inserted_columns: tuple[str, ...]  # named INSERT target columns; () means "all"
     rewritten: tuple[tuple[str, str], ...]  # (column, value) pairs dbt will not reproduce
     conditions: tuple[str, ...]  # per-branch conditions dbt's merge has no place for
+    unnamed: tuple[str, ...]  # converted branches writing columns they do not name, verbatim
+    assignments: tuple[tuple[tuple[str, bool], exp.Expr], ...]  # every (column, value) written
+    update_sets: tuple[tuple[tuple[str, bool], ...], ...]  # columns each matched branch names
+    insert_sets: tuple[tuple[tuple[str, bool], ...], ...]  # columns each unmatched branch names
 
 
 def _named_columns(node: exp.Expr) -> list[tuple[str, bool]] | None:
@@ -583,6 +601,8 @@ class _BranchWrite:
     columns: tuple[tuple[str, bool], ...]  # named targets; () means "every column"
     rewritten: tuple[tuple[str, str], ...]  # (column, value SQL) dbt will not reproduce
     reads_source: bool  # any value at all taken from the source row
+    pairs: tuple[tuple[tuple[str, bool], exp.Expr], ...]  # each named column with its value
+    unnamed: bool  # writes columns it does not name: `INSERT *`, `SET *`, positional VALUES
 
 
 def _members(node: exp.Expr | None) -> list[exp.Expr] | None:
@@ -665,7 +685,7 @@ def _branch_write(
         # and name none (probed on 30.18.0), so they are exactly what dbt's
         # merge does and there is nothing to pair or report.
         if isinstance(target, (exp.Star, exp.Var)):
-            return _BranchWrite(columns=(), rewritten=(), reads_source=True)
+            return _BranchWrite(columns=(), rewritten=(), reads_source=True, pairs=(), unnamed=True)
         # `INSERT VALUES ...` leaves `this` None; `INSERT (id, city) VALUES
         # ...` writes a Tuple of columns, which `_named_columns` reads.
         if target is None:
@@ -685,9 +705,14 @@ def _branch_write(
             columns=tuple(columns),
             rewritten=tuple(rewritten),
             reads_source=any(_reads_source(value, target_alias) for value in values),
+            # `_pair` returned a list, so the two lists are of equal length.
+            pairs=tuple(zip(columns, values, strict=True)) if columns else (),
+            unnamed=not columns,
         )
     columns = []
     rewritten = []
+    pairs: list[tuple[tuple[str, bool], exp.Expr]] = []
+    unnamed = False
     reads_source = False
     for assignment in then.args["expressions"]:
         if isinstance(assignment, exp.EQ):
@@ -704,6 +729,7 @@ def _branch_write(
             # A star target names no column, so there is nothing to pair a
             # value with and nothing to report as a restriction.
             reads_source = reads_source or value is None or _reads_source(value, target_alias)
+            unnamed = True
             continue
         values = _members(value) or ([] if value is None else [value])
         reads_source = reads_source or any(_reads_source(v, target_alias) for v in values)
@@ -712,8 +738,13 @@ def _branch_write(
         if paired is None:
             return "unpairable"
         rewritten.extend(paired)
+        pairs.extend(zip(named, values, strict=True))
     return _BranchWrite(
-        columns=tuple(columns), rewritten=tuple(rewritten), reads_source=reads_source
+        columns=tuple(columns),
+        rewritten=tuple(rewritten),
+        reads_source=reads_source,
+        pairs=tuple(pairs),
+        unnamed=unnamed,
     )
 
 
@@ -806,6 +837,16 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
 
     `rewritten` collects, across every converted branch, the columns whose
     value dbt will not reproduce — see `_from_source`.
+
+    The last four fields feed `_merge_projection`, which narrows the model
+    body to the columns this MERGE writes. `unnamed` quotes each converted
+    branch that writes columns without naming them (`INSERT *`, `SET t.* =
+    s.*`, a positional `INSERT VALUES`). `assignments` holds every named
+    column with the value written to it, in the order written and not
+    deduped, so two different values for one column stay visible.
+    `update_sets` and `insert_sets` hold the columns each matched and each
+    unmatched branch names, one entry per branch, because whether dbt writes
+    a column the script did not is a question about each branch on its own.
     """
     unsupported: list[str] = []
     unreadable: list[str] = []
@@ -820,6 +861,10 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
     inserted: list[tuple[str, bool]] = []
     rewritten: list[tuple[str, str]] = []
     conditions: list[str] = []
+    unnamed: list[str] = []
+    assignments: list[tuple[tuple[str, bool], exp.Expr]] = []
+    update_sets: list[tuple[tuple[str, bool], ...]] = []
+    insert_sets: list[tuple[tuple[str, bool], ...]] = []
     target_alias = _target_alias(node.this)
     for when in node.args["whens"].expressions:
         then = when.args["then"]
@@ -842,6 +887,9 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
             continue
         named = list(write.columns)
         rewritten.extend(write.rewritten)
+        assignments.extend(write.pairs)
+        if write.unnamed:
+            unnamed.append(when.sql(dialect=dialect))
         condition = when.args["condition"]
         if condition is not None:
             conditions.append(condition.sql(dialect=dialect))
@@ -851,11 +899,13 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
         if isinstance(then, exp.Insert):
             inserts_unmatched = True
             collected = inserted
+            insert_sets.append(tuple(named))
             if named:
                 restricted_inserts += 1
         else:
             updates_matched = True
             collected = updated
+            update_sets.append(tuple(named))
             if named:
                 restricted_updates += 1
         for column in named:
@@ -874,6 +924,10 @@ def _merge_branches(node: exp.Merge, dialect: str | None) -> _MergeBranches:
         inserted_columns=tuple(name for name, _ in inserted),
         rewritten=tuple(rewritten),
         conditions=tuple(conditions),
+        unnamed=tuple(unnamed),
+        assignments=tuple(assignments),
+        update_sets=tuple(update_sets),
+        insert_sets=tuple(insert_sets),
     )
 
 
@@ -892,15 +946,129 @@ def _restriction_phrase(count: int, table_name: str, clause: str, verb: str, nam
     return f"{count} {clause} branches of {table_name} {verb} only {named} between them"
 
 
-def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str, str, str]]:
+@dataclass(frozen=True, slots=True)
+class _Projection:
+    """The columns a converted MERGE's model body selects — see
+    `_merge_projection`.
+
+    `keys` are the unique_key columns, as the ON clause names them on the
+    target. `columns` pairs each target column the MERGE writes with the
+    USING-source column written to it, keys first, then in the order the
+    branches write them.
+    """
+
+    keys: tuple[tuple[str, bool], ...]
+    columns: tuple[tuple[tuple[str, bool], exp.Column], ...]
+
+
+def _identifier(column: exp.Column) -> tuple[str, bool]:
+    """A column's name and whether it was written quoted."""
+    identifier = column.this
+    return column.name, bool(isinstance(identifier, exp.Identifier) and identifier.quoted)
+
+
+def _names(column: tuple[str, bool], columns: tuple[tuple[str, bool], ...]) -> bool:
+    """Whether `columns` names `column`, by `naming.same_identifier`."""
+    name, quoted = column
+    return any(
+        same_identifier(name, quoted, other, other_quoted) for other, other_quoted in columns
+    )
+
+
+def _merge_projection(
+    node: exp.Merge, branches: _MergeBranches, dialect: str | None
+) -> _Projection | str:
+    """The columns the model body selects, or why it cannot be narrowed to
+    them — a clause that completes "the model body is not narrowed to the
+    columns this MERGE writes, because ...".
+
+    dbt's merge writes every column the model selects, on update and on
+    insert alike. A body of `SELECT * FROM <source>` makes dbt write every
+    column of the source, columns the MERGE never wrote. The body selects
+    exactly what the MERGE writes when all of these hold:
+
+    - the USING source is a table. A subquery USING is the user's own query;
+      it becomes the body as written, and its own SELECT list says what it
+      selects.
+    - every converted branch names the columns it writes. `INSERT *`, `SET
+      t.* = s.*` and a positional `INSERT VALUES` write columns this pass
+      cannot list, and `SELECT *` is the body that matches them.
+    - every value written, and the other side of every ON-clause key
+      equality, is a plain column of the USING source: qualified to its
+      alias (its bare name when unaliased), or unqualified, which
+      `_from_source` reads as the source too. A constant, an expression, a
+      DEFAULT or the target's own column has no source column to select.
+    - each target column is written from one source column everywhere. `SET
+      t.city = s.town` beside `INSERT (city) VALUES (s.city)` gives dbt two
+      answers for one column and the model room for one.
+
+    The keys come first, sourced from the ON clause, because the model must
+    carry the unique_key column even when no branch writes it (a matched-only
+    MERGE). A key the INSERT also writes must be written from the same
+    source column. A target column written from a source column of another
+    name is selected under the target's name (`s.name AS full_name`), so dbt
+    writes it from the value the script wrote.
+    """
+    using = node.args["using"]
+    if isinstance(using, exp.Subquery):
+        return "its USING source is a subquery, which becomes the model body as written"
+    if not isinstance(using, exp.Table):
+        return f"its USING source ({using.sql(dialect=dialect)}) is not a table"
+    if branches.unnamed:
+        return f"a WHEN branch writes columns without naming them ({'; '.join(branches.unnamed)})"
+    source = _target_alias(using)
+    key_pairs = [
+        (_identifier(key), value) for key, value in _key_equalities(node, _target_alias(node.this))
+    ]
+    columns: list[tuple[tuple[str, bool], exp.Column]] = []
+    for column, value in (*key_pairs, *branches.assignments):
+        name = column[0]
+        if not (
+            isinstance(value, exp.Column)
+            and not isinstance(value.this, exp.Star)
+            and (not value.table or _qualifies_to(value, source))
+        ):
+            return (
+                f"{name} is written from {value.sql(dialect=dialect)}, which is not a column "
+                "of the USING source"
+            )
+        seen = next((written for target, written in columns if _names(column, (target,))), None)
+        if seen is None:
+            columns.append((column, value))
+        elif not _names(_identifier(value), (_identifier(seen),)):
+            return (
+                f"{name} is written from {seen.sql(dialect=dialect)} in one place and from "
+                f"{value.sql(dialect=dialect)} in another"
+            )
+    return _Projection(
+        keys=tuple(column for column, _ in key_pairs),
+        columns=tuple(columns),
+    )
+
+
+def _merge_caveats(
+    branches: _MergeBranches, table_name: str, projection: _Projection | str
+) -> list[tuple[str, str, str]]:
     """Every way dbt's merge strategy will act differently from the branches
     this MERGE actually wrote, as `(decision name, action, reason)` triples.
 
-    These are caveats, not refusals: the conversion still happens (the model
-    body is the USING source either way), and what changes is that its
-    consequences are on the record instead of being discovered in
-    production. Each names the difference in dbt's own terms so the reader
-    can decide whether the converted model is still the job they meant.
+    These are caveats, not refusals: the conversion still happens, and what
+    changes is that its consequences are on the record instead of being
+    discovered in production. Each names the difference in dbt's own terms so
+    the reader can decide whether the converted model is still the job they
+    meant.
+
+    The column caveats depend on the model body. With a `_Projection` the
+    body selects exactly the columns the MERGE writes, so a branch differs
+    from dbt only in the selected columns it does not write itself: a
+    matched branch in the non-key columns it leaves alone (a key column is
+    rewritten to the value it was matched on), an unmatched branch in the
+    columns it does not list. Those are named. The values caveat goes
+    entirely: a projection exists only when every value is a plain source
+    column, so each one `_from_source` flagged is a differently named source
+    column, and the projection's alias makes dbt write it as the script did.
+    Without a projection the body is the USING source unchanged, and each
+    column caveat says why it was not narrowed.
 
     No `merge_update_columns` config is emitted for the restricted-SET case:
     adapter support for it varies and the adapter isn't known at convert
@@ -930,53 +1098,114 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
                 "match nothing, so the converted model overwrites rows the script left alone",
             )
         )
-    if branches.updated_columns:
-        named = ", ".join(branches.updated_columns)
-        phrase = _restriction_phrase(
-            branches.restricted_updates, table_name, "WHEN MATCHED", "assign", named
-        )
-        caveats.append(
-            (
-                "merge.update_columns",
-                f"caveat: {phrase}, but the converted model updates every column it selects",
-                "dbt's merge incremental strategy updates a matched row with every column "
-                "the model selects, not a chosen subset, so the columns this MERGE leaves "
-                "alone are overwritten on every run. The adapter-specific "
-                "merge_update_columns config restores the restriction where the adapter "
-                "supports it; it is not emitted here because the adapter is not known at "
-                "convert time",
+    restore = (
+        "The adapter-specific merge_update_columns config restores the restriction where "
+        "the adapter supports it; it is not emitted here because the adapter is not known "
+        "at convert time"
+    )
+    if isinstance(projection, _Projection):
+        selected = [column for column, _ in projection.columns]
+        overwritten = [
+            column
+            for column in selected
+            if not _names(column, projection.keys)
+            and any(not _names(column, named) for named in branches.update_sets)
+        ]
+        defaulted = [
+            column
+            for column in selected
+            if any(not _names(column, named) for named in branches.insert_sets)
+        ]
+        if overwritten:
+            phrase = _restriction_phrase(
+                branches.restricted_updates,
+                table_name,
+                "WHEN MATCHED",
+                "assign",
+                ", ".join(branches.updated_columns),
             )
-        )
-    if branches.inserted_columns:
-        named = ", ".join(branches.inserted_columns)
-        phrase = _restriction_phrase(
-            branches.restricted_inserts, table_name, "WHEN NOT MATCHED", "insert", named
-        )
-        caveats.append(
-            (
-                "merge.insert_columns",
-                f"caveat: {phrase}, but the converted model inserts every column it selects",
-                "dbt's merge incremental strategy builds an inserted row from every column "
-                "the model selects, not a chosen subset, so a column this MERGE's INSERT "
-                "left to the target's default is written from the model's own SELECT instead",
+            extra = ", ".join(name for name, _ in overwritten)
+            caveats.append(
+                (
+                    "merge.update_columns",
+                    f"caveat: {phrase}, but the converted model updates {extra} in every "
+                    "matched row",
+                    "dbt's merge incremental strategy updates a matched row with every column "
+                    "the model selects. The model selects every column this MERGE writes in "
+                    "any branch, so a column one branch writes is overwritten by every "
+                    f"matched row, including rows a branch that leaves it alone handles. "
+                    f"{restore}",
+                )
             )
-        )
-    if branches.rewritten:
-        written = " and ".join(f"{column} from {value}" for column, value in branches.rewritten)
-        caveats.append(
-            (
-                "merge.assigned_values",
-                f"caveat: {table_name} writes {written}, not from the source's own column "
-                "of that name, but the converted model writes every column from its own "
-                "SELECT",
-                "dbt's merge incremental strategy fills each column of an updated or "
-                "inserted row from the model's own SELECT, and the model's body is this "
-                "MERGE's USING source. A value the script took from anywhere else — a "
-                "constant, a DEFAULT, an expression, the target's own column, or a source "
-                "column of a different name — is replaced by the source column of the same "
-                "name, changing what lands in that column",
+        if defaulted:
+            phrase = _restriction_phrase(
+                branches.restricted_inserts,
+                table_name,
+                "WHEN NOT MATCHED",
+                "insert",
+                ", ".join(branches.inserted_columns),
             )
+            extra = ", ".join(name for name, _ in defaulted)
+            caveats.append(
+                (
+                    "merge.insert_columns",
+                    f"caveat: {phrase}, but the converted model writes {extra} into every "
+                    "inserted row",
+                    "dbt's merge incremental strategy builds an inserted row from every column "
+                    "the model selects. The model selects every column this MERGE writes in "
+                    "any branch, so a column this MERGE's INSERT left to the target's default "
+                    "is written from the USING source instead",
+                )
+            )
+    else:
+        unnarrowed = (
+            f"The model body is not narrowed to the columns this MERGE writes, because {projection}"
         )
+        if branches.updated_columns:
+            named = ", ".join(branches.updated_columns)
+            phrase = _restriction_phrase(
+                branches.restricted_updates, table_name, "WHEN MATCHED", "assign", named
+            )
+            caveats.append(
+                (
+                    "merge.update_columns",
+                    f"caveat: {phrase}, but the converted model updates every column it selects",
+                    "dbt's merge incremental strategy updates a matched row with every column "
+                    "the model selects, not a chosen subset, so the columns this MERGE leaves "
+                    f"alone are overwritten on every run. {unnarrowed}. {restore}",
+                )
+            )
+        if branches.inserted_columns:
+            named = ", ".join(branches.inserted_columns)
+            phrase = _restriction_phrase(
+                branches.restricted_inserts, table_name, "WHEN NOT MATCHED", "insert", named
+            )
+            caveats.append(
+                (
+                    "merge.insert_columns",
+                    f"caveat: {phrase}, but the converted model inserts every column it selects",
+                    "dbt's merge incremental strategy builds an inserted row from every column "
+                    "the model selects, not a chosen subset, so a column this MERGE's INSERT "
+                    "left to the target's default is written from the model's own SELECT "
+                    f"instead. {unnarrowed}",
+                )
+            )
+        if branches.rewritten:
+            written = " and ".join(f"{column} from {value}" for column, value in branches.rewritten)
+            caveats.append(
+                (
+                    "merge.assigned_values",
+                    f"caveat: {table_name} writes {written}, not from the source's own column "
+                    "of that name, but the converted model writes every column from its own "
+                    "SELECT",
+                    "dbt's merge incremental strategy fills each column of an updated or "
+                    "inserted row from the model's own SELECT, and the model's body is this "
+                    "MERGE's USING source. A value the script took from anywhere else — a "
+                    "constant, a DEFAULT, an expression, the target's own column, or a source "
+                    "column of a different name — is replaced by the source column of the "
+                    "same name, changing what lands in that column",
+                )
+            )
     if branches.conditions:
         stated = "; ".join(branches.conditions)
         caveats.append(
@@ -993,15 +1222,26 @@ def _merge_caveats(branches: _MergeBranches, table_name: str) -> list[tuple[str,
     return caveats
 
 
-def _merge_body(node: exp.Merge, dialect: str | None) -> str:
-    """The MERGE's USING source, rendered as a standalone SELECT.
+def _merge_body(node: exp.Merge, projection: _Projection | str, dialect: str | None) -> str:
+    """The model body: the columns the MERGE writes, read from its USING
+    source, or that source unchanged when no projection could be derived.
 
-    A subquery USING (`USING (SELECT ...) AS s`) already *is* a query — its
-    inner query is used directly. A plain table USING (`USING stg_c AS s`)
-    isn't a query at all, so it's wrapped as `SELECT * FROM <table>`.
+    With a `_Projection`, each written column is selected from the USING
+    table under the target column's name (see `_merge_projection`). Without
+    one, a subquery USING (`USING (SELECT ...) AS s`) already *is* a query,
+    so its inner query is used directly, and a plain table USING (`USING
+    stg_c AS s`) is wrapped as `SELECT * FROM <table>`.
     """
     using = node.args["using"]
-    if isinstance(using, exp.Subquery):
+    if isinstance(projection, _Projection):
+        selected: list[exp.Expr] = []
+        for (name, quoted), value in projection.columns:
+            if same_identifier(name, quoted, *_identifier(value)):
+                selected.append(value.copy())
+            else:
+                selected.append(exp.alias_(value.copy(), exp.to_identifier(name, quoted=quoted)))
+        query = exp.select(*selected).from_(using.copy())
+    elif isinstance(using, exp.Subquery):
         query = using.this
     else:
         query = exp.select("*").from_(using.copy())
@@ -1012,7 +1252,8 @@ def merge_pass(state: PassState) -> PassState:
     """Convert a pending MERGE into an incremental model keyed on its ON clause.
 
     The ON clause's equality columns become the draft's `unique_key` (see
-    `_merge_unique_key`) and the USING source becomes the model body (see
+    `_merge_unique_key`) and the columns the MERGE writes, read from its USING
+    source, become the model body (see `_merge_projection` and
     `_merge_body`). Whether that key actually identifies a row uniquely
     isn't decidable from the SQL alone (a MERGE still runs correctly even if
     `ON` picks out more than one existing row, just non-deterministically),
@@ -1233,7 +1474,8 @@ def merge_pass(state: PassState) -> PassState:
                 )
             )
             continue
-        body = _merge_body(node, state.dialect)
+        projection = _merge_projection(node, branches, state.dialect)
+        body = _merge_body(node, projection, state.dialect)
         draft = ModelDraft(
             name=table.name,
             qualified_name=qualified_name(table),
@@ -1295,15 +1537,17 @@ def merge_pass(state: PassState) -> PassState:
                 # offers is already spelled with the key the ON clause named,
                 # so none of them carries a `columns_prompt` and there is no
                 # picker here to fill. Collecting candidates anyway would add
-                # a field with no reader, and one that is misleading for the
-                # commonest MERGE shape at that -- a plain-table USING renders
-                # as `SELECT * FROM <source>`, whose star makes the honest
-                # answer empty. If a keyless option is ever offered here, this
-                # is the decision to remake.
+                # a field with no reader, and one that is misleading wherever
+                # no projection is derived -- the body is then `SELECT * FROM
+                # <source>`, whose star makes the honest answer empty. If a
+                # keyless option is ever offered here, this is the decision
+                # to remake.
                 subject=Subject(table=table.name, columns=keys),
             )
         )
-        for caveat_name, caveat_action, caveat_reason in _merge_caveats(branches, table.name):
+        for caveat_name, caveat_action, caveat_reason in _merge_caveats(
+            branches, table.name, projection
+        ):
             decisions.append(
                 _decision(stmt, index, caveat_name, 2, action=caveat_action, reason=caveat_reason)
             )

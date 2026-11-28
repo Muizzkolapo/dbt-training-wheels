@@ -444,12 +444,11 @@ def test_the_report_asks_the_append_and_the_merge_question(tmp_path):
 
 
 def test_the_report_records_where_dbts_merge_will_act_unlike_the_script(tmp_path):
-    """The fixture's MERGE is not what dbt's merge strategy does, in two
-    ways, and the converted model is written anyway -- so both differences
-    have to be on the record rather than discovered in production. The
-    statement has no WHEN NOT MATCHED branch (dbt's merge always inserts an
-    unmatched row) and its UPDATE SET names only `name` while the model body
-    selects every column (dbt's merge updates all of them)."""
+    """The fixture's MERGE has no WHEN NOT MATCHED branch, and dbt's merge
+    always inserts an unmatched row, so that difference has to be on the
+    record. Its UPDATE SET names only `name`, and the model body selects only
+    the key and `name`, so dbt's merge updates what the script updates and
+    no column caveat is true."""
     report = _run_fixture(tmp_path)
     lines = [line for line in report.splitlines() if line.startswith("- **caveat:")]
 
@@ -458,14 +457,36 @@ def test_the_report_records_where_dbts_merge_will_act_unlike_the_script(tmp_path
     assert "dim_customers" in missing_insert[0]
     assert "insert rows that match nothing" in missing_insert[0]
 
-    restricted_update = [line for line in lines if "merge_update_columns" in line]
-    assert len(restricted_update) == 1, lines
-    assert "only name" in restricted_update[0]
-    assert "every column it selects" in restricted_update[0]
+    assert [line for line in lines if "merge_update_columns" in line] == [], lines
 
     # The caveats describe the model that was written, so the claim they make
-    # about it has to hold: the body really does select every column.
-    assert "SELECT\n  *\n" in _find(tmp_path, "dim_customers")
+    # about it has to hold: the body selects the columns the MERGE writes.
+    body = _find(tmp_path, "dim_customers")
+    assert "SELECT\n  s.customer_id,\n  s.name\nFROM {{ source('raw', 'customers') }}" in body
+    assert "*" not in body
+
+
+REPORTED_MERGE_SQL = (
+    "MERGE INTO dim_customer AS t\n"
+    "USING analytics.customers_raw AS s\n"
+    "ON t.customer_id = s.customer_id\n"
+    "WHEN MATCHED THEN UPDATE SET t.name = s.name, t.email = s.email\n"
+    "WHEN NOT MATCHED THEN INSERT (customer_id, name, email) "
+    "VALUES (s.customer_id, s.name, s.email);\n"
+)
+
+
+def test_a_merge_that_writes_three_columns_becomes_a_model_selecting_those_three(tmp_path):
+    """The reported script. `SELECT *` put every column of customers_raw into
+    dim_customer; the model must write only what the MERGE writes."""
+    assert _run(tmp_path, tmp_path / "sql", REPORTED_MERGE_SQL) == 0
+    body = _find(tmp_path, "dim_customer")
+    assert "unique_key='customer_id'" in body
+    assert (
+        "SELECT\n  s.customer_id,\n  s.name,\n  s.email\n"
+        "FROM {{ source('analytics', 'customers_raw') }} AS s"
+    ) in body
+    assert "*" not in body
 
 
 def test_the_flag_upgrades_the_append_and_leaves_the_merges_own_key_alone(tmp_path):

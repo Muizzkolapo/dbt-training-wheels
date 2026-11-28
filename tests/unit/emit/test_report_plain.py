@@ -65,7 +65,7 @@ def _has_no_example(block: str) -> None:
     assert block == block.rstrip(), block
 
 
-# --- the fixture: an append model with an example, a merge model without one
+# --- the fixture: an append model and a merge model, each with an example
 
 
 def test_the_report_prints_the_plain_question_beside_the_dbt_one():
@@ -167,20 +167,41 @@ def test_the_report_prints_a_worked_example_where_one_can_be_built():
     assert "<occurred_at-new>" in out
 
 
-def test_a_star_projecting_model_gets_no_example_and_no_empty_heading():
-    """stg_dim_customers is SELECT *, so no example can be built honestly.
-    The report must omit the section, not print an empty one."""
-    out, _ = _report()
+def test_a_star_projecting_model_gets_no_example_and_no_empty_heading(tmp_path):
+    """The fixture with one change: its MERGE also inserts every column
+    (`INSERT *`), so stg_dim_customers stays SELECT * and no example can be
+    built honestly. The report must omit the section, not print an empty
+    one."""
+    original = FIXTURE.read_text(encoding="utf-8")
+    star = original.replace(
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name;",
+        "WHEN MATCHED THEN UPDATE SET t.name = s.name\nWHEN NOT MATCHED THEN INSERT *;",
+    )
+    assert star != original, "the fixture's MERGE changed; this test no longer edits it"
+    script = tmp_path / "incremental_etl.sql"
+    script.write_text(star, encoding="utf-8")
+    ir = ingest(script, None)
+    out = render_report(assemble(run_passes(classify_statements(ir), ir.dialect), _CTX), _CTX)
     assert "<customer_id>" not in out
     _has_no_example(_block(out, "MERGE INTO dim_customers became an incremental model"))
 
 
 def test_the_example_is_rendered_only_for_the_decision_it_belongs_to():
-    """One of the fixture's two questions can be illustrated and the other
-    cannot, so exactly one example may appear. Two would mean a Decision was
-    paired with a model it did not come from."""
+    """Both of the fixture's questions can be illustrated: the append selects
+    named columns, and the MERGE's body selects the columns it writes. So
+    each question shows one example, over its own model's columns. A column
+    of the other model in a block would mean a Decision was paired with a
+    model it did not come from."""
     out, _ = _report()
-    assert out.count("Worked example") == 1
+    assert out.count("Worked example") == 2
+    merge = _block(out, "MERGE INTO dim_customers became an incremental model")
+    append = _block(out, "INSERT INTO events became an incremental model")
+    assert merge.count("Worked example") == 1
+    assert append.count("Worked example") == 1
+    assert "`<name>`" in merge
+    assert "<event_id>" not in merge
+    assert "<event_id>" in append
+    assert "<name>" not in append
 
 
 def test_the_example_carries_the_notice_the_producing_module_owns():
