@@ -54,6 +54,6 @@ def require_flask() -> None:
         import flask  # noqa: F401
     except ImportError as exc:
         raise MissingWebExtraError(
-            f"dbtw web needs Flask, which could not be imported ({exc}). "
+            f"dbtw web needs Flask, but this tool could not import Flask ({exc}). "
             f"Install the web extra: {_EXTRA}"
         ) from exc

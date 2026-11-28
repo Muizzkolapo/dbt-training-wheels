@@ -586,14 +586,14 @@ def _question(change: ProjectChange, key: str) -> Decision:
     if decision is None:
         asked = ", ".join(sorted(d.key for d in change.decisions if d.question))
         raise UnknownAnswerError(
-            f"no question with key {key!r} in this conversion; it asks "
-            f"{asked or 'nothing'}. A key is only valid for a run that read the same "
+            f"no question with key {key!r} in this conversion. This conversion asks "
+            f"{asked or 'nothing'}. A key is valid only for a run that read the same "
             "SQL at the same path"
         )
     if not decision.question:
         raise UnknownAnswerError(
-            f"{decision.key} asks no question ({decision.action}); it records what this "
-            "conversion did, so there is no answer to give it"
+            f"{decision.key} asks no question ({decision.action}). That decision records "
+            "what this conversion did, so there is no answer to give it"
         )
     return decision
 
@@ -632,14 +632,14 @@ def pasted_file_name(name: str) -> str:
         stem = stem[: -len(".sql")]
     if not stem:
         raise UnnamedPasteError(
-            "name the pasted SQL: a dbt model takes its name from its file, so a query "
-            "pasted here needs the file name it would be saved as -- weekly_revenue, "
-            "for example, builds a model called weekly_revenue"
+            "name the pasted SQL. A dbt model takes its name from its file. So a query "
+            "that you paste here needs the file name that you would save it as. For "
+            "example, the file name weekly_revenue gives a model called weekly_revenue"
         )
     if "/" in stem or "\\" in stem or "\x00" in stem or stem.startswith("."):
         raise UnnamedPasteError(
-            f"{name.strip()!r} is not one plain file name: give the name the query would be "
-            "saved as, with no folder in it -- weekly_revenue, for example"
+            f"{name.strip()!r} is not one plain file name. Give the name that you would "
+            "save the query as, with no folder in it. For example: weekly_revenue"
         )
     return f"{stem}.sql"
 
@@ -753,7 +753,7 @@ class Source:
             read_project(other)
         if not files or not any(text.strip() for text in files.values()):
             raise EmptySourceError(
-                "nothing to convert: paste a query or choose a .sql file, and press Convert"
+                "nothing to convert. Paste a query or choose a .sql file. Then press Convert"
             )
         staged = self._staging()
         for existing in staged.iterdir():
@@ -774,7 +774,7 @@ class Source:
         reader's own, and is shown as given.
         """
         if self.session is None:
-            raise EmptySourceError("nothing has been brought to convert yet")
+            raise EmptySourceError("you have not brought anything to convert yet")
         if self._staged is not None and self.session.sql == self._staged:
             return ", ".join(sorted(path.name for path in self._staged.iterdir()))
         return str(self.session.sql)

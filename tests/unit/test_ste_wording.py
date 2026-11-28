@@ -42,8 +42,6 @@ FIXTURES = Path(__file__).parents[1] / "fixtures"
 PROJECTS = FIXTURES / "projects"
 
 PENDING = {
-    "teach",
-    "report",
 }
 
 # Scripts that reach the Decisions the fixtures alone do not: a bare query, a

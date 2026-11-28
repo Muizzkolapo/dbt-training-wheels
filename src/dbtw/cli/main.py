@@ -53,11 +53,12 @@ _HOST = "127.0.0.1"
 # already in use raises OSError from the bind, which is already a usage
 # error here — the refusal names the port and --port is the answer to it.
 _NO_REMEMBER_HELP = (
-    "explain every dbt word in full, and record nothing. By default this tool "
-    "remembers which words it has already explained to you for this project, in a "
-    "plain JSON file under your state directory, and stops repeating a word after "
-    "the third time -- moving its meaning to the end of the report rather than "
-    "dropping it. The file holds no SQL"
+    "explain every dbt word in full, and record nothing. By default, this tool "
+    "records which words it already explained to you for this project. The record "
+    "is a plain JSON file under your state directory. After the third time, this "
+    "tool stops repeating the meaning of a word in full. This tool moves the "
+    "meaning to the end of the report, and does not remove it. The file contains "
+    "no SQL"
 )
 
 _DEFAULT_PORT = 5000
@@ -109,9 +110,14 @@ def _build_parser() -> argparse.ArgumentParser:
     convert = subparsers.add_parser(
         "convert", help="Convert raw SQL into models for a target dbt project"
     )
-    convert.add_argument("sql_path", metavar="SQL_PATH", help="A .sql file or directory of .sql")
     convert.add_argument(
-        "--project", metavar="PROJECT_PATH", required=True, help="The target dbt project root"
+        "sql_path", metavar="SQL_PATH", help="A .sql file, or a directory of .sql files"
+    )
+    convert.add_argument(
+        "--project",
+        metavar="PROJECT_PATH",
+        required=True,
+        help="The root directory of the target dbt project",
     )
     convert.add_argument(
         "--out",
@@ -141,8 +147,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "comma-separated column(s) that answer the append-or-merge question for "
-            "models converted from a bare INSERT...SELECT: upgrades every append "
-            "incremental to a merge incremental keyed on these columns"
+            "models converted from a bare INSERT...SELECT. This option changes every "
+            "append incremental to a merge incremental, keyed on these columns"
         ),
     )
 
@@ -154,13 +160,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SQL_PATH",
         nargs="?",
         default=None,
-        help="A .sql file or directory of .sql. Omit it to paste or upload in the browser",
+        help=(
+            "A .sql file, or a directory of .sql files. Omit it to paste or upload the "
+            "SQL in the browser"
+        ),
     )
     web.add_argument(
         "--project",
         metavar="PROJECT_PATH",
         default=None,
-        help="The target dbt project root (or give it in the browser)",
+        help="The root directory of the target dbt project. You can also give it in the browser",
     )
     web.add_argument("--dialect", metavar="DIALECT", default=None, help="The source SQL dialect")
     web.add_argument(
@@ -174,21 +183,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="OUT_DIR",
         default="./dbtw-out",
-        help="Where the walk's write action writes (default: ./dbtw-out)",
+        help="The directory that the write action of the walk writes to (default: ./dbtw-out)",
     )
     web.add_argument(
         "--port",
         metavar="PORT",
         type=int,
         default=_DEFAULT_PORT,
-        help=f"The port to serve the walk on (default: {_DEFAULT_PORT})",
+        help=f"The port on which this tool serves the walk (default: {_DEFAULT_PORT})",
     )
     web.add_argument(
         "--no-browser",
         dest="open_browser",
         action="store_false",
         default=True,
-        help="Do not open a browser (the address is printed either way)",
+        help="Do not open a browser. This tool prints the address in both cases",
     )
 
     return parser
@@ -204,7 +213,9 @@ def _expanded(value: str, argument: str) -> Path:
     try:
         return Path(value).expanduser()
     except RuntimeError as exc:
-        raise UnexpandablePathError(f"{argument} {value!r} could not be expanded: {exc}") from exc
+        raise UnexpandablePathError(
+            f"this tool could not expand {argument} {value!r}: {exc}"
+        ) from exc
 
 
 def _convert(
@@ -247,7 +258,10 @@ def _convert(
             # what was lost is only that the next one repeats these words.
             # Never silent either -- a reader who is told nothing would take a
             # tenth report that reads like a first as the tool not working.
-            print(f"warning: could not record which words were explained: {exc}", file=sys.stderr)
+            print(
+                f"warning: this tool could not record which words it explained: {exc}",
+                file=sys.stderr,
+            )
 
     # emit's own Decisions, in emit's own words. A user who reads the terminal
     # and then runs `cp -r` never opens the report, and where the sources file
@@ -256,9 +270,9 @@ def _convert(
         print(f"note: {decision.action}", file=sys.stderr)
 
     print(
-        f"Read {len(ingest_result.statements)} statements from {sql_path}. "
-        f"Wrote {len(change.models)} models, proposed {len(change.sources)} sources; "
-        f"{len(change.pending)} statements still pending. Report: {report_path}"
+        f"This tool read {len(ingest_result.statements)} statements from {sql_path}. "
+        f"This tool wrote {len(change.models)} models and proposed {len(change.sources)} "
+        f"sources. {len(change.pending)} statements are still pending. Report: {report_path}"
     )
     return 0
 
@@ -301,10 +315,10 @@ def _web(
         # asking for it again -- and refused loudly rather than ignored,
         # which is what the first shape of this did.
         raise UnexpandablePathError(
-            f"{sql_path} was given with no --project, and a conversion is a proposal about "
-            "a dbt project: which layer a model belongs in, what its name is prefixed with, "
-            "what a folder already materializes as. Pass --project, or omit SQL_PATH too and "
-            "bring both in the browser"
+            f"you gave {sql_path} with no --project. A conversion is a proposal about a dbt "
+            "project. The proposal says which layer a model belongs in, what prefix its "
+            "name has, and what a folder already materializes as. Pass --project. Or omit "
+            "SQL_PATH too, and bring both in the browser"
         )
 
     source = Source(out=out_dir, dialect=dialect, remember=remember)

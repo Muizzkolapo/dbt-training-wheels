@@ -144,7 +144,7 @@ def test_a_report_where_every_word_is_folded_is_a_pointer_not_an_empty_promise()
 
     glossary = report.split(GLOSSARY_HEADING)[1].split("\n## ")[0]
     assert "- **" not in glossary, "nothing is defined here, so nothing should look defined"
-    assert "none is repeated here" in glossary
+    assert "repeats none of them here" in glossary
     assert "ref()" in glossary, "the words are still named, so the reader sees what was skipped"
     assert MET_HEADING in report
 

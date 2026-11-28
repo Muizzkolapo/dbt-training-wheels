@@ -134,8 +134,8 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     files = _deliverable(out_dir)
     if not files:
         raise ValueError(
-            f"nothing to deliver: {out_dir} holds no conversion this tool wrote. "
-            "Write the conversion before delivering it"
+            f"nothing to deliver. {out_dir} contains no conversion that this tool wrote. "
+            "Write the conversion before you deliver it"
         )
 
     _git(root, "checkout", "-b", branch)
@@ -212,9 +212,13 @@ def _refuse_without_remote(root: Path, remote: str) -> None:
         listed = ", ".join(sorted(remotes))
         raise NoRemoteError(
             f"{root} has no remote called {remote!r}"
-            + (f"; it has {listed}" if listed else " and no remotes at all")
-            + ". The branch is still here -- add a remote and push it yourself, or "
-            "add one and press this again"
+            + (
+                f". The repository has these remotes: {listed}"
+                if listed
+                else ", and no remotes at all"
+            )
+            + ". The branch is still here. Add a remote and push the branch yourself, "
+            "or add a remote and press the button again"
         )
 
 
@@ -233,7 +237,7 @@ def _refuse_unless_branch_exists(root: Path, branch: str) -> None:
     if found.returncode != 0:
         raise NoRemoteError(
             f"{root} has no branch named {branch!r} to push. A push follows a "
-            "delivery, and this one has nothing to follow"
+            "delivery, and this push follows no delivery"
         )
 
 
@@ -261,9 +265,9 @@ def _deliverable(out_dir: Path) -> tuple[str, ...]:
     missing = [name for name in found if not (out_dir / name).is_file()]
     if missing:
         raise ValueError(
-            f"cannot deliver {out_dir}: the latest write there produced "
+            f"this tool cannot deliver {out_dir}. The latest write there produced "
             f"{', '.join(missing)}, and {'it is' if len(missing) == 1 else 'they are'} no "
-            "longer there. Write the conversion again before delivering it"
+            "longer there. Write the conversion again before you deliver it"
         )
     models = [name for name in found if name != _ALWAYS_DELIVERED]
     report = [name for name in found if name == _ALWAYS_DELIVERED]
@@ -283,15 +287,15 @@ def _refuse_unless_git_root(root: Path) -> None:
         top = _git(root, "rev-parse", "--show-toplevel").strip()
     except GitFailedError as exc:
         raise NotAGitRepoError(
-            f"{root} is not a git repository, so there is nowhere safe to put this "
-            "conversion: delivery makes a branch, and without one this would "
+            f"{root} is not a git repository, so this tool has no safe place to put this "
+            "conversion. A delivery makes a branch. Without a branch, the delivery would "
             f"overwrite files in place. git said: {exc}"
         ) from exc
     if not Path(top).samefile(root):
         raise NotAGitRepoError(
             f"{root} is inside the git repository at {top} rather than being its root. "
-            "Delivering here would branch and commit that repository, which is not the "
-            "project this conversion was read against"
+            "A delivery here would make a branch and a commit in that repository. That "
+            "repository is not the project that this tool read for this conversion"
         )
 
 
@@ -299,9 +303,10 @@ def _refuse_if_dirty(root: Path) -> None:
     changed = _git(root, "status", "--porcelain").strip()
     if changed:
         raise DirtyWorkingTreeError(
-            f"{root} has uncommitted changes, and a new branch would carry them onto "
-            "itself: the commit this makes would hold both this conversion and work "
-            f"nobody here has seen. Commit or stash them first. git reports:\n{changed}"
+            f"{root} has uncommitted changes, and a new branch would carry them. Then the "
+            "commit that this tool makes would contain this conversion and also work "
+            "that nobody here has seen. Commit or stash the changes first. "
+            f"git reports:\n{changed}"
         )
 
 
@@ -314,8 +319,8 @@ def _refuse_if_branch_exists(root: Path, branch: str) -> None:
     if existing.returncode == 0:
         raise BranchExistsError(
             f"{root} already has a branch named {branch!r}. A branch named for a "
-            "conversion holds one; delivering a second onto it would make its name "
-            "describe half of what it carries"
+            "conversion contains one conversion. A second delivery onto that branch would "
+            "make the branch name describe half of what the branch contains"
         )
 
 

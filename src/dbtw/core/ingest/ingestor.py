@@ -10,13 +10,16 @@ from sqlglot.dialects.dialect import Dialect
 from dbtw.core.ingest.splitter import split_sql
 from dbtw.core.ingest.types import IngestResult, RawStatement, UnknownDialectError
 
-_NO_DIALECT_WARNING = "no dialect specified; statements parsed with sqlglot's permissive default"
+_NO_DIALECT_WARNING = (
+    "no dialect was specified, so this tool parsed the statements with the permissive "
+    "default of sqlglot"
+)
 
 
 def ingest(source: Path | str | Sequence[Path | str], dialect: str | None = None) -> IngestResult:
     if dialect is not None and dialect not in Dialect.classes:
         valid = ", ".join(sorted(k for k in Dialect.classes if k))
-        raise UnknownDialectError(f"unknown dialect {dialect!r}; valid: {valid}")
+        raise UnknownDialectError(f"unknown dialect {dialect!r}. The valid dialects are: {valid}")
 
     files = _resolve_files(source)
     warnings: list[str] = [] if dialect is not None else [_NO_DIALECT_WARNING]
@@ -25,7 +28,7 @@ def ingest(source: Path | str | Sequence[Path | str], dialect: str | None = None
         try:
             text = file.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
-            warnings.append(f"skipped {file}: {exc}")
+            warnings.append(f"this tool skipped {file}: {exc}")
             continue
         for index, span in enumerate(split_sql(text, dialect)):
             statements.append(

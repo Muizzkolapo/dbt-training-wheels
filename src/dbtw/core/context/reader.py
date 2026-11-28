@@ -39,12 +39,14 @@ def read_project(root: Path | str) -> ProjectContext:
 
     name = raw.get("name")
     if not isinstance(name, str) or not name:
-        raise NotADbtProjectError(f"dbt_project.yml at {root} has no usable name")
+        raise NotADbtProjectError(f"the dbt_project.yml at {root} has no usable name")
     project_name = name
 
     models_raw = raw.get("models")
     if models_raw is not None and not isinstance(models_raw, dict):
-        raise NotADbtProjectError(f"dbt_project.yml at {root} has a non-mapping 'models' key")
+        raise NotADbtProjectError(
+            f"the dbt_project.yml at {root} has a 'models' key that is not a mapping"
+        )
     models_config = (models_raw or {}).get(project_name)
 
     model_paths, model_paths_configured = _configured_paths(
@@ -67,7 +69,9 @@ def read_project(root: Path | str) -> ProjectContext:
 
     vars_raw = raw.get("vars")
     if vars_raw is not None and not isinstance(vars_raw, dict):
-        raise NotADbtProjectError(f"dbt_project.yml at {root} has a non-mapping 'vars' key")
+        raise NotADbtProjectError(
+            f"the dbt_project.yml at {root} has a 'vars' key that is not a mapping"
+        )
     vars_block = vars_raw or {}
     vars_declared = tuple(sorted((str(k), v) for k, v in vars_block.items()))
 
@@ -107,7 +111,8 @@ def _configured_paths(
     value = raw[key]
     if not isinstance(value, list) or not all(isinstance(entry, str) for entry in value):
         raise NotADbtProjectError(
-            f"dbt_project.yml at {root} has a malformed {key!r} (expected a list of strings)"
+            f"the dbt_project.yml at {root} has a malformed {key!r}. The value must be a "
+            "list of strings"
         )
     return tuple(value), True
 
@@ -115,13 +120,15 @@ def _configured_paths(
 def _load_project_yaml(root: Path) -> dict[str, Any]:
     project_file = root / "dbt_project.yml"
     if not project_file.is_file():
-        raise NotADbtProjectError(f"no dbt_project.yml at {root}")
+        raise NotADbtProjectError(f"the folder {root} has no dbt_project.yml")
     try:
         loaded = yaml.safe_load(project_file.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
-        raise NotADbtProjectError(f"dbt_project.yml at {root} could not be parsed: {exc}") from exc
+        raise NotADbtProjectError(
+            f"this tool could not parse the dbt_project.yml at {root}: {exc}"
+        ) from exc
     if not isinstance(loaded, dict):
-        raise NotADbtProjectError(f"dbt_project.yml at {root} is not a mapping")
+        raise NotADbtProjectError(f"the content of the dbt_project.yml at {root} is not a mapping")
     return loaded
 
 
