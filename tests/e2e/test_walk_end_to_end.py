@@ -177,10 +177,18 @@ def test_a_reader_goes_from_an_empty_app_to_a_commit_on_their_own_branch(
     # 10. Deliver: a branch in their own repository, holding those files.
     delivered = client.post("/deliver", follow_redirects=True)
     assert delivered.status_code == 200
-    branch = subprocess.run(
+    # The project is back on the reader's own branch, and the delivered
+    # branch holds the commit. Check it out to read the files it holds.
+    (branch,) = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/dbtw/"],
+        cwd=project,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert not subprocess.run(
         ["git", "branch", "--show-current"], cwd=project, capture_output=True, text=True
-    ).stdout.strip()
-    assert branch.startswith("dbtw/")
+    ).stdout.startswith("dbtw/")
+    subprocess.run(["git", "checkout", "-q", branch], cwd=project, check=True)
     committed = subprocess.run(
         ["git", "show", "--stat", "--name-only", "--format=%an%n%s", "HEAD"],
         cwd=project,

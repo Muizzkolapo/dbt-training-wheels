@@ -26,9 +26,21 @@
   A refused save comes back here too, beside its model, with what the reader
   typed in the boxes. Those values are the reader's own text, held for one
   render, and are an identifier for the reason a saved description is.
+
+  What an answer put on the record sits under its question, as it does on
+  the guided question screen. This screen is the only place direct mode
+  asks, so without it the record -- the dependencies.yml a cross-project
+  answer needs, for one -- reached no screen at all.
+
+  Every Save and every answer reloads the page, so text typed into another
+  row would be lost. `unsaved.js` keeps it for the next render and warns
+  before any other way off the page.
 #}
 {% extends "base.html" %}
 {% from "example.html" import example_table %}
+{% block scripts %}
+    <script src="{{ url_for('static', filename='unsaved.js') }}" defer></script>
+{%- endblock %}
 {% block main %}
 <h1>Everything</h1>
 <p class="tally"><span data-count="ask">{{ asks | length }}</span> {{ (asks | length) | noun("question") }},
@@ -40,23 +52,37 @@
 <ul class="asks">
   {%- for ask in asks %}
   <li data-item="ask" id="question-{{ ask.index }}">
-    <h3><span data-engine>{{ ask.decision.plain_question }}</span></h3>
-    <p class="action"><span data-engine>{{ ask.decision.action }}</span></p>
+    <h3><span data-engine>{{ ask.decision.plain_question | code }}</span></h3>
+    <p class="action"><span data-engine>{{ ask.decision.action | code }}</span></p>
+    {%- if ask.produced %}
+    <h4>From your answer</h4>
+    <ul class="produced">
+      {%- for record in ask.produced %}
+      <li data-item="produced">
+        <p class="action"><span data-engine>{{ record.action | code }}</span></p>
+        <p><span data-engine>{{ record.reason | code }}</span></p>
+        {%- if record.plain_reason %}
+        <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ record.plain_reason | code }}</span></p>
+        {%- endif %}
+      </li>
+      {%- endfor %}
+    </ul>
+    {%- endif %}
     <ul class="answers">
       {%- for choice in ask.choices %}
       <li data-item="answer"{% if choice.chosen %} class="chosen"{% endif %}>
         <form method="post" action="/answer">
           <input type="hidden" name="key" value="{{ ask.decision.key }}">
           <input type="hidden" name="kind" value="{{ choice.option.kind }}">
-          <p><span data-engine>{{ choice.option.effect }}</span></p>
+          <p><span data-engine>{{ choice.option.effect | code }}</span></p>
           {%- if choice.prompt %}
           <fieldset>
-            <legend><span data-engine>{{ choice.prompt }}</span></legend>
+            <legend><span data-engine>{{ choice.prompt | code }}</span></legend>
             <ul class="columns">
               {%- for column in choice.columns %}
               <li data-item="column">
                 {%- if column.tick %}
-                <label><input type="checkbox" name="columns" value="{{ column.name }}"{% if column.checked %} checked{% endif %}>
+                <label><input type="{{ 'radio' if choice.single else 'checkbox' }}" name="columns" value="{{ column.name }}"{% if column.checked %} checked{% endif %}>
                   <span data-engine>{{ column.name }}</span></label>
                 {%- else %}
                 <span data-engine>{{ column.name }}</span>
@@ -67,7 +93,7 @@
             <label>Or type <input type="text" name="typed" value="{{ choice.typed }}"></label>
           </fieldset>
           {%- endif %}
-          <button type="submit"><span data-engine>{{ choice.option.label }}</span></button>
+          <button type="submit"><span data-engine>{{ choice.option.label | code }}</span></button>
           {%- if choice.chosen %}<p class="mark">{% if choice.answered %}Chosen{% else %}Proposed{% endif %}</p>{% endif %}
         </form>
       </li>
@@ -89,14 +115,14 @@
   {%- for name, plain in meanings %}
   <li data-item="meaning">
     <code><span data-engine>{{ name }}</span></code>
-    <span class="means"><span data-engine>{{ plain }}</span></span>
+    <span class="means"><span data-engine>{{ plain | code }}</span></span>
   </li>
   {%- endfor %}
 </ul>
 
 <h2>Models</h2>
 {%- if refusal %}
-<p class="refusal"><span data-engine>{{ refusal }}</span></p>
+<p class="refusal"><span data-engine>{{ refusal | code }}</span></p>
 {%- endif %}
 <ul class="describe">
   {%- for row in models %}
@@ -117,7 +143,7 @@
       {%- endfor %}</p>
     {%- endif %}
     {%- if row.draft %}
-    <p class="refusal"><span data-engine>{{ row.draft.message }}</span></p>
+    <p class="refusal"><span data-engine>{{ row.draft.message | code }}</span></p>
     {%- endif %}
     <form method="post" action="/describe">
       <input type="hidden" name="model" value="{{ row.model.name }}">
@@ -143,7 +169,7 @@
           </select>
         </label>
         <label class="field-block">
-          <span class="key">Tags</span>
+          <span class="key">Tags (commas or spaces)</span>
           {%- if tags %}
           <textarea name="tags" rows="1" spellcheck="false"
                     data-engine data-identifier>{{ tags }}</textarea>

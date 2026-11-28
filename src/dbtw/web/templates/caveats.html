@@ -27,16 +27,16 @@
     <ul class="actions">
       {%- for decision in consequence.decisions %}
       <li data-item="caveat">
-        <p class="action"><span data-engine>{{ decision.action }}</span></p>
+        <p class="action"><span data-engine>{{ decision.action | code }}</span></p>
         {%- if decision.chosen %}
-        <p class="chose"><span data-engine>{{ decision.chosen }}</span></p>
+        <p class="chose"><span data-engine>{{ decision.chosen | code }}</span></p>
         {%- endif %}
       </li>
       {%- endfor %}
     </ul>
-    <p><span data-engine>{{ consequence.reason }}</span></p>
+    <p><span data-engine>{{ consequence.reason | code }}</span></p>
     {%- if consequence.plain_reason %}
-    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ consequence.plain_reason }}</span></p>
+    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ consequence.plain_reason | code }}</span></p>
     {%- endif %}
   </li>
   {%- endfor %}
@@ -49,7 +49,7 @@
   <li data-item="pending">
     <p class="action"><span data-engine>{{ statement.kind }}</span></p>
     <pre data-engine>{{ statement.raw.text }}</pre>
-    <p><span data-engine>{{ statement.reason }}</span></p>
+    <p><span data-engine>{{ statement.reason | code }}</span></p>
   </li>
   {%- endfor %}
 </ul>

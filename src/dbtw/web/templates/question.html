@@ -26,8 +26,8 @@
 {% extends "base.html" %}
 {% from "example.html" import example_table %}
 {% block main %}
-<h1><span data-engine>{{ decision.plain_question }}</span></h1>
-<p><span data-engine>{{ decision.question }}</span></p>
+<h1><span data-engine>{{ decision.plain_question | code }}</span></h1>
+<p><span data-engine>{{ decision.question | code }}</span></p>
 
 {%- if produced %}
 <h2>From your answer</h2>
@@ -35,10 +35,10 @@
 <ul class="produced">
   {%- for record in produced %}
   <li data-item="produced">
-    <p class="action"><span data-engine>{{ record.action }}</span></p>
-    <p><span data-engine>{{ record.reason }}</span></p>
+    <p class="action"><span data-engine>{{ record.action | code }}</span></p>
+    <p><span data-engine>{{ record.reason | code }}</span></p>
     {%- if record.plain_reason %}
-    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ record.plain_reason }}</span></p>
+    <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ record.plain_reason | code }}</span></p>
     {%- endif %}
   </li>
   {%- endfor %}
@@ -46,10 +46,10 @@
 {%- endif %}
 
 <h2>Evidence</h2>
-<p><span data-engine>{{ decision.action }}</span></p>
-<p><span data-engine>{{ decision.reason }}</span></p>
+<p><span data-engine>{{ decision.action | code }}</span></p>
+<p><span data-engine>{{ decision.reason | code }}</span></p>
 {%- if decision.plain_reason %}
-<p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ decision.plain_reason }}</span></p>
+<p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ decision.plain_reason | code }}</span></p>
 {%- endif %}
 
 <h2>Answers</h2>
@@ -60,16 +60,16 @@
     <form method="post" action="/answer">
       <input type="hidden" name="key" value="{{ decision.key }}">
       <input type="hidden" name="kind" value="{{ choice.option.kind }}">
-      <p><span data-engine>{{ choice.option.effect }}</span></p>
-      <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ choice.option.plain }}</span></p>
+      <p><span data-engine>{{ choice.option.effect | code }}</span></p>
+      <p class="plain"><span class="tag">In plain words:</span> <span data-engine>{{ choice.option.plain | code }}</span></p>
       {%- if choice.prompt %}
       <fieldset>
-        <legend><span data-engine>{{ choice.prompt }}</span></legend>
+        <legend><span data-engine>{{ choice.prompt | code }}</span></legend>
         <ul class="columns">
           {%- for column in choice.columns %}
           <li data-item="column">
             {%- if column.tick %}
-            <label><input type="checkbox" name="columns" value="{{ column.name }}"{% if column.checked %} checked{% endif %}> <span data-engine>{{ column.name }}</span></label>
+            <label><input type="{{ 'radio' if choice.single else 'checkbox' }}" name="columns" value="{{ column.name }}"{% if column.checked %} checked{% endif %}> <span data-engine>{{ column.name }}</span></label>
             {%- else %}
             <span data-engine>{{ column.name }}</span>
             {%- endif %}
@@ -79,7 +79,7 @@
         <label>Or type <input type="text" name="typed" value="{{ choice.typed }}"></label>
       </fieldset>
       {%- endif %}
-      <button type="submit"><span data-engine>{{ choice.option.label }}</span></button>
+      <button type="submit"><span data-engine>{{ choice.option.label | code }}</span></button>
       {%- if choice.chosen %}<p class="mark">{% if choice.answered %}Chosen{% else %}Proposed{% endif %}</p>{% endif %}
     </form>
   </li>

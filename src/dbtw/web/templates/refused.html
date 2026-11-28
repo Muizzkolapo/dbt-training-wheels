@@ -11,6 +11,6 @@
 {% extends "base.html" %}
 {% block main %}
 <h1>Not recorded</h1>
-<p><span data-engine>{{ message }}</span></p>
+<p><span data-engine>{{ message | code }}</span></p>
 <p class="onward"><a data-link="back" href="{{ back }}">Back</a></p>
 {% endblock %}

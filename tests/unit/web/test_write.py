@@ -26,6 +26,7 @@ still on screen, and never a half-written project reported as success.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -585,5 +586,15 @@ def test_delivery_after_a_second_write_does_not_carry_the_stale_model(
 
     assert client.post("/deliver", follow_redirects=True).status_code == 200
 
+    # The delivery is on its branch. `deliver` checks out the reader's own
+    # branch again, so look at the delivered one to read what it holds.
+    (branch,) = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/heads/dbtw/"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    subprocess.run(["git", "checkout", "-q", branch], cwd=project, check=True, capture_output=True)
     assert (project / _IN_INTERMEDIATE).is_file()
     assert not (project / _IN_MARTS).exists(), "the stale model was delivered"

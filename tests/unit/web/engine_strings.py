@@ -258,6 +258,11 @@ def engine_strings(session: Session, out: Path) -> frozenset[str]:
 
     for term in GLOSSARY:
         produced.append(term.name)
-        produced.append(as_shown(term.plain))
+        produced.append(term.plain)
         produced.extend(term.seen_as)
-    return frozenset(normalised(text) for text in produced if text.strip())
+    # Each string as it is, for a `<pre>` that shows a file verbatim, and as
+    # a screen shows it once its code spans are rendered, for every prose
+    # run that goes through the `code` filter.
+    return frozenset(
+        normalised(shown) for text in produced if text.strip() for shown in (text, as_shown(text))
+    )

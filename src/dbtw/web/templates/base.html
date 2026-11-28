@@ -54,12 +54,14 @@
 
   A question step carries the kind of question beside its table name. Two
   questions about one model -- its append question and its layer question --
-  were two steps with one name. The kind is the name of the pass that asks,
-  an identifier like the table name, and never a sentence.
+  were two steps with one name. The kind is a word that names the question
+  ("new rows", "layer"), never an answer to it, and never a sentence.
 
-  A glossary definition marks a value a reader types with backticks, as the
-  report does in Markdown. The `code` filter renders each one as <code>, so a
-  screen shows `staging` as code rather than with its backticks.
+  Engine text marks code with backticks, as the report does in Markdown: a
+  value in a glossary definition, a token in a parse reason, a line of YAML
+  in a caveat. Every screen renders engine prose through the `code` filter,
+  which shows each span as <code> rather than with its backticks. A <pre> of
+  a file is shown as the file is, and is not filtered.
 
   The typeface is the design's, fetched from Google Fonts with a system stack
   behind it. It is the one thing on this page that leaves the machine, it
@@ -126,6 +128,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&family=Ubuntu+Mono:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+    {%- block scripts %}{% endblock %}
   </head>
   <body>
     <header class="bar">
@@ -138,8 +141,12 @@
          changes what this app holds, and it lands the reader back where they
          pressed it. Only while there is a walk to reshape: on the entry
          screen there is nothing yet to be guided through. #}
+      {# `back` is the address of this page, not its rail step: the written
+         page and the refusal page are in no rail, and sending their toggle
+         to "/" left the reader at the start. `/mode` maps the address to the
+         matching screen of the other mode. #}
       <form class="mode" method="post" action="/mode">
-        <input type="hidden" name="back" value="{{ here or '/' }}">
+        <input type="hidden" name="back" value="{{ request.path }}">
         <button type="submit" name="mode" value="guided"
                 class="{{ 'on' if mode != 'direct' else 'off' }}">Guided</button>
         <button type="submit" name="mode" value="direct"
@@ -194,6 +201,15 @@
         {%- endif %}
 
         {%- block main %}{% endblock %}
+
+        {#- "Next" goes to the following step of the rail, on every step but
+            the last. Read off the rail rather than written per screen, so it
+            cannot name a screen the rail does not list. A page that is in no
+            rail -- the written page, a refusal -- has no next step. #}
+        {%- set rail = screens | map(attribute="url") | list %}
+        {%- if here in rail and rail.index(here) + 1 < rail | length %}
+        <p class="onward"><a data-link="next" href="{{ rail[rail.index(here) + 1] }}">Next</a></p>
+        {%- endif %}
       </main>
     </div>
   </body>

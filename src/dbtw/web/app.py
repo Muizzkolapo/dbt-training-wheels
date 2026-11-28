@@ -53,7 +53,7 @@ import webbrowser
 from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit
 
 from flask import Flask, abort, g, redirect, render_template, request, url_for
 from markupsafe import Markup, escape
@@ -76,6 +76,8 @@ from dbtw.core.deliver import (
     NoRemoteError,
     NotAGitRepoError,
     deliver,
+    earlier_write,
+    free_branch,
     push,
 )
 from dbtw.core.emit import (
@@ -218,6 +220,11 @@ class Choice:
     # they typed that this model's projections do not name -- so the free-text
     # field holds it too, and the answer on screen is the whole answer given.
     typed: str
+    # Whether an answer of this kind takes one column, so the picker offers
+    # radio buttons rather than checkboxes. Read off `Option.declares_test`:
+    # an option that declares dbt's `unique` test checks one column, and the
+    # engine refuses two. Checkboxes let a reader tick two and be refused.
+    single: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +245,10 @@ class Asking:
     choices: tuple[Choice, ...]
     index: int
     example: Example | None
+    # The Decisions this question's answer put on the record -- see
+    # `_produced_by`. Direct mode has no question screens, so this is the one
+    # place they show there; the caveats screen leaves them out in both modes.
+    produced: tuple[Decision, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,10 +478,17 @@ def _choices(
     decision: Decision,
     prompts: dict[str, str],
     given: tuple[str, tuple[str, ...]] | None,
+    draft: tuple[str, tuple[str, ...]] | None = None,
 ) -> tuple[Choice, ...]:
     """The answers on one question's screen, with the reader's own answer in
     its picker. `given` is what `Session.answers` holds for this question --
     `(Option.kind, columns)` -- or None while it is unanswered.
+
+    `draft` is a refused answer to this question, in the same shape, for the
+    one render the refusal page links to. Its option's picker shows what the
+    reader ticked and typed, so they correct it instead of starting again.
+    It fills that picker and changes nothing else: the question is still
+    answered or unanswered as `given` says.
     """
     candidates = decision.subject.candidates if decision.subject is not None else ()
     keyed = decision.subject.columns if decision.subject is not None else ()
@@ -484,7 +502,9 @@ def _choices(
         # that key, so pressing it sends the answer its label names rather
         # than no columns at all.
         spelled = asks and not option.columns_prompt
-        if given is not None and given[0] == option.kind:
+        if draft is not None and draft[0] == option.kind:
+            mine = draft[1]
+        elif given is not None and given[0] == option.kind:
             mine = given[1]
         elif spelled:
             mine = keyed
@@ -498,6 +518,7 @@ def _choices(
                 columns=_columns(candidates, mine) if asks else (),
                 typed=", ".join(c for c in mine if c not in candidates) if asks else "",
                 answered=given is not None,
+                single=option.declares_test == "unique",
             )
         )
     return tuple(choices)
@@ -860,9 +881,13 @@ def _screens(
 # key, and the question is about a table in another project.
 # `test_every_question_the_corpus_asks_has_a_plain_kind_word` walks every
 # question the test corpus asks and fails on a kind that is not here.
+#
+# Each word names what the question is about, never an answer to it. The
+# append question was "append", which is also one of its answers -- so the
+# rail read "revenue_events append" after the reader had answered merge.
 _KIND_WORDS = {
-    "append": "append",
-    "merge": "merge",
+    "append": "new rows",
+    "merge": "merge key",
     "layer": "layer",
     "variable": "variable",
     "cross_ref": "another project",
@@ -888,18 +913,28 @@ def _kind(decision: Decision) -> str:
 def _code_spans(text: str) -> Markup:
     """`text` with each backticked span rendered as `<code>`.
 
-    The glossary marks a value a reader types -- `staging`, `table` -- with
-    backticks, as the report does in Markdown. A screen is not Markdown, so
-    it showed the backticks themselves. An odd count is a glossary entry
-    whose span never closes, and that is refused rather than guessed at.
+    Engine text marks code with backticks, as the report does in Markdown:
+    a value a reader types in the glossary (`staging`), a token and a flag in
+    a parse reason (`--dialect postgres`), a line of YAML in a caveat. A
+    screen is not Markdown, so it showed the backticks themselves. Every
+    screen renders its engine prose through this filter.
+
+    Backticks pair from the left. A last backtick with no partner opens no
+    span and is shown as the character it is: engine text can carry what a
+    reader typed -- a refused name is quoted back to them -- and a backtick
+    they typed is text, not markup. `tests/unit/web/page.as_shown` reads a
+    run back by the same rule.
     """
     parts = text.split("`")
-    if len(parts) % 2 == 0:
-        raise ValueError(f"an odd number of backticks, so a code span never closes: {text!r}")
-    return Markup("").join(
+    unpaired = len(parts) % 2 == 0
+    spans = parts[:-1] if unpaired else parts
+    shown = Markup("").join(
         Markup("<code>{}</code>").format(part) if index % 2 else escape(part)
-        for index, part in enumerate(parts)
+        for index, part in enumerate(spans)
     )
+    if unpaired:
+        shown += escape("`" + parts[-1])
+    return shown
 
 
 def _path_breaks(path: str) -> Markup:
@@ -1126,23 +1161,35 @@ def create_app(source: Source) -> Flask:
         session = _conversation()
         stale = session.stale_answers()
         if stale:
-            return render_template(
-                "stale.html", stale=stale, screens=(), teaching=NO_GLOSSARY, here=""
-            ), 409
+            return _stranded("stale.html", "Answers with no question", "answer", stale)
         described = session.stale_descriptions()
         if described:
-            return render_template(
-                "stale_descriptions.html",
-                stale=described,
-                screens=(),
-                teaching=NO_GLOSSARY,
-                here="",
-            ), 409
+            return _stranded(
+                "stale_descriptions.html", "Descriptions with no model", "model", described
+            )
         tagged = session.stale_tags()
         if not tagged:
             return None
+        return _stranded("stale_tags.html", "Tags with no model", "model", tagged)
+
+    def _stranded(
+        template: str, heading: str, counted: str, stale: Sequence[str]
+    ) -> tuple[str, int]:
+        """One stranded screen, with the glossary of the words it shows.
+
+        `heading` and `counted` are the template's own heading and tally
+        noun, given here so the glossary reads them: each stranded template
+        writes its heading itself, for the reason its header gives. With no
+        glossary, a screen that says "Descriptions with no model" defined no
+        word, though "model" is a word the glossary can define.
+        """
+        spoken = _spoken(heading, noun(len(stale), counted), stale)
         return render_template(
-            "stale_tags.html", stale=tagged, screens=(), teaching=NO_GLOSSARY, here=""
+            template,
+            stale=stale,
+            screens=(),
+            teaching=teaching_for(_terms(spoken), _learned(source)),
+            here="",
         ), 409
 
     def _view() -> SessionView | tuple[str, int] | Response:
@@ -1200,8 +1247,9 @@ def create_app(source: Source) -> Flask:
             pillars=PILLARS,
             privacy=PRIVACY,
             refusal=refusal,
-            # Which path box the refusal is about, so the screen can put that
-            # box's label in front of it. "" for a refusal about neither.
+            # Which box the refusal is about -- "project", "elsewhere" or
+            # "name" -- so the screen can put that box's label in front of
+            # it. "" for a refusal about none of them.
             box=box,
         )
 
@@ -1270,18 +1318,22 @@ def create_app(source: Source) -> Flask:
                 # by it -- with nothing saying which.
                 if staged_as in files:
                     raise UnnamedPasteError(
-                        f"{staged_as} is already the name of a chosen file: give the pasted "
-                        "SQL a different name, so each becomes a model of its own"
+                        f"{staged_as} is already the name of a chosen file. Give the pasted "
+                        "SQL a different name, so that each file becomes a model of its own."
                     )
                 files[staged_as] = pasted
             source.start(project, files, [line for line in others if line])
         except ProjectPathError as refusal:
             typed = {"project": project, "elsewhere": elsewhere, "pasted": pasted, "name": name}
             return _entry_page(refusal=str(refusal), typed=typed, box=refusal.box), 400
+        except UnnamedPasteError as refusal:
+            # About the file name box, so the screen puts that box's label in
+            # front of it, as it does for the two path boxes.
+            typed = {"project": project, "elsewhere": elsewhere, "pasted": pasted, "name": name}
+            return _entry_page(refusal=str(refusal), typed=typed, box="name"), 400
         except (
             NotADbtProjectError,
             EmptySourceError,
-            UnnamedPasteError,
             OSError,
             UnicodeDecodeError,
         ) as refusal:
@@ -1361,19 +1413,14 @@ def create_app(source: Source) -> Flask:
             (model.layer for model in view.change.models),
             cutover.reason if cutover else "",
             cutover.plain_reason if cutover else "",
+            # The tallies' nouns, which this screen shows beside the counts.
+            noun(len(view.change.models), "model"),
+            noun(len(renames), "table") if renames else "",
             (screen.label for screen in _walk(view) if screen.engine),
         )
-        screens = _walk(view)
-        # The screen after this one in the rail: the first question, or the
-        # describe screen when nothing is asked, or the one screen in direct
-        # mode. Read off the rail rather than written here, so "Next" cannot
-        # name a screen the rail does not list -- it named "/" itself.
-        urls = [screen.url for screen in screens]
-        onward = urls[urls.index("/") + 1]
         return render_template(
             "start.html",
-            screens=screens,
-            onward=onward,
+            screens=_walk(view),
             here="/",
             teaching=teaching_for(_terms(spoken), _learned(source)),
             project=view.change.project_name,
@@ -1406,7 +1453,45 @@ def create_app(source: Source) -> Flask:
         # open redirect on somebody's own machine.
         if not back.startswith("/") or back.startswith("//"):
             back = "/"
-        return redirect(back)
+        return redirect(_counterpart(back))
+
+    def _counterpart(back: str) -> str:
+        """The screen of the current mode that matches `back`.
+
+        Most screens are in both modes, and the reader stays on them. The
+        asking screens are not: the one screen of direct mode stands for
+        every question screen and the describe screen of guided mode. Sent
+        back to `/everything` in guided mode, a reader landed on the start,
+        because guided mode has no such screen. So the one screen maps to
+        the first question -- or to describe, when nothing is asked.
+
+        The refusal page maps to its own way back. After it has rendered, a
+        reload of it goes there anyway, and that address was made for the
+        mode the answer was given in.
+        """
+        if back == url_for("refused_page"):
+            back = refused_back
+        moved = _moved(back)
+        if source.mode != "guided" or urlsplit(moved).path != url_for("everything"):
+            return moved
+        view = _view()
+        if not isinstance(view, SessionView) or not view.questions:
+            return url_for("describe")
+        return url_for("question", index=0)
+
+    def _moved(back: str) -> str:
+        """`back`, or the same question's address in the current mode when
+        it names a question in either mode's form -- `/questions/<n>` or
+        `/everything#question-<n>`, with any query it carries."""
+        parts = urlsplit(back)
+        index: str | None = None
+        if parts.path.startswith("/questions/"):
+            index = parts.path.removeprefix("/questions/")
+        elif parts.path == url_for("everything") and parts.fragment.startswith("question-"):
+            index = parts.fragment.removeprefix("question-")
+        if index is None or not index.isdigit():
+            return back
+        return _at_question(int(index), source.mode, parts.query)
 
     @app.get("/everything")
     def everything() -> str | tuple[str, int] | Response:
@@ -1433,9 +1518,11 @@ def create_app(source: Source) -> Flask:
                     decision,
                     view.prompts.get(decision.key, {}),
                     _conversation().answers.get(decision.key),
+                    _answer_draft(decision.key),
                 ),
                 index=index,
                 example=_example_for(decision, view.change),
+                produced=_produced_by(_conversation(), view.change, decision.key),
             )
             for index, decision in enumerate(view.questions)
         ]
@@ -1449,6 +1536,9 @@ def create_app(source: Source) -> Flask:
             (ask.decision.action for ask in asks),
             (ask.decision.reason for ask in asks),
             (ask.decision.plain_reason for ask in asks),
+            (d.action for ask in asks for d in ask.produced),
+            (d.reason for ask in asks for d in ask.produced),
+            (d.plain_reason for ask in asks for d in ask.produced),
             (c.option.label for ask in asks for c in ask.choices),
             (c.option.effect for ask in asks for c in ask.choices),
             (c.option.plain for ask in asks for c in ask.choices),
@@ -1460,6 +1550,11 @@ def create_app(source: Source) -> Flask:
             (name for row in models for name in row.model.reads_from),
             (plain for _, plain in meanings),
             draft.message if draft is not None else "",
+            # The labels and tally nouns this screen writes around the engine
+            # text. A glossary word in one is a word the screen shows.
+            "Models",
+            noun(len(asks), "question"),
+            noun(len(models), "model"),
             (screen.label for screen in _walk(view) if screen.engine),
         )
         page = render_template(
@@ -1480,20 +1575,27 @@ def create_app(source: Source) -> Flask:
 
     @app.get("/questions/<int:index>")
     def question(index: int) -> str | tuple[str, int] | Response:
+        view = _view()
+        if not isinstance(view, SessionView):
+            return view
+        # A question this conversion does not ask is not here, in either
+        # mode. Direct mode sent it on to an anchor the one screen does not
+        # have, which left the reader at the top of a page with no sign that
+        # the address was wrong.
+        if not 0 <= index < len(view.questions):
+            abort(404)
         # In direct mode there is one place to answer, and this is not it.
         # The route stays reachable rather than 404ing, because a reader who
         # switched mode with a question screen open still has its address --
         # and it lands on that question on the one screen.
         if source.mode == "direct":
-            return redirect(f"{url_for('everything')}#question-{index}")
-        view = _view()
-        if not isinstance(view, SessionView):
-            return view
-        if not 0 <= index < len(view.questions):
-            abort(404)
+            return redirect(_at_question(index, "direct", _query()))
         decision = view.questions[index]
         choices = _choices(
-            decision, view.prompts.get(decision.key, {}), _conversation().answers.get(decision.key)
+            decision,
+            view.prompts.get(decision.key, {}),
+            _conversation().answers.get(decision.key),
+            _answer_draft(decision.key),
         )
         example = _example_for(decision, view.change)
         produced = _produced_by(_conversation(), view.change, decision.key)
@@ -1570,6 +1672,10 @@ def create_app(source: Source) -> Flask:
             (name for row in models for name in row.model.reads_from),
             (plain for _, plain in meanings),
             draft.message if draft is not None else "",
+            # The labels and tally nouns this screen writes around the engine
+            # text. A glossary word in one is a word the screen shows.
+            "Models",
+            noun(len(meanings), "choice"),
             (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
@@ -1710,9 +1816,15 @@ def create_app(source: Source) -> Flask:
         # agree today because everything in a statement reaches the model
         # built from it, comments and grant principals included; leaving it
         # in would make this screen's glossary correct by that coincidence.
+        statements = sum(len(row.before) for row in conversions)
+        # The tally's nouns too: "3 models, from 4 converted statements" is
+        # text this screen shows, so a glossary word in it is a word the
+        # screen uses.
         spoken = _spoken(
             (row.after for row in conversions),
             (row.model.name for row in conversions),
+            noun(len(conversions), "model"),
+            noun(statements, "statement"),
             (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
@@ -1721,7 +1833,7 @@ def create_app(source: Source) -> Flask:
             here="/changed",
             teaching=teaching_for(_terms(spoken), _learned(source)),
             conversions=conversions,
-            statements=sum(len(row.before) for row in conversions),
+            statements=statements,
         )
 
     @app.get("/files")
@@ -1765,16 +1877,21 @@ def create_app(source: Source) -> Flask:
             out=str(source.out),
         )
 
-    # The one completed write of this conversation, or None. Held by the app
-    # rather than by the session for the reason `create_app` gives about
+    # The latest completed write of this conversation, or None. Held by the
+    # app rather than by the session for the reason `create_app` gives about
     # `out`: a conversation is about a conversion, and where its result went
     # is the front end's business.
     written: Written | None = None
 
-    # The one completed delivery of this conversation, or None. A second
-    # press of a button that has already put a branch in someone's repository
-    # must not make another one, and the walk has no way to undo the first.
+    # The latest completed delivery of this conversation, or None, and the
+    # write it put on its branch. A second press of a button that has already
+    # put a branch in someone's repository must not make another one for the
+    # same write, and the walk has no way to undo the first. A new write --
+    # made after a changed answer -- is a write no branch holds, so it is
+    # offered on a branch of its own: `delivered_of` is how the page tells
+    # the two apart.
     delivered: Delivery | None = None
+    delivered_of: Written | None = None
 
     @app.post("/write")
     def write() -> str | tuple[str, int] | Response:
@@ -1836,35 +1953,55 @@ def create_app(source: Source) -> Flask:
         Before anything is written there is nothing to show, so it sends the
         reader to the screen that has the write button -- and so it does
         after a changed answer, when what was written is no longer this
-        conversion.
+        conversion. That holds after a delivery too: `deliver` checks out
+        the reader's own branch again, so the project reads as it did before
+        and the conversion moves only when the reader changes it. Shown
+        after a changed answer, this page put the old files and the old
+        branch in front of a reader as though they were current.
         """
         view = _view()
         if not isinstance(view, SessionView):
             return view
-        # Nothing written, or a write of a conversion the reader has since
-        # changed: either way the screen to be on is the one that writes this
-        # conversion, not a list of files that are not it. Only until it is
-        # delivered: delivery commits these models into the project, and the
-        # walk re-reads the project on every run -- so the conversion differs
-        # from the one written precisely because the delivery worked, and the
-        # result of it is what this page exists to show.
-        if written is None or (delivered is None and written.change != view.change):
+        if written is None or written.change != view.change:
             return redirect(url_for("done"))
         return _written_page(view, written)
 
-    def _written_page(view: SessionView, record: Written) -> str:
-        """What landed, named by the paths `emit` reported writing.
+    def _written_page(
+        view: SessionView,
+        record: Written,
+        *,
+        branch: str = "",
+        deliver_refusal: str = "",
+        push_refusal: str = "",
+    ) -> str:
+        """What landed, named by the paths `emit` reported writing, and what
+        the delivery and the push did with it.
 
         Project-relative, so the list reads as the same list the files screen
         showed, and read back off `EmitResult.paths` rather than re-derived:
         where a sources file and a per-model schema .yml land are decisions
         `emit` makes, and a second copy of that reasoning here would be free
         to name a file this run did not write.
+
+        A delivery of an earlier write is still shown -- its branch is in
+        the reader's repository -- with the engine's sentence that says so,
+        and the form to deliver this write beside it. The branch it offers
+        is one the repository does not have yet, because `deliver` refuses a
+        branch that exists.
         """
+        earlier = (
+            earlier_write(delivered.branch)
+            if delivered is not None and delivered_of is not record
+            else ""
+        )
+        offered = branch or free_branch(_conversation().project, _branch_name(view.change))
         spoken = _spoken(
             str(record.out),
             record.files,
             record.removed,
+            earlier,
+            deliver_refusal,
+            push_refusal,
             (screen.label for screen in _walk(view) if screen.engine),
         )
         return render_template(
@@ -1875,10 +2012,20 @@ def create_app(source: Source) -> Flask:
             out=str(record.out),
             files=record.files,
             removed=record.removed,
-            branch=_branch_name(view.change),
+            branch=offered,
             delivered=delivered,
-            pushed=source.pushed,
-            refusal="",
+            earlier=earlier,
+            # Only the push of the branch on screen. A push of an earlier
+            # delivery is not a push of this one.
+            pushed=(
+                source.pushed
+                if source.pushed is not None
+                and delivered is not None
+                and source.pushed.branch == delivered.branch
+                else None
+            ),
+            deliver_refusal=deliver_refusal,
+            push_refusal=push_refusal,
         )
 
     @app.post("/deliver")
@@ -1897,8 +2044,11 @@ def create_app(source: Source) -> Flask:
         engine's own words, with the file list still on it, because a reader
         who has just written a conversion and cannot deliver it needs to know
         that the write still stands.
+
+        One delivery per write. A press for the write a branch already holds
+        goes back to the page; a press for a newer write makes a new branch.
         """
-        nonlocal delivered
+        nonlocal delivered, delivered_of
         view = _view()
         if not isinstance(view, SessionView):
             return view
@@ -1908,41 +2058,21 @@ def create_app(source: Source) -> Flask:
             # this is a form posted out of order rather than a state the walk
             # offers.
             return redirect(url_for("done"))
-        if delivered is not None:
+        if delivered_of is written:
             return redirect(url_for("written_page"))
-        branch = request.form.get("branch", "") or _branch_name(view.change)
+        branch = request.form.get("branch", "") or free_branch(
+            _conversation().project, _branch_name(view.change)
+        )
         try:
-            delivered = deliver(
+            delivery = deliver(
                 written.out,
                 read_project(_conversation().project),
                 branch=branch,
                 message=_commit_message(view.change),
             )
         except _DELIVER_FAILURES as refusal:
-            return render_template(
-                "written.html",
-                screens=_walk(view),
-                here="",
-                teaching=teaching_for(
-                    _terms(
-                        _spoken(
-                            str(written.out),
-                            written.files,
-                            written.removed,
-                            str(refusal),
-                            (screen.label for screen in _walk(view) if screen.engine),
-                        )
-                    ),
-                    _learned(source),
-                ),
-                out=str(written.out),
-                files=written.files,
-                removed=written.removed,
-                branch=branch,
-                delivered=None,
-                pushed=None,
-                refusal=str(refusal),
-            ), 409
+            return _written_page(view, written, branch=branch, deliver_refusal=str(refusal)), 409
+        delivered, delivered_of = delivery, written
         return redirect(url_for("written_page"))
 
     @app.post("/push")
@@ -1962,7 +2092,7 @@ def create_app(source: Source) -> Flask:
         Pressed twice, it sends once. The branch is already there and the
         remote would say so, but a second push is a second thing this tool
         did to somebody's server, and the screen already holds what the first
-        one said.
+        one said. A newer delivery is a newer branch, which no push has sent.
         """
         view = _view()
         if not isinstance(view, SessionView):
@@ -1973,35 +2103,12 @@ def create_app(source: Source) -> Flask:
             # so this is a form posted out of order rather than a state the
             # walk offers.
             return redirect(url_for("done"))
-        if source.pushed is not None:
+        if source.pushed is not None and source.pushed.branch == delivered.branch:
             return redirect(url_for("written_page"))
         try:
             source.pushed = push(_conversation().project, branch=delivered.branch)
         except _PUSH_FAILURES as refusal:
-            return render_template(
-                "written.html",
-                screens=_walk(view),
-                here="",
-                teaching=teaching_for(
-                    _terms(
-                        _spoken(
-                            str(written.out),
-                            written.files,
-                            written.removed,
-                            str(refusal),
-                            (screen.label for screen in _walk(view) if screen.engine),
-                        )
-                    ),
-                    _learned(source),
-                ),
-                out=str(written.out),
-                files=written.files,
-                removed=written.removed,
-                branch=delivered.branch,
-                delivered=delivered,
-                pushed=None,
-                refusal=str(refusal),
-            ), 409
+            return _written_page(view, written, push_refusal=str(refusal)), 409
         return redirect(url_for("written_page"))
 
     def _write_failed(view: SessionView, message: str) -> str:
@@ -2061,11 +2168,17 @@ def create_app(source: Source) -> Flask:
         # deleting the check killed no test, which is what said so.
         key = request.form.get("key", "")
         kind = request.form.get("kind", "")
-        columns = _submitted_columns(request.form.getlist("columns"), request.form.get("typed", ""))
+        ticked = request.form.getlist("columns")
+        typed = request.form.get("typed", "")
+        columns = _submitted_columns(ticked, typed)
         try:
             _conversation().answer(key, kind, columns)
         except (UnknownAnswerError, ValueError) as refusal:
-            refused = Refused(message=str(refusal), back=_question_url(_conversation(), key))
+            # The way back carries the refused answer, so the question it
+            # opens has the reader's ticks and typed text in its picker.
+            # Without it, Back showed no box ticked and an empty field.
+            back = _question_url(_conversation(), key, _draft_query(key, kind, ticked, typed))
+            refused = Refused(message=str(refusal), back=back)
             refused_back = refused.back
             return redirect(url_for("refused_page"))
 
@@ -2078,9 +2191,7 @@ def create_app(source: Source) -> Flask:
             raise UnknownAnswerError(
                 f"{key!r} was answered and is not a question of the run that answered it"
             )
-        if source.mode == "direct":
-            return redirect(f"{url_for('everything')}#question-{index}")
-        return redirect(url_for("question", index=index))
+        return redirect(_at_question(index, source.mode))
 
     @app.get("/refused")
     def refused_page() -> str | tuple[str, int] | Response:
@@ -2192,7 +2303,7 @@ def create_app(source: Source) -> Flask:
         screens = _walk(view) if isinstance(view, SessionView) else ()
         return render_template("missing.html", screens=screens, teaching=NO_GLOSSARY, here=""), 404
 
-    def _question_url(session: Session, key: str) -> str:
+    def _question_url(session: Session, key: str, query: str = "") -> str:
         """The screen `key`'s question is on, or the start of the walk.
 
         Both exits say the same thing: there is a question screen to go back
@@ -2203,6 +2314,9 @@ def create_app(source: Source) -> Flask:
         In direct mode the question is on the one screen, so the way back is
         that screen at the question: its own screen would send the reader
         there anyway, at the top.
+
+        `query` goes on a question's address and not on the start's: it is a
+        refused answer to that question, and the start has no picker for it.
         """
         try:
             questions = _conversation().view().questions
@@ -2210,10 +2324,28 @@ def create_app(source: Source) -> Flask:
             return url_for("start")
         for index, decision in enumerate(questions):
             if decision.key == key:
-                if source.mode == "direct":
-                    return f"{url_for('everything')}#question-{index}"
-                return url_for("question", index=index)
+                return _at_question(index, source.mode, query)
         return url_for("start")
+
+    def _query() -> str:
+        """This request's query string, as it arrived."""
+        return request.query_string.decode("utf-8")
+
+    def _answer_draft(key: str) -> tuple[str, tuple[str, ...]] | None:
+        """The refused answer to `key` that this request's address carries,
+        or None.
+
+        The refusal page links back to the question with the refused answer
+        in the address -- see `_draft_query`. An address that names another
+        key carries nothing for this question: after an edit to the SQL, an
+        old link must not fill a different question's picker.
+        """
+        if request.args.get("key") != key:
+            return None
+        return (
+            request.args.get("kind", ""),
+            _submitted_columns(request.args.getlist("columns"), request.args.get("typed", "")),
+        )
 
     return app
 
@@ -2249,6 +2381,36 @@ def _submitted_columns(ticked: Sequence[str], typed: str) -> tuple[str, ...]:
         if cleaned and cleaned not in columns:
             columns.append(cleaned)
     return tuple(columns)
+
+
+def _at_question(index: int, mode: str, query: str = "") -> str:
+    """The address of question `index` in `mode`, with `query` on it.
+
+    Guided mode gives each question its own screen. Direct mode puts every
+    question on the one screen, so the address is that screen at the
+    question's anchor -- and the query goes before the anchor, where a
+    browser sends it.
+    """
+    suffix = f"?{query}" if query else ""
+    if mode == "direct":
+        return f"/everything{suffix}#question-{index}"
+    return f"/questions/{index}{suffix}"
+
+
+def _draft_query(key: str, kind: str, ticked: Sequence[str], typed: str) -> str:
+    """A refused answer, as the query string the way back to its question
+    carries.
+
+    In the address and not held on the server. The refusal page renders
+    first, and the question renders when the reader presses Back -- so a
+    slot handed to the next request, which is how a refused describe save is
+    held, would be spent on the refusal page. The address is the way back
+    itself: the question it opens shows the draft, and the question opened
+    from the rail shows none.
+    """
+    return urlencode(
+        [("key", key), ("kind", kind), *(("columns", c) for c in ticked), ("typed", typed)]
+    )
 
 
 def _index_of(session: Session, key: str) -> int | None:

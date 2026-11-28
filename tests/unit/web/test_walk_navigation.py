@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from tests.unit.web.conftest import PROJECTS, SQL, Walk
@@ -534,7 +535,7 @@ def test_a_mistyped_other_project_is_refused_as_that_box(project_dir: Path, out_
     )
 
     assert refused.status_code == 400
-    assert _refusal_label(refused.get_data(as_text=True)) == "Also reading:"
+    assert _refusal_label(refused.get_data(as_text=True)) == "Other dbt projects:"
 
 
 def test_a_mistyped_project_is_refused_as_that_box(project_dir: Path, out_dir: Path) -> None:
@@ -629,11 +630,12 @@ def test_a_refused_answer_lands_on_a_page_with_its_own_address(walk: Walk, walk_
     assert landed.status_code == 400
     page = read(landed.get_data(as_text=True))
     assert any("got no columns" in run for run in page.engine)
-    assert page.named_links["back"] == f"/questions/{index}"
+    # The path: the link also carries the refused answer, as a query.
+    assert urlsplit(page.named_links["back"]).path == f"/questions/{index}"
     # Shown once: a reload goes to the question, and sends nothing.
     reloaded = client.get("/refused")
     assert reloaded.status_code == 302
-    assert reloaded.headers["Location"] == f"/questions/{index}"
+    assert urlsplit(reloaded.headers["Location"]).path == f"/questions/{index}"
     assert session.answers == {}
 
 
@@ -660,7 +662,8 @@ def test_a_refusal_on_the_one_screen_goes_back_to_its_question(walk: Walk, walk_
         )
     )
 
-    assert page.named_links["back"] == f"/everything#question-{index}"
+    back = urlsplit(page.named_links["back"])
+    assert (back.path, back.fragment) == ("/everything", f"question-{index}")
 
 
 # A held refusal lives for one request -----------------------------------------

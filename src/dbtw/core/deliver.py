@@ -22,6 +22,12 @@ repository rather than about their SQL:
 * the branch already exists. Reusing it would add a second conversion's
   files to a branch whose name says it holds one.
 
+After the commit, `deliver` checks out the branch the project was on before.
+The new branch holds the conversion, and the project stays as the reader had
+it. A walk that changes an answer and writes again then builds that write
+against the project the reader has, and its delivery starts a new branch
+from the same place as the first one.
+
 `deliver` stops at the local branch, and `push` is a second function behind
 a second button for a reason. Delivery writes inside a directory the reader
 already handed this tool; a push leaves their machine and is the first thing
@@ -138,7 +144,14 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
             "Write the conversion before you deliver it"
         )
 
-    _git(root, "checkout", "-b", branch)
+    # Where the reader was, so the project goes back there after the commit.
+    # Left on the new branch, the project holds this conversion's own files,
+    # and the walk -- which reads the project on every run -- then describes
+    # a project that already contains the conversion: every model "already
+    # exists", and a second write, made after a changed answer, is built
+    # against that project and not against the one the reader has.
+    start = _current_ref(root)
+    _git(root, "checkout", "-q", "-b", branch)
     for relative in files:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +167,54 @@ def deliver(out_dir: Path, ctx: ProjectContext, *, branch: str, message: str) ->
     _git(root, "add", "--", *files)
     _git(root, "commit", "-m", message)
     commit = _git(root, "rev-parse", "HEAD").strip()
+    _git(root, "checkout", "-q", start)
     return Delivery(branch=branch, files=files, commit=commit)
+
+
+def _current_ref(root: Path) -> str:
+    """The branch the project has checked out, or its commit when HEAD is
+    detached. What `deliver` checks out again after its commit."""
+    named = subprocess.run(
+        ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=root, capture_output=True, text=True
+    )
+    if named.returncode == 0:
+        return named.stdout.strip()
+    return _git(root, "rev-parse", "HEAD").strip()
+
+
+def branch_exists(root: Path, branch: str) -> bool:
+    """Whether the repository at `root` has a local branch named `branch`."""
+    found = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=root,
+        capture_output=True,
+    )
+    return found.returncode == 0
+
+
+def free_branch(root: Path, wanted: str) -> str:
+    """`wanted`, or `wanted` with the first number that makes it a branch
+    name the repository at `root` does not have yet.
+
+    `deliver` refuses a branch that exists, so a second delivery in one walk
+    needs a name of its own. The number counts up from 2, because the first
+    delivery took the name without a number.
+    """
+    if not branch_exists(root, wanted):
+        return wanted
+    number = 2
+    while branch_exists(root, f"{wanted}-{number}"):
+        number += 1
+    return f"{wanted}-{number}"
+
+
+def earlier_write(branch: str) -> str:
+    """What the written screen says about a delivery that a newer write has
+    passed: the branch holds the write before this one, not this one."""
+    return (
+        f"The branch {branch} contains an earlier write. This write is not on a branch. "
+        "Put this write on a new branch."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,12 +289,7 @@ def _refuse_unless_branch_exists(root: Path, branch: str) -> None:
     just made. Raised rather than left to git so the refusal names the
     branch, instead of surfacing git's own message about a refspec.
     """
-    found = subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=root,
-        capture_output=True,
-    )
-    if found.returncode != 0:
+    if not branch_exists(root, branch):
         raise NoRemoteError(
             f"{root} has no branch named {branch!r} to push. A push follows a "
             "delivery, and this push follows no delivery"
@@ -311,12 +366,7 @@ def _refuse_if_dirty(root: Path) -> None:
 
 
 def _refuse_if_branch_exists(root: Path, branch: str) -> None:
-    existing = subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
-        cwd=root,
-        capture_output=True,
-    )
-    if existing.returncode == 0:
+    if branch_exists(root, branch):
         raise BranchExistsError(
             f"{root} already has a branch named {branch!r}. A branch named for a "
             "conversion contains one conversion. A second delivery onto that branch would "
