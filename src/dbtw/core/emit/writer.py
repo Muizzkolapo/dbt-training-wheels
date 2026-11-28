@@ -216,11 +216,13 @@ def _refuse(relation: str, ctx: ProjectContext) -> NoReturn:
     )
     named = ", ".join(at_risk[:_NAMED_AT_RISK]) if at_risk else "dbt_project.yml"
     raise OutputInsideProjectError(
-        f"refusing to convert into the target project: the output directory {relation}. "
-        "Every file this conversion writes lands at a project-relative path, so it would "
-        f"write straight into the project — where {named} already live — and replace them "
-        "in place, leaving nothing to compare against. Convert into a directory outside "
-        "the project, read the report, and copy across what you want."
+        f"refusing to convert into the target project. {relation}. "
+        "Each file that this conversion writes goes to a project-relative path. "
+        "So the conversion would write directly into the project, where "
+        f"{named} already exist. The conversion would replace those files in place, "
+        "and no copy would stay for comparison. Convert into a directory outside "
+        "the project. Then read the report, and copy the files that you want into "
+        "the project."
     )
 
 
@@ -286,7 +288,8 @@ def refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
                 else "is inside the dbt project at"
             )
             _refuse(
-                f"resolves to {out_resolved}, which {preposition} {project_resolved}",
+                f"The output directory resolves to {out_resolved}, which {preposition} "
+                f"{project_resolved}",
                 ctx,
             )
 
@@ -295,9 +298,9 @@ def refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
         ours = out_dir / relative
         if theirs.is_dir() and ours.exists() and _same_dir(ours, theirs):
             _refuse(
-                f"resolves to {out_resolved}, whose {relative}/ is the same directory as "
-                f"{relative}/ in the dbt project at {project_resolved} — one directory "
-                "reached by two paths",
+                f"The output directory resolves to {out_resolved}. The directory "
+                f"{relative}/ in the output directory is the same directory as {relative}/ "
+                f"in the dbt project at {project_resolved}. Two paths go to one directory",
                 ctx,
             )
 
@@ -339,11 +342,13 @@ def emit(
         tests_by_model.setdefault(test.model, []).append(test)
     orphans = sorted(set(tests_by_model) - {model.name for model in change.models})
     if orphans:
+        models = "that model" if len(orphans) == 1 else "those models"
         raise OrphanSchemaTestError(
-            f"change.tests names {_listed(orphans)}, which change.models does not "
-            "carry, so no file would be written for the test(s) and the report "
-            "would count them anyway. A test is recorded against the model it was "
-            "chosen for; one naming no model is a dbtw bug."
+            f"change.tests names {_listed(orphans)}, but change.models does not "
+            f"carry {models}. So emit would write no file for the tests of {models}, "
+            "and the report would still count those tests. Each test is recorded against "
+            "the model that it was chosen for. A test that names no model in the change "
+            "is a dbtw bug."
         )
 
     # Checked before anything is written, for the reason the tests above are
@@ -354,11 +359,13 @@ def emit(
     described = {entry.model: entry.text for entry in change.descriptions}
     undescribable = sorted(set(described) - {model.name for model in change.models})
     if undescribable:
+        models = "that model" if len(undescribable) == 1 else "those models"
         raise OrphanModelDescriptionError(
-            f"change.descriptions names {_listed(undescribable)}, which change.models "
-            "does not carry, so the reader's own words would be dropped with no file "
-            "written and nothing said. A description is written against a model the "
-            "walk showed; one naming no model is a dbtw bug."
+            f"change.descriptions names {_listed(undescribable)}, but change.models "
+            f"does not carry {models}. So emit would lose the reader's own words. "
+            "Emit would write no file for those words and would tell nobody. Each "
+            "description is written against a model that the walk showed. A description "
+            "that names no model in the change is a dbtw bug."
         )
 
     # Every file rendered before any is written, so that what the previous
@@ -444,26 +451,27 @@ def _read_record(out_dir: Path) -> dict[str, str]:
     try:
         record = json.loads(record_path.read_text(encoding="utf-8"))
     except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError both
-        raise _unreadable(record_path, f"it is not JSON ({exc})") from exc
+        raise _unreadable(record_path, f"The record is not JSON ({exc})") from exc
     if not isinstance(record, dict) or record.get("format") != _RECORD_FORMAT:
-        raise _unreadable(record_path, f"it is not a format-{_RECORD_FORMAT} record")
+        raise _unreadable(record_path, f"The record is not a format-{_RECORD_FORMAT} record")
     files = record.get("files")
     if not isinstance(files, dict) or not all(
         isinstance(path, str) and isinstance(digest, str) for path, digest in files.items()
     ):
-        raise _unreadable(record_path, "its file list is not a map of path to digest")
+        raise _unreadable(record_path, "The file list in the record is not a map of path to digest")
     if WRITE_RECORD_NAME in files:
-        raise _unreadable(record_path, "it lists itself as a file of the conversion")
+        raise _unreadable(record_path, "The record lists itself as a file of the conversion")
     return dict(files)
 
 
 def _unreadable(record_path: Path, why: str) -> StaleOutputError:
     return StaleOutputError(
-        f"cannot read {record_path}, the record of which files the previous write "
-        f"into this directory produced: {why}. Without it, files that write produced "
-        "and this one does not would stay beside this conversion's own and be "
-        f"delivered with them. Delete {WRITE_RECORD_NAME} and any files of the previous "
-        "conversion from the directory, then write again"
+        f"cannot read {record_path}. That file records which files the previous write "
+        f"into this directory produced. {why}. Without the record, a file that the "
+        "previous write produced and this write does not produce would stay beside the "
+        "files of this conversion. Delivery would then copy that file with them. "
+        f"Delete {WRITE_RECORD_NAME} and any files of the previous conversion from the "
+        "directory. Then write again."
     )
 
 
@@ -500,14 +508,13 @@ def _stale(out_dir: Path, previous: Mapping[str, str], produced: set[str]) -> tu
         else:
             stale.append(relative)
     if edited:
-        one = len(edited) == 1
-        it = "it" if one else "them"
+        files = "that file" if len(edited) == 1 else "those files"
         raise StaleOutputError(
-            f"{_listed(edited)} {'was' if one else 'were'} written by the previous write "
-            f"into this directory, and this conversion no longer produces {it} -- but "
-            f"{'it has' if one else 'they have'} changed since. This tool removes only "
-            f"files exactly as it wrote them, so nothing was written. Move {it} out of "
-            f"the directory, or delete {it}, then write again"
+            f"The previous write into this directory wrote {_listed(edited)}. "
+            f"This conversion no longer produces {files}. But {files} changed after "
+            "the previous write. This tool removes only files that are exactly as it "
+            "wrote them, so this tool wrote nothing. "
+            f"Move {files} out of the directory, or delete {files}. Then write again."
         )
     return tuple(stale)
 
@@ -527,16 +534,17 @@ def _removed(relative: str) -> Decision:
     return _decision(
         "removed",
         relative,
-        f"removed {relative}, which the previous write into this directory produced "
-        "and this one does not",
-        f"Every file this tool writes into an output directory is listed in "
-        f"{WRITE_RECORD_NAME}, beside this report. {relative} was on that list, and this "
-        "conversion no longer produces it: an answer moved its model to another layer, "
-        "or the script no longer builds it. Left in place it would sit beside this "
-        "conversion's own files -- a model moved to another layer would be there twice "
-        "under one name, which dbt refuses to parse -- and copying the directory into "
-        "the project would carry it across. A file this tool did not write is never "
-        "removed, and one it wrote that has since been changed stops the write instead.",
+        f"removed {relative}, because the previous write into this directory produced "
+        "that file and this write does not",
+        "This tool lists each file that it writes into an output directory in "
+        f"{WRITE_RECORD_NAME}, beside this report. {relative} was on that list. This "
+        "conversion no longer produces that file. The cause is one of two: an answer "
+        "moved the model to another layer, or the script no longer builds the model. "
+        "If the file stayed, it would sit beside the files of this conversion. A model "
+        "that moved to another layer would then be there twice under one name, and dbt "
+        "refuses to parse that. A copy of the directory into the project would also copy "
+        "the file. This tool never removes a file that it did not write. If this tool "
+        "wrote a file and the file changed after that, the write stops instead.",
     )
 
 
@@ -571,7 +579,8 @@ def _safe_join(out_dir: Path, relative: str | Path) -> Path:
     resolved = target.resolve()
     if resolved != out_root and out_root not in resolved.parents:
         raise UnsafeOutputPathError(
-            f"refusing to write outside out_dir: {relative!r} would resolve to {resolved}"
+            f"refusing to write outside out_dir. The path {relative!r} would resolve to "
+            f"{resolved}, which is outside out_dir."
         )
     return target
 
@@ -622,12 +631,12 @@ def _holds(path: str, declared_at: set[str], model_yml_at: Mapping[str, str]) ->
     """What already occupies `path`, named in the words the Decision uses."""
     if path in declared_at and path in model_yml_at:
         return (
-            f"the target project declares sources there and this conversion's tests "
-            f"for {model_yml_at[path]} are written there"
+            "the target project declares sources there, and this conversion writes its "
+            f"tests for {model_yml_at[path]} there"
         )
     if path in declared_at:
         return "the target project declares sources there"
-    return f"this conversion's tests for {model_yml_at[path]} are written there"
+    return f"this conversion writes its tests for {model_yml_at[path]} there"
 
 
 def _sources_dir(ctx: ProjectContext) -> Path:
@@ -752,11 +761,12 @@ def _sources_placement(
     overlap = sorted(f"{name}.{table}" for name, table in theirs & ours)
     if overlap:
         raise DuplicateSourceEntryError(
-            "assemble._source_entries skips every (source, table) the target project "
-            "already declares, so a proposed entry can never repeat one of theirs; "
-            f"{_listed(overlap)} did. Refusing rather than writing a placement "
-            "Decision that says two files stand side by side, beside a file that "
-            "declares a table the project already declares."
+            "assemble._source_entries skips each (source, table) that the target project "
+            "already declares. So a proposed entry can never repeat a declaration of the "
+            f"project. But {_listed(overlap)} did repeat one. Emit refuses to write the "
+            "placement Decision. That Decision would say that the two files stand "
+            "side by side. But the sources file of this conversion would declare a table "
+            "that the project already declares."
         )
 
     named_ours = _listed(sorted(f"{name}.{table}" for name, table in ours))
@@ -771,52 +781,57 @@ def _sources_placement(
         # would be lost here, in out_dir, before anything was copied at all.
         named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
         held = (
-            "which the target project already uses and which also holds the tests "
-            f"this conversion declares for {model}"
+            f"because {preferred} already exists in the target project and holds the "
+            f"tests this conversion declares for {model}"
         )
         why = (
-            f"{preferred} is taken twice over: "
-            f"{_holds(preferred, declared_at, model_yml_at)}. The project's file there "
-            f"declares {named_theirs}; this conversion declares {named_ours} as sources. "
-            "The sources file is written after the models, so putting ours at that path "
-            f"would overwrite the tests for {model} in this output directory, and then "
-            "replace the project's declarations as well once the directory is copied "
-            f"across. Ours is a separate file instead: the tests for {model} keep their "
-            "file here, and the project keeps its own. dbt reads them all — its "
-            "duplicate check is per source and table, so two files may declare the same "
-            "source name as long as the tables differ, and this conversion skips every "
-            "table the project already declares."
+            f"{preferred} is taken twice: "
+            f"{_holds(preferred, declared_at, model_yml_at)}. The project's file at that "
+            f"path declares {named_theirs}. This conversion declares {named_ours} as "
+            "sources. This tool writes the sources file after the models. So a sources "
+            f"file at that path would overwrite the tests for {model} in this output "
+            "directory. When you copy the directory into the project, that sources file "
+            "would also replace the project's declarations. So this conversion's sources "
+            f"are in a separate file. The tests for {model} keep their file here, and the "
+            "project keeps its own file. dbt reads all of these files. The duplicate "
+            "check of dbt is per source and table. So two files may declare the same "
+            "source name if the tables are different. This conversion skips each table "
+            "that the project already declares."
         )
     elif at_preferred:
         named_theirs = _listed(sorted(f"{name}.{table}" for name, table in theirs))
-        held = "which the target project already uses"
+        held = f"because {preferred} already exists in the target project"
         why = (
-            f"{preferred} in the target project declares {named_theirs}; this "
-            f"conversion declares {named_ours}. Writing ours at that path would "
-            "replace their file and take their declarations with it, so ours is a "
-            "separate file and nothing of the project's is touched. dbt reads both — "
-            "its duplicate check is per source and table, so two files may declare "
-            "the same source name as long as the tables differ, and this conversion "
-            "skips every table the project already declares. Copy both across as they "
-            f"are, or merge our entries into {preferred} by hand if you would rather "
-            "keep one file."
+            f"{preferred} in the target project declares {named_theirs}. This "
+            f"conversion declares {named_ours}. A sources file of this conversion at "
+            "that path would replace the project's file, and the project's declarations "
+            "would go with it. So this conversion's sources are in a separate file, and "
+            "this tool changes no file of the project. dbt reads both files. The "
+            "duplicate check of dbt is per source and table. So two files may declare "
+            "the same source name if the tables are different. This conversion skips "
+            "each table that the project already declares. Copy both files into the "
+            "project as they are. If you prefer one file, merge this conversion's "
+            f"entries into {preferred} by hand."
         )
     else:
-        held = f"which holds the tests this conversion declares for {model}"
+        held = f"because {preferred} holds the tests this conversion declares for {model}"
         why = (
-            f"a model's schema file takes the model's own name, so {preferred} is "
-            f"where the tests this conversion was asked to declare for {model} are "
-            f"written; this conversion declares {named_ours} as sources. The sources "
-            "file is written after the models, so putting ours at that path would "
-            f"replace the tests declared for {model} with source declarations — and "
-            "the run would report a test whose file it had just overwritten. Ours is a separate "
-            "file instead, and both are copied across together. dbt reads both."
+            "A model's schema file takes the model's own name. So this conversion "
+            f"writes the tests that it was asked to declare for {model} at {preferred}. "
+            f"This conversion declares {named_ours} as sources. This tool writes the "
+            "sources file after the models. So a sources file at that path would "
+            f"replace the tests declared for {model} with source declarations. Then the "
+            "run would report a test whose file the same run overwrote. So this "
+            "conversion's sources are in a separate file. When you copy the directory, "
+            "the two files go into the project together. dbt reads both files."
         )
-    if stepped_over:
-        also = _listed(
-            [f"{path} ({_holds(path, declared_at, model_yml_at)})" for path in stepped_over]
+    # One sentence for each alternative name, so the text stays short for any
+    # number of names that were taken.
+    for path in stepped_over:
+        why += (
+            f" The alternative name {path} was also taken: "
+            f"{_holds(path, declared_at, model_yml_at)}."
         )
-        why += f" The name taken when the ordinary one is occupied was occupied too: {also}."
     return landing, (
         _decision(
             "sources_placed",

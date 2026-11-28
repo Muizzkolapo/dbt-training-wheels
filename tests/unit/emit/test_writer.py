@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 from tests.unit.assemble.helpers import context_for, convert
+from tests.unit.test_ste_wording import findings
 
 from dbtw.core.assemble import AssembledModel, ProjectChange, SourceEntry
 from dbtw.core.context import ProjectContext, SourceInfo, read_project
@@ -228,7 +229,7 @@ def test_the_placement_decision_says_both_files_stand(tmp_path):
     )
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert "dbt reads both" in report
-    assert "if you would rather keep one file" in report
+    assert "If you prefer one file" in report
     assert "declared twice" not in report
     assert "dbt rejects" not in report
 
@@ -353,6 +354,66 @@ def test_the_landing_name_bumps_past_a_sources_dbtw_the_project_already_has(tmp_
     assert (out / "models" / "sources_dbtw_2.yml").is_file()
     assert not (out / "models" / "sources.yml").exists()
     assert not (out / "models" / "sources_dbtw.yml").exists()
+
+
+def test_each_taken_alternate_name_is_named_in_a_sentence_of_its_own(tmp_path):
+    """The project declares sources at the ordinary name and at three
+    alternate names, so the sources file steps over three names. The reason
+    names each one, with what holds it. A single sentence that lists them all
+    grows with each name and passes the STE limit of 25 words. One sentence
+    for each name stays short for any number of names.
+    """
+    ctx = _context_declaring(
+        tmp_path / "project",
+        ("raw", "orders", "models/sources.yml"),
+        ("raw", "refunds", "models/sources_dbtw.yml"),
+        ("raw", "shipments", "models/sources_dbtw_2.yml"),
+        ("raw", "returns", "models/sources_dbtw_3.yml"),
+    )
+    result = emit(
+        _change(sources=(SourceEntry(source_name="raw", schema="raw", table="customers"),)),
+        ctx,
+        tmp_path / "out",
+    )
+
+    (placed,) = [d for d in result.decisions if d.key.startswith("emit.sources_placed")]
+    assert "models/sources_dbtw_4.yml" in placed.action
+    for taken in (
+        "models/sources_dbtw.yml",
+        "models/sources_dbtw_2.yml",
+        "models/sources_dbtw_3.yml",
+    ):
+        assert f"The alternative name {taken} was also taken" in placed.reason
+    assert findings(placed.reason) == []
+    assert findings(placed.action) == []
+
+
+def test_a_refusal_naming_several_orphan_models_speaks_of_them_in_the_plural(tmp_path):
+    """`_listed` can name more than one model. The refusal must not call a
+    list of two models "that model"."""
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    tests = (SchemaTest("stg_ghost", "order_id"), SchemaTest("stg_phantom", "order_id"))
+    with pytest.raises(OrphanSchemaTestError) as raised:
+        emit(_change(tests=tests), ctx, tmp_path)
+    message = str(raised.value)
+    assert "stg_ghost and stg_phantom" in message
+    assert "does not carry those models" in message
+    assert "that model" not in message
+
+    descriptions = (ModelDescription("stg_ghost", "a"), ModelDescription("stg_phantom", "b"))
+    with pytest.raises(OrphanModelDescriptionError) as raised:
+        emit(_change(descriptions=descriptions), ctx, tmp_path)
+    message = str(raised.value)
+    assert "does not carry those models" in message
+    assert "that model" not in message
+
+
+def test_a_refusal_naming_one_orphan_model_speaks_of_it_in_the_singular(tmp_path):
+    ctx = read_project(FIXTURES / "jaffle_shop")
+    with pytest.raises(OrphanSchemaTestError) as raised:
+        emit(_change(tests=(SchemaTest("stg_ghost", "order_id"),)), ctx, tmp_path)
+    assert "does not carry that model" in str(raised.value)
+    assert "those models" not in str(raised.value)
 
 
 def test_emit_refuses_a_source_entry_the_project_already_declares(tmp_path):
@@ -516,8 +577,8 @@ def test_the_moved_sources_file_says_why_it_moved(tmp_path):
     assert "holds the tests this conversion declares for sources" in moved.action
     # The project declares no sources at all here, so blaming it would describe
     # a conflict that did not happen.
-    assert "the target project already uses" not in moved.action
-    assert "replace their file" not in moved.reason
+    assert "already exists in the target project" not in moved.action
+    assert "replace the project's file" not in moved.reason
 
     report = (tmp_path / "CONVERSION_REPORT.md").read_text()
     assert moved.action in report
