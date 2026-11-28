@@ -84,16 +84,25 @@ def test_emit_refuses_an_out_dir_that_is_the_project_itself(tmp_path: Path) -> N
     project = _victim(tmp_path)
     before = _snapshot(project)
 
-    with pytest.raises(OutputInsideProjectError, match="refusing to convert into the target"):
+    with pytest.raises(
+        OutputInsideProjectError, match="refuses to write the conversion inside the target"
+    ):
         _emit_into(project, project)
 
     assert _snapshot(project) == before
 
 
-def test_the_refusal_names_the_project_and_the_files_that_were_at_risk(tmp_path: Path) -> None:
+def test_the_refusal_names_the_project_and_no_file_the_run_does_not_write(
+    tmp_path: Path,
+) -> None:
     """A refusal that says only "no" leaves the reader guessing which of their
-    two paths was wrong. It names the directory it resolved to and some of
-    what already lives there."""
+    two paths was wrong. It names the directory it resolved to.
+
+    It names no file of the project. It once listed the project's own files
+    as files that the conversion "would replace", but the refusal fires
+    before this tool knows which files the conversion writes. Here the
+    conversion writes no sources file at all, so models/sources.yml was a
+    false claim."""
     project = _victim(tmp_path)
 
     with pytest.raises(OutputInsideProjectError) as refusal:
@@ -101,14 +110,16 @@ def test_the_refusal_names_the_project_and_the_files_that_were_at_risk(tmp_path:
 
     message = str(refusal.value)
     assert str(project.resolve()) in message, message
-    assert "models/sources.yml" in message, message
+    assert "models/sources.yml" not in message, message
 
 
 def test_emit_refuses_an_out_dir_inside_the_project(tmp_path: Path) -> None:
     project = _victim(tmp_path)
     before = _snapshot(project)
 
-    with pytest.raises(OutputInsideProjectError, match="refusing to convert into the target"):
+    with pytest.raises(
+        OutputInsideProjectError, match="refuses to write the conversion inside the target"
+    ):
         _emit_into(project, project / "models")
 
     assert _snapshot(project) == before
@@ -123,7 +134,9 @@ def test_emit_refuses_an_out_dir_that_does_not_exist_yet_inside_the_project(
     project = _victim(tmp_path)
     before = _snapshot(project)
 
-    with pytest.raises(OutputInsideProjectError, match="refusing to convert into the target"):
+    with pytest.raises(
+        OutputInsideProjectError, match="refuses to write the conversion inside the target"
+    ):
         _emit_into(project, project / "out" / "here")
 
     assert not (project / "out").exists(), "the refusal created a directory in the project"
@@ -140,7 +153,9 @@ def test_emit_refuses_an_out_dir_that_reaches_the_project_through_a_symlink(
     link = tmp_path / "link"
     link.symlink_to(project, target_is_directory=True)
 
-    with pytest.raises(OutputInsideProjectError, match="refusing to convert into the target"):
+    with pytest.raises(
+        OutputInsideProjectError, match="refuses to write the conversion inside the target"
+    ):
         _emit_into(project, link)
 
     assert _snapshot(project) == before
@@ -159,7 +174,9 @@ def test_emit_refuses_an_out_dir_whose_models_are_the_projects_models(tmp_path: 
     (shared / "models").symlink_to(real_models, target_is_directory=True)
     before = _snapshot(project)
 
-    with pytest.raises(OutputInsideProjectError, match="refusing to convert into the target"):
+    with pytest.raises(
+        OutputInsideProjectError, match="refuses to write the conversion inside the target"
+    ):
         _emit_into(project, shared)
 
     assert _snapshot(project) == before

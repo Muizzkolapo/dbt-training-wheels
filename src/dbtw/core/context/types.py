@@ -1,4 +1,4 @@
-"""Data shapes for the target-project context. No I/O, no logic."""
+"""Data shapes for the target-project context. No I/O."""
 
 from __future__ import annotations
 
@@ -15,12 +15,31 @@ class NotADbtProjectError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Detection:
-    """One detected (or undetectable) convention, with its provenance."""
+    """One detected (or undetectable) convention, with its provenance.
+
+    `key` is the name this tool uses inside, and `label` is the name a
+    reader reads. A screen and the report show the label first, and the key
+    only as secondary text: a reader who has never used dbt cannot read
+    `layer.intermediate.prefix`.
+    """
 
     key: str  # e.g. "layer.staging.prefix", "project.model_paths"
+    label: str  # e.g. "Prefix of staging models", "Folders that hold models"
     status: DetectionStatus
     value: str | None  # None when undetermined, or when 'no prefix' is the finding
     evidence: str  # human-readable: what was concluded, from what
+
+    @property
+    def reading(self) -> str:
+        """The value in plain words.
+
+        A None value has two meanings, and the status tells them apart:
+        nothing was found ("not found"), or the finding is that there is
+        none, for example a layer whose models use no prefix ("none").
+        """
+        if self.value is not None:
+            return self.value
+        return "not found" if self.status == "undetermined" else "none"
 
 
 @dataclass(frozen=True, slots=True)

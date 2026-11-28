@@ -45,14 +45,9 @@ _REFERENCES_LEFT = (
 _NO_REFERENCES = "This conversion found no table reference to rewrite as a ref() or source() call."
 _VARIABLES_REWRITTEN = "This tool rewrote script variables as var() calls."
 _INCREMENTAL_BUILT = "This conversion built {count}: {names}."
-_NO_INCREMENTAL = (
-    'This conversion built no incremental models. The "Still pending" section above lists '
-    "each statement that this tool did not convert."
-)
-_STILL_LATER = (
-    "This tool still leaves these items for later: temporary tables, and UPDATE or "
-    "other rewrites of more than one statement."
-)
+_NO_INCREMENTAL = "This conversion built no incremental models."
+_STILL_PENDING = 'The "Still pending" section above lists {count} that this tool did not convert.'
+
 _TESTS_ASKED_FOR = (
     "This tool created only the tests that your answers asked for: {count}. This "
     "tool did not create documentation blocks or exposures."
@@ -127,6 +122,15 @@ def _render_not_done_yet(change: ProjectChange) -> str:
         )
     else:
         built = _NO_INCREMENTAL
+    # The pointer only when the list has something in it. A fixed sentence
+    # about "items for later" named temporary tables and UPDATE in every
+    # report, also when the input had neither, and pointed at a list that
+    # said "Nothing" two sections above.
+    left = (
+        [_STILL_PENDING.format(count=_counted(len(change.pending), "statement", "statements"))]
+        if change.pending
+        else []
+    )
     tests = _TESTS_ASKED_FOR.format(count=len(change.tests)) if change.tests else _NO_TESTS
 
     return "\n\n".join(
@@ -134,7 +138,7 @@ def _render_not_done_yet(change: ProjectChange) -> str:
             "## Not done yet",
             _NOT_DONE_INTRO,
             " ".join(rewritten),
-            " ".join([built, _STILL_LATER, tests]),
+            " ".join([built, *left, tests]),
             _REVIEW,
         ]
     )
@@ -155,7 +159,8 @@ def _render_one_model(change: ProjectChange, elsewhere: str) -> str | None:
 
     The report listed model paths and never a model's contents, so the two
     glossary words that are syntax -- `{{ }}` and `config()` -- were words a
-    reader of the CLI could not meet: ten conversions left them at 12 of 14.
+    reader of the CLI could not meet: ten conversions left them at 12 of the
+    14 words that the glossary had then.
     The glossary is read off the report, so showing a file is what makes it
     define them, in the report the reader is holding.
 
@@ -201,15 +206,25 @@ def _fence_for(text: str) -> str:
 NEXT_HEADING = "## Then, in your project"
 
 # The same heading the walk's last screen uses, because it is the same step.
+#
+# Two ways, not four steps. `dbt build` does the work of `dbt run` and
+# `dbt test`, so a list that numbered it fourth told a reader to run the
+# models twice.
 _NEXT = f"""\
 {NEXT_HEADING}
 
-This tool did not run dbt. The commands below run dbt, in the order of a first
-run. The first command shows the SQL that dbt would send. The second command
-sends that SQL. The third command checks the result. The fourth command does
-both. This report defines each command.
+This tool did not run dbt. You can run dbt in one of two ways. This report
+defines each command.
 
-{{commands}}
+Step by step, in this order:
+
+1. `{{compile}}` shows the SQL that dbt would send. This command sends nothing.
+2. `{{run}}` sends that SQL to the warehouse.
+3. `{{test}}` checks the result.
+
+Or with one command:
+
+- `{{build}}` does the work of `{{run}}` and `{{test}}` together, one model at a time.
 
 Nothing schedules these commands. dbt builds when something runs it. That
 something is you, or the tool that you already use to run things on a schedule.\
@@ -221,7 +236,8 @@ def _render_next() -> str:
 
     Named here because the glossary is read off the report: a command the
     report never said was a word it never defined, and ten conversions left a
-    reader at 8 of the glossary's 14 words with no way to reach the rest. The
+    reader at 8 of the 14 words that the glossary had then, with no way to
+    reach the rest. The
     two the CLI could not teach were the two the persona's comprehension check
     asks -- when does this run again, and what would `dbt build` do to it.
 
@@ -229,20 +245,50 @@ def _render_next() -> str:
     define them either: the glossary says what a word means, once, wherever it
     is rendered, and a second copy is a second thing to keep in step.
     """
-    return _NEXT.format(commands="\n".join(f"{n}. `{name}`" for n, name in enumerate(COMMANDS, 1)))
+    compile_, run, test, build = COMMANDS
+    return _NEXT.format(compile=compile_, run=run, test=test, build=build)
+
+
+def shown_path(source_file: str, sql_root: PurePath | None) -> str:
+    """Where a statement came from, in the words of the SQL the reader gave.
+
+    `sql_root` is the directory that the reader's SQL is in: the directory
+    they named, or the folder of the one file they named. `dbtw web` stages a
+    pasted query in a temporary directory, and that directory is its root. A
+    path relative to the root keeps every folder under it, so two files with
+    one name in two folders stay apart. The temporary path never reaches a
+    report that delivery commits into the reader's project.
+
+    With no root, the path is shown as `ingest` recorded it. A statement
+    outside the root is a dbtw bug, and `relative_to` raises for it.
+    """
+    if sql_root is None:
+        return source_file
+    return PurePath(source_file).relative_to(sql_root).as_posix()
 
 
 def render_report(
-    change: ProjectChange, ctx: ProjectContext, progress: Progress = NOTHING_EXPLAINED
+    change: ProjectChange,
+    ctx: ProjectContext,
+    progress: Progress = NOTHING_EXPLAINED,
+    *,
+    sql_root: PurePath | None = None,
+    remember: bool = True,
 ) -> str:
+    """The conversion report for `change`.
+
+    `remember` is False under --no-remember, where this tool records nothing.
+    The report then gives no count of the words explained, because that
+    count is a count over the earlier conversions of this project.
+    """
     summary = _render_summary(change)
     sections = [_render_conventions(ctx), _render_models(change), _render_sources(change)]
     if change.variables:
         sections.append(_render_vars(change))
     sections.extend(
         [
-            _render_decisions(change),
-            _render_pending(change),
+            _render_decisions(change, sql_root),
+            _render_pending(change, sql_root),
             _render_not_done_yet(change),
             # After the caveats and last: "dbt was not invoked" is the
             # sentence above it, and this is what invoking it looks like.
@@ -267,7 +313,8 @@ def render_report(
     # The tally is part of the summary, so it is built once the words in play
     # are known -- which is only after the rest of the report exists, for the
     # same reason the glossary is.
-    summary = _with_tally(summary, teaching, progress)
+    if remember:
+        summary = _with_tally(summary, teaching, progress)
     below = [_render_met(teaching)] if teaching.met else []
     return "\n\n".join([summary, glossary, *sections, *below]) + "\n"
 
@@ -287,7 +334,11 @@ def _with_tally(summary: str, teaching: Teaching, progress: Progress) -> str:
     if progress.unreadable:
         return summary
     explained = after((*teaching.full, *teaching.met), progress).shown
-    return f"{summary}\n{_TALLY_LABEL}: {len(explained)} of {len(GLOSSARY)}"
+    return (
+        f"{summary}\n{_TALLY_LABEL}: {len(explained)} of {len(GLOSSARY)}. This tool explains "
+        f"{len(GLOSSARY)} dbt words. The count includes this report and the earlier reports "
+        "for this project."
+    )
 
 
 def _render_summary(change: ProjectChange) -> str:
@@ -410,9 +461,10 @@ def _render_conventions(ctx: ProjectContext) -> str:
     if not ctx.detections:
         lines.append("This tool found no conventions.")
         return "\n".join(lines)
+    # The label first, in plain words. The key stays as code after the
+    # evidence, so a reader can still match a row to the key.
     for d in ctx.detections:
-        value = d.value if d.value is not None else "undetermined"
-        lines.append(f"- **{d.key}**: {value} — {d.evidence}")
+        lines.append(f"- **{d.label}**: {d.reading} — {d.evidence} (`{d.key}`)")
     return "\n".join(lines)
 
 
@@ -629,7 +681,7 @@ def _example_for(decision: Decision, change: ProjectChange) -> Example | None:
     return None
 
 
-def _render_decisions(change: ProjectChange) -> str:
+def _render_decisions(change: ProjectChange, sql_root: PurePath | None) -> str:
     lines = ["## Decisions", ""]
     if not change.decisions:
         lines.append("No decisions were recorded.")
@@ -643,7 +695,9 @@ def _render_decisions(change: ProjectChange) -> str:
     for tier in sorted(by_tier):
         block_lines = [f"### Tier {tier}", ""]
         for d in by_tier[tier]:
-            location = f" ({d.source_file}:{d.line_start})" if d.source_file else ""
+            location = (
+                f" ({shown_path(d.source_file, sql_root)}:{d.line_start})" if d.source_file else ""
+            )
             block_lines.append(f"- **{d.action}** — {d.reason}{location}")
             # Under the dbt-native reason it restates, never instead of it,
             # and with the same "In plain words:" opening the plain question
@@ -707,7 +761,7 @@ def _render_decisions(change: ProjectChange) -> str:
     return "\n".join(lines)
 
 
-def _render_pending(change: ProjectChange) -> str:
+def _render_pending(change: ProjectChange, sql_root: PurePath | None) -> str:
     lines = ["## Still pending", ""]
     if not change.pending:
         lines.append("Nothing — every statement was handled.")
@@ -716,7 +770,7 @@ def _render_pending(change: ProjectChange) -> str:
         # The file and line as well as the statement: one report can cover a
         # whole directory of scripts, so the kind alone does not identify one
         # -- and a reader who wants to look at it needs somewhere to look.
-        where = f"{PurePath(stmt.raw.source_file).name}:{stmt.raw.line_start}"
+        where = f"{shown_path(stmt.raw.source_file, sql_root)}:{stmt.raw.line_start}"
         lines.append(f"- **{stmt.kind}** — `{where}` — {excerpt(stmt.raw.text, change.dialect)}")
         # The reason under it, as part of the same item. The kind says what
         # the statement is. The reason says why the tool declined it, and for

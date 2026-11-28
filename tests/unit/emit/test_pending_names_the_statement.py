@@ -278,8 +278,9 @@ def test_the_line_gives_the_reason_the_statement_is_pending() -> None:
     )
     statement = classify(raw, None)
     report = render_report(
-        _change(pending=((0, statement),), dialect=None),
+        _change(pending=((0, statement),), decisions=(), dialect=None),
         read_project(FIXTURES / "jaffle_shop"),
+        sql_root=Path("/home/priya/sql"),
     )
     block = report.split("## Still pending")[1].split("\n## ")[0]
 

@@ -288,7 +288,7 @@ def test_the_refusal_screen_carries_the_error_the_path_and_the_models(
     page = read(client.post("/write", follow_redirects=True).get_data(as_text=True))
 
     rendered = " ".join(page.engine)
-    assert "refusing to convert into the target project" in rendered, rendered
+    assert "refuses to write the conversion inside the target project" in rendered, rendered
     assert str(project_dir.resolve()) in rendered, rendered
     # The models, still there: the reader can read what would have been
     # written while they fix where it was going.
@@ -402,9 +402,9 @@ def test_pressing_write_twice_does_not_write_twice(
     writes: list[Path] = []
     real = app_module.emit
 
-    def spy(change, ctx, target, *rest):  # type: ignore[no-untyped-def]
+    def spy(change, ctx, target, *rest, **named):  # type: ignore[no-untyped-def]
         writes.append(Path(target))
-        return real(change, ctx, target, *rest)
+        return real(change, ctx, target, *rest, **named)
 
     monkeypatch.setattr(app_module, "emit", spy)
 

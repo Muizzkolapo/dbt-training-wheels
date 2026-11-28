@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn
 
+import yaml
+
 from dbtw.core.assemble import AssembledModel, ProjectChange
 from dbtw.core.assemble.layers import layer_roles
 from dbtw.core.context import ProjectContext
@@ -53,10 +55,6 @@ _RECORD_FORMAT = 1
 # which sorts them to the top of the directory -- away from the file this one
 # exists to sit next to.
 _ALT_SOURCES_NAME = "sources_dbtw.yml"
-
-# How many of the project's own files the in-project refusal names. Enough to
-# make "your files are in there" concrete; not the whole tree.
-_NAMED_AT_RISK = 3
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -210,19 +208,22 @@ def _same_dir(one: Path, other: Path) -> bool:
     return one.samefile(other)
 
 
-def _refuse(relation: str, ctx: ProjectContext) -> NoReturn:
-    at_risk = sorted(
-        {s.declared_in for s in ctx.existing_sources} | {m.path for m in ctx.existing_models}
-    )
-    named = ", ".join(at_risk[:_NAMED_AT_RISK]) if at_risk else "dbt_project.yml"
+def _refuse(relation: str) -> NoReturn:
+    """Refuse the write, with no claim about which files it would replace.
+
+    The refusal fires before this tool knows which files the conversion
+    writes: `dbtw web` asks at startup, before it has read any SQL. An
+    earlier form named the project's own models as files that the
+    conversion "would replace". Those were not files the run writes, so the
+    claim was false. The refusal now says what is true of every write
+    inside the project.
+    """
     raise OutputInsideProjectError(
-        f"refusing to convert into the target project. {relation}. "
-        "Each file that this conversion writes goes to a project-relative path. "
-        "So the conversion would write directly into the project, where "
-        f"{named} already exist. The conversion would replace those files in place, "
-        "and no copy would stay for comparison. Convert into a directory outside "
-        "the project. Then read the report, and copy the files that you want into "
-        "the project."
+        f"This tool refuses to write the conversion inside the target project. {relation}. "
+        "This tool writes a copy for you to read before you change the project. "
+        "Inside the project, a file of that copy can replace or duplicate a file of the "
+        "project. Write into a directory outside the project. Then read the report, and "
+        "copy the files that you want into the project."
     )
 
 
@@ -289,8 +290,7 @@ def refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
             )
             _refuse(
                 f"The output directory resolves to {out_resolved}, which {preposition} "
-                f"{project_resolved}",
-                ctx,
+                f"{project_resolved}"
             )
 
     for relative in ctx.model_paths:
@@ -300,8 +300,7 @@ def refuse_output_inside_project(out_dir: Path, ctx: ProjectContext) -> None:
             _refuse(
                 f"The output directory resolves to {out_resolved}. The directory "
                 f"{relative}/ in the output directory is the same directory as {relative}/ "
-                f"in the dbt project at {project_resolved}. Two paths go to one directory",
-                ctx,
+                f"in the dbt project at {project_resolved}. Two paths go to one directory"
             )
 
 
@@ -310,7 +309,21 @@ def emit(
     ctx: ProjectContext,
     out_dir: Path,
     progress: Progress = NOTHING_EXPLAINED,
+    *,
+    sql_path: Path | None = None,
+    remember: bool = True,
 ) -> EmitResult:
+    """Write `change` into `out_dir`, with its report.
+
+    `sql_path` is the SQL that the reader gave: one file, or a directory of
+    files. The report names each statement's file relative to it, so the
+    report shows no path that only this process knows, such as the temporary
+    directory where `dbtw web` stages a paste. Every front end passes it.
+    With None, the report shows each path as `ingest` recorded it.
+
+    `remember` is False when this tool records nothing (--no-remember). The
+    report then gives no count of the words explained.
+    """
     # First, and before out_dir is created: `ctx` was read from a real dbt
     # project, and writing this conversion into that project is the one thing
     # this package must never do.
@@ -390,7 +403,9 @@ def emit(
     report_path = _safe_join(out_dir, REPORT_NAME)
     produced = {path.relative_to(out_dir).as_posix() for path, _ in planned} | {REPORT_NAME}
     stale = _stale(out_dir, _read_record(out_dir), produced)
-    removals = tuple(_removed(relative) for relative in stale)
+    # Read before anything is written or removed: the kind of each stale
+    # file is read off the file, which is still as the previous write left it.
+    removals = tuple(_removed(relative, _kind_of(out_dir / relative)) for relative in stale)
 
     # The report has to answer for every file emit wrote, and for every file
     # it removed. Where the sources file landed and what the previous write
@@ -411,7 +426,11 @@ def emit(
     for path in removed:
         path.unlink()
 
-    report_path.write_text(render_report(reported, ctx, progress), encoding="utf-8")
+    root = None if sql_path is None else sql_root(sql_path)
+    report_path.write_text(
+        render_report(reported, ctx, progress, sql_root=root, remember=remember),
+        encoding="utf-8",
+    )
     written.append(report_path)
 
     # Last, so the record never lists a file this write did not finish. A
@@ -529,22 +548,87 @@ def _identity(path: Path) -> tuple[int, int] | None:
     return (stat.st_dev, stat.st_ino)
 
 
-def _removed(relative: str) -> Decision:
-    """The Decision recording one file this write removed."""
+# What the previous write produced a file for, read off the file itself.
+_MODEL = "model"
+_SCHEMA = "schema"
+_SOURCES = "sources"
+_OTHER = "other"
+
+_RECORDED = (
+    "This tool lists each file that it writes into an output directory in "
+    f"{WRITE_RECORD_NAME}, beside this report. {{relative}} was on that list. This "
+    "conversion no longer produces that file."
+)
+_WHY_BY_KIND = {
+    _MODEL: (
+        "The cause is one of two: an answer moved the model to another layer, or the "
+        "script no longer builds the model. If the file stayed, a model that moved to "
+        "another layer would be there twice under one name, and dbt refuses to parse that."
+    ),
+    _SCHEMA: (
+        "The file held the tests or the description of one model. The cause is one of "
+        "three. No answer now asks for a test or a description of that model. Or an "
+        "answer moved the model to another layer. Or the script no longer builds the model."
+    ),
+    _SOURCES: (
+        "The file declared the sources that the previous conversion proposed. The cause "
+        "is one of two. This conversion proposes no new source. Or this conversion "
+        "writes its sources file under a different name."
+    ),
+    _OTHER: "",
+}
+_KEEPS = (
+    "A copy of the directory into the project would also copy the file. This tool never "
+    "removes a file that it did not write. If this tool wrote a file and the file changed "
+    "after that, the write stops instead."
+)
+
+
+def _kind_of(path: Path) -> str:
+    """Which kind of file the previous write produced at `path`.
+
+    Read off the file, not off its name. A model called `sources` has its
+    schema file at `<dir>/sources.yml`, so a name cannot tell a schema file
+    from a sources file. The file is exactly as this tool wrote it, because
+    `_stale` refuses a file that changed. A file that is neither a model nor
+    one of the two .yml shapes is `_OTHER`, and its reason says only what is
+    true of every file.
+    """
+    if path.suffix == ".sql":
+        return _MODEL
+    if path.suffix == ".yml":
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and "sources" in loaded:
+            return _SOURCES
+        if isinstance(loaded, dict) and "models" in loaded:
+            return _SCHEMA
+    return _OTHER
+
+
+def sql_root(sql_path: Path) -> Path:
+    """The directory that the reader's SQL is in.
+
+    The directory itself when the reader gave a directory, and the folder of
+    the file when they gave one file. The report and the CLI name each
+    statement's file relative to this directory.
+    """
+    return sql_path if sql_path.is_dir() else sql_path.parent
+
+
+def _removed(relative: str, kind: str) -> Decision:
+    """The Decision recording one file this write removed.
+
+    The reason names the causes that are true of the kind of file. One fixed
+    reason about models was given for a sources file and for a schema file
+    whose only test was dropped, and it was false of both.
+    """
+    why = _WHY_BY_KIND[kind]
     return _decision(
         "removed",
         relative,
         f"removed {relative}, because the previous write into this directory produced "
         "that file and this write does not",
-        "This tool lists each file that it writes into an output directory in "
-        f"{WRITE_RECORD_NAME}, beside this report. {relative} was on that list. This "
-        "conversion no longer produces that file. The cause is one of two: an answer "
-        "moved the model to another layer, or the script no longer builds the model. "
-        "If the file stayed, it would sit beside the files of this conversion. A model "
-        "that moved to another layer would then be there twice under one name, and dbt "
-        "refuses to parse that. A copy of the directory into the project would also copy "
-        "the file. This tool never removes a file that it did not write. If this tool "
-        "wrote a file and the file changed after that, the write stops instead.",
+        " ".join(part for part in (_RECORDED.format(relative=relative), why, _KEEPS) if part),
     )
 
 

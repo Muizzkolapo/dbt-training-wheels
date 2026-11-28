@@ -55,6 +55,7 @@ def read_project(root: Path | str) -> ProjectContext:
     detections.append(
         Detection(
             key="project.model_paths",
+            label="Folders that hold models",
             status="detected",
             value=", ".join(model_paths),
             evidence=(
@@ -189,6 +190,7 @@ def _collect_sources(
                 warnings.append(
                     Detection(
                         key="warning.unparseable_yaml",
+                        label="File that this tool could not read",
                         status="undetermined",
                         value=None,
                         evidence=f"skipped {rel}: {exc}",
@@ -218,15 +220,29 @@ def _collect_sources(
     return sources, warnings
 
 
+def _layer_models(layer_name: str, layer_path: str) -> str:
+    """The models of one layer, named for a reader: "staging models".
+
+    The layer at the root of a model folder is called "root" inside this
+    tool. That name is not a folder a reader can find, so those models are
+    named by their folder.
+    """
+    if layer_name == "root":
+        return f"models directly in {layer_path}"
+    return f"{layer_name} models"
+
+
 def _detect_prefix(stems: list[str], layer_name: str, layer_path: str) -> Detection:
     """One Detection for a layer's naming prefix, per the rule in the RFC (§7).
 
     key uses the layer NAME ("root", "staging"); evidence cites the dir path.
     """
     key = f"layer.{layer_name}.prefix"
+    label = f"Prefix of {_layer_models(layer_name, layer_path)}"
     if len(stems) == 1:
         return Detection(
             key=key,
+            label=label,
             status="undetermined",
             value=None,
             evidence=f"only one model in {layer_path} — not enough to infer a prefix",
@@ -235,6 +251,7 @@ def _detect_prefix(stems: list[str], layer_name: str, layer_path: str) -> Detect
     if tokens == {None}:
         return Detection(
             key=key,
+            label=label,
             status="detected",
             value=None,
             evidence=f"no prefix — 0 of {len(stems)} models in {layer_path} use one",
@@ -243,12 +260,14 @@ def _detect_prefix(stems: list[str], layer_name: str, layer_path: str) -> Detect
         (prefix,) = tokens
         return Detection(
             key=key,
+            label=label,
             status="detected",
             value=prefix,
             evidence=f"{prefix} — from {len(stems)} of {len(stems)} models in {layer_path}",
         )
     return Detection(
         key=key,
+        label=label,
         status="undetermined",
         value=None,
         evidence=f"mixed prefixes in {layer_path} ({', '.join(sorted(stems))})",
@@ -278,10 +297,12 @@ def _build_layers(
         parts = () if layer_name == "root" else (layer_name,)
         mat = _materialization_for(models_config, parts)
         mat_key = f"layer.{layer_name}.materialization"
+        mat_label = f"Materialization of {_layer_models(layer_name, dir_path)}"
         if mat is not None:
             detections.append(
                 Detection(
                     key=mat_key,
+                    label=mat_label,
                     status="detected",
                     value=mat,
                     evidence=f"models config in dbt_project.yml for {dir_path}",
@@ -291,6 +312,7 @@ def _build_layers(
             detections.append(
                 Detection(
                     key=mat_key,
+                    label=mat_label,
                     status="undetermined",
                     value=None,
                     evidence=f"no materialized setting found for {dir_path} in dbt_project.yml",

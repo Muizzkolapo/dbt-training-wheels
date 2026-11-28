@@ -679,7 +679,9 @@ def test_refuses_to_convert_into_the_target_project_itself(tmp_path, capsys):
     assert _snapshot(project) == before
     err = capsys.readouterr().err
     assert str(project.resolve()) in err
-    assert "models/sources.yml" in err
+    # No file of the project is named as one this run would replace: the
+    # refusal fires before this tool knows which files the run writes.
+    assert "models/sources.yml" not in err
 
 
 def test_refuses_when_out_is_a_directory_inside_the_target_project(tmp_path):
@@ -727,7 +729,7 @@ def test_refuses_a_home_relative_out_path_that_names_the_project(tmp_path, monke
     project = _victim(tmp_path)
     before = _snapshot(project)
     assert _convert_into("~/project", "~/project") == 2
-    assert "refusing to convert into the target project" in capsys.readouterr().err
+    assert "refuses to write the conversion inside the target project" in capsys.readouterr().err
     assert _snapshot(project) == before
 
 

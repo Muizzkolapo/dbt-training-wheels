@@ -6,7 +6,7 @@ from dbtw.core.emit.example import (
     worked_example,
 )
 from dbtw.core.emit.render import render_model, render_schema_yaml, render_sources_yaml
-from dbtw.core.emit.report import render_report
+from dbtw.core.emit.report import render_report, shown_path
 from dbtw.core.emit.writer import (
     REPORT_NAME,
     WRITE_RECORD_NAME,
@@ -19,6 +19,7 @@ from dbtw.core.emit.writer import (
     UnsafeOutputPathError,
     emit,
     refuse_output_inside_project,
+    sql_root,
     written_by_last_emit,
 )
 
@@ -42,6 +43,8 @@ __all__ = [
     "render_report",
     "render_schema_yaml",
     "render_sources_yaml",
+    "shown_path",
+    "sql_root",
     "worked_example",
     "written_by_last_emit",
 ]
