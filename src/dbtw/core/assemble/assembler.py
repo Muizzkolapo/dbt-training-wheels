@@ -204,7 +204,9 @@ def _cross_dependency_caveat(model: str, project: str, target: str) -> Decision:
 
     dbt resolves a two-argument ref only when the other project is declared
     in this project's `dependencies.yml` and the model it names allows access
-    from other projects. Without both, `dbt parse` fails on the ref. This
+    from other projects. Without both, the ref does not resolve. Project
+    dependencies are a dbt Mesh feature that dbt Cloud resolves; dbt-core alone
+    may not, and the record says so rather than promise a fix it cannot. This
     conversion does not write `dependencies.yml` itself: delivery copies its
     output into the reader's project root, and a file of that name there
     would be overwritten. So the record says exactly what to add.
@@ -217,24 +219,28 @@ def _cross_dependency_caveat(model: str, project: str, target: str) -> Decision:
         "cross_dependency",
         f"{model}.{project}.{target}",
         (
-            f"{model} reads ref('{project}', '{target}'); declare {project} as a "
+            f"{model} reads ref('{project}', '{target}'). Declare {project} as a "
             "dependency before dbt can resolve it"
         ),
         (
             f"a two-argument ref resolves only when {project} is declared as a "
             f"dependency of this project and {target} allows access from other "
-            f"projects (dbt Mesh). Add `{entry}` to dependencies.yml at this "
-            f"project's root, or add `- name: {project}` to its existing projects: "
-            f"list. Set `access: public` on {target} in {project}. Until both are "
-            "done, dbt parse cannot find the ref. This conversion does not write "
-            "dependencies.yml, because delivery would overwrite one already there"
+            f"projects. Add `{entry}` to dependencies.yml at this project's root, or "
+            f"add `- name: {project}` to its existing projects: list. Set "
+            f"`access: public` on {target} in {project}. Project dependencies are a "
+            "dbt Mesh feature. dbt Cloud resolves them, and dbt-core alone may not. "
+            "Without the dependency, dbt parse cannot find the ref. Without public "
+            "access, dbt refuses the ref with an access error. This conversion does "
+            "not write dependencies.yml, because delivery would overwrite one already there"
         ),
         plain_reason=(
             f"Your model now reads {target} from the {project} project. That only "
             f"works after your project lists {project} as a project it relies on, "
             f"and {project} agrees to share {target} with other projects. Until "
             "then your model will not run. The exact lines to add are given above. "
-            "This tool does not add them, so it cannot overwrite a file you already have."
+            "The paid, hosted version of the tool supports this, and the free "
+            "version on its own may not. "
+            "This tool does not add the lines, so it cannot overwrite a file you already have."
         ),
         tier=2,
     )
